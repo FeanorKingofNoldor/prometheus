@@ -2,37 +2,26 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   Briefcase,
+  ArrowRightLeft,
   FlaskConical,
-  Activity,
-  Database,
+  LineChart,
   ScrollText,
-  Brain,
   Settings,
   MessageSquare,
-  Globe,
-  Map,
 } from "lucide-react";
-import { useIntelUnreadCount } from "../api/hooks";
 
 const links = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/portfolio", icon: Briefcase, label: "Portfolio & Risk" },
+  { to: "/portfolio", icon: Briefcase, label: "Portfolio" },
+  { to: "/execution", icon: ArrowRightLeft, label: "Execution" },
   { to: "/backtests", icon: FlaskConical, label: "Backtests" },
-  { to: "/regime", icon: Activity, label: "Regime & Market" },
-  { to: "/entities", icon: Database, label: "Entities" },
-  { to: "/logs", icon: ScrollText, label: "Logs" },
-  { to: "/nation", icon: Globe, label: "Nation Intel" },
-  { to: "/geo", icon: Map, label: "Geo Risk Map" },
-  { to: "/intelligence", icon: Brain, label: "Intelligence" },
+  { to: "/options", icon: LineChart, label: "Options" },
+  { to: "/logs", icon: ScrollText, label: "Logs & Reports" },
   { to: "/settings", icon: Settings, label: "Settings" },
-  { to: "/chat", icon: MessageSquare, label: "Kronos" },
+  { to: "/kronos", icon: MessageSquare, label: "Kronos" },
 ];
 
 export function Sidebar() {
-  const unread = useIntelUnreadCount();
-  const unreadData = (unread.data ?? {}) as Record<string, number>;
-  const totalUnread = Object.values(unreadData).reduce((a, b) => a + (b ?? 0), 0);
-
   return (
     <aside className="flex w-52 flex-col border-r border-border-dim bg-surface-raised">
       <div className="flex h-12 items-center gap-2 border-b border-border-dim px-4">
@@ -57,11 +46,6 @@ export function Sidebar() {
           >
             <Icon size={16} />
             {label}
-            {to === "/intelligence" && totalUnread > 0 && (
-              <span className="ml-auto inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-accent/25 px-1 text-[9px] font-bold text-accent">
-                {totalUnread > 99 ? "99+" : totalUnread}
-              </span>
-            )}
           </NavLink>
         ))}
       </nav>
