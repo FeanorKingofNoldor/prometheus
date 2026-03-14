@@ -1,0 +1,45 @@
+version: 1
+nation: CHL
+
+series:
+  - series_id: CHLGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Chile GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTCLM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Chile Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CHLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Chile CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01CLM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Chile 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01CLM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Chile Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02CLM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: CLP/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

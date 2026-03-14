@@ -1,0 +1,39 @@
+version: 1
+nation: ECU
+
+series:
+  - series_id: MKTGDPECA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Ecuador Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTECM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Ecuador Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: ECUCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Ecuador CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01ECM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Ecuador 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01ECM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Ecuador Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+

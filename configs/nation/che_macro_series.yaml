@@ -1,0 +1,45 @@
+version: 1
+nation: CHE
+
+series:
+  - series_id: CHEGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Switzerland GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRUNTTTTCHQ156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Switzerland Unemployment Rate 15+ (quarterly, SA)
+    frequency: quarterly
+    transform: raw
+
+  - series_id: CHECPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Switzerland CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01CHM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Switzerland 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01CHM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Switzerland Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXSZUS
+    category: fx
+    indicator_role: exchange_rate
+    description: CHF/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

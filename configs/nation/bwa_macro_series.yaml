@@ -1,0 +1,17 @@
+version: 1
+nation: BWA
+
+series:
+  - series_id: BWACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Botswana CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02BWM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: BWP/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

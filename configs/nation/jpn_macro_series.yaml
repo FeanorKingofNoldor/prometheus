@@ -1,0 +1,45 @@
+version: 1
+nation: JPN
+
+series:
+  - series_id: JPNRGDPEXP
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Japan Real GDP (quarterly)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTJPM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Japan Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: JPNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Japan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01JPM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Japan 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01JPM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Japan Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXJPUS
+    category: fx
+    indicator_role: exchange_rate
+    description: JPY/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

@@ -1,0 +1,45 @@
+version: 1
+nation: MAR
+
+series:
+  - series_id: MKTGDPMRA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Morocco Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTMAM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Morocco Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: MARCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Morocco CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01MAM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Morocco 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01MAM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Morocco Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02MAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: MAD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

@@ -1,0 +1,17 @@
+version: 1
+nation: OMN
+
+series:
+  - series_id: OMNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Oman CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02OMM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: OMR/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

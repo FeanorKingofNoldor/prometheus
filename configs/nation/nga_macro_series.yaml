@@ -1,0 +1,45 @@
+version: 1
+nation: NGA
+
+series:
+  - series_id: MKTGDPNGA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Nigeria GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTNGM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Nigeria Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: NGACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Nigeria CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01NGM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Nigeria 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01NGM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Nigeria Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02NGM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: NGN/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

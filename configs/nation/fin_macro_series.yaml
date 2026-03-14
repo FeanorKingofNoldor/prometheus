@@ -1,0 +1,45 @@
+version: 1
+nation: FIN
+
+series:
+  - series_id: CLVMNACSCAB1GQFI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Finland Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTFIM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Finland Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: FINCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Finland CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01FIM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Finland 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01FIM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Finland Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (daily)
+    frequency: daily
+    transform: raw

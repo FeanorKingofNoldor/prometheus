@@ -1,0 +1,45 @@
+version: 1
+nation: SAU
+
+series:
+  - series_id: MKTGDPSAA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Saudi Arabia GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTSAM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Saudi Arabia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: SAUCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Saudi Arabia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01SAM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Saudi Arabia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01SAM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Saudi Arabia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02SAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: SAR/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

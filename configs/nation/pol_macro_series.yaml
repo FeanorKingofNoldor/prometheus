@@ -1,0 +1,45 @@
+version: 1
+nation: POL
+
+series:
+  - series_id: CLVMNACSCAB1GQPL
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Poland Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTPLM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Poland Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: POLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Poland CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01PLM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Poland 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01PLM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Poland Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02PLM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: PLN/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

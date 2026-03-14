@@ -1,0 +1,17 @@
+version: 1
+nation: TWN
+
+series:
+  - series_id: TWNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Taiwan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02TWM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: TWD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

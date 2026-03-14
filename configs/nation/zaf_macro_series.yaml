@@ -1,0 +1,45 @@
+version: 1
+nation: ZAF
+
+series:
+  - series_id: ZAFGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: South Africa GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTZAM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: South Africa Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: ZAFCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: South Africa CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01ZAM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: South Africa 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01ZAM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: South Africa Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXSFUS
+    category: fx
+    indicator_role: exchange_rate
+    description: ZAR/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

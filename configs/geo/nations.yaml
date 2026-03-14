@@ -1,0 +1,72 @@
+# Nation registry for the Nation Profile Engine (v1)
+#
+# Notes
+# - EU is modeled as separate sovereigns only (no synthetic EU bloc issuer).
+# - issuer_id convention: SOV_{ISO3}
+
+version: 1
+
+nations:
+  - iso3: USA
+    issuer_id: SOV_USA
+    name: United States
+    currency: USD
+    tier: 1
+    region: US
+    tags: [G7, USD_CORE]
+
+  - iso3: CHN
+    issuer_id: SOV_CHN
+    name: China
+    currency: CNY
+    tier: 1
+    region: ASIA
+    tags: [MAJOR_ACTOR]
+
+  - iso3: DEU
+    issuer_id: SOV_DEU
+    name: Germany
+    currency: EUR
+    tier: 1
+    region: EU
+    tags: [EU, G7]
+
+  - iso3: FRA
+    issuer_id: SOV_FRA
+    name: France
+    currency: EUR
+    tier: 1
+    region: EU
+    tags: [EU, G7]
+
+  - iso3: ITA
+    issuer_id: SOV_ITA
+    name: Italy
+    currency: EUR
+    tier: 1
+    region: EU
+    tags: [EU, G7]
+
+  - iso3: ESP
+    issuer_id: SOV_ESP
+    name: Spain
+    currency: EUR
+    tier: 1
+    region: EU
+    tags: [EU]
+
+  - iso3: GBR
+    issuer_id: SOV_GBR
+    name: United Kingdom
+    currency: GBP
+    tier: 1
+    region: EU
+    tags: [G7]
+
+  - iso3: JPN
+    issuer_id: SOV_JPN
+    name: Japan
+    currency: JPY
+    tier: 1
+    region: ASIA
+    tags: [G7]

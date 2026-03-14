@@ -1,0 +1,45 @@
+version: 1
+nation: AUS
+
+series:
+  - series_id: AUSGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Australia GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTAUM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Australia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: AUSCPIALLQINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Australia CPI All Items (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01AUM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Australia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01AUM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Australia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSAL
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/AUD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

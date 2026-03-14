@@ -1,0 +1,17 @@
+version: 1
+nation: IRQ
+
+series:
+  - series_id: IRQCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Iraq CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02IQM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: IQD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

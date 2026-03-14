@@ -1,0 +1,40 @@
+# Prometheus v2 - Meta policy mapping
+#
+# This file maps a MarketSituation label to a chosen {book_id, sleeve_id}.
+# It is consumed by prometheus.meta.policy.load_meta_policies().
+#
+# Offline Meta training will eventually overwrite/update this artifact.
+
+# Optional artifact metadata (parsed by prometheus.meta.policy.load_meta_policy_artifact)
+version: "2025-12-30"
+updated_at: "2025-12-30"
+updated_by: "bootstrap"
+
+policies:
+  US_EQ:
+    # Testing default: route everything through the allocator so we always
+    # produce a single canonical target portfolio.
+    default:
+      book_id: US_EQ_ALLOCATOR
+      sleeve_id: US_EQ_ALLOCATOR_V1
+
+    situations:
+      RISK_ON:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_V1
+
+      NEUTRAL:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_V1
+
+      RISK_OFF:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_V1
+
+      CRISIS:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_V1
+
+      RECOVERY:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_V1

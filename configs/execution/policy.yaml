@@ -1,0 +1,61 @@
+# Prometheus v2 - Execution policy (targets -> trades)
+#
+# This policy controls how we transform a desired target portfolio into an
+# executable order plan.
+#
+# Goals:
+# - avoid churn/fees (no-trade band, min buy notional)
+# - avoid cash failures (cash buffer + sells-first ordering)
+# - cap daily trading aggressiveness (turnover limit)
+#
+# Parsed by prometheus.execution.policy.load_execution_policy().
+
+version: "2025-12-30"
+updated_at: "2025-12-30"
+updated_by: "bootstrap"
+
+policy:
+  # Account execution mode:
+  # - CASH: stage sells before buys and avoid implicit leverage.
+  # - MARGIN: (future) may allow buy-before-sell under leverage constraints.
+  account_mode: CASH
+
+  # Daily trading aggressiveness controls.
+  turnover:
+    # One-way turnover limit as a fraction of equity. For example, 0.05
+    # means “at most ~5% of NAV in buys (or sells) per day”.
+    one_way_limit: 0.05
+
+  # Ignore small per-instrument weight changes (in basis points, bps).
+  no_trade_band_bps: 10
+
+  # Skip small BUY orders; SELLs can be exempt (risk-reducing cleanup).
+  min_trade_notional:
+    buy_min_notional: 500
+    sells_exempt: true
+
+  # Minimum cash to keep (weights are capped at 1 - cash_buffer_weight).
+  cash_buffer_weight: 0.10
+
+  crisis:
+    # In CRISIS, allow turnover overrides for risk-reducing SELLs so we can
+    # de-risk quickly. BUYs remain constrained by the normal turnover limit.
+    turnover_override_sells: true
+
+    # Keep other churn/cash controls in CRISIS.
+    keep_no_trade_band: true
+    keep_buy_min_notional: true
+    keep_cash_buffer_weight: true
+
+  order_staleness:
+    # Optional safeguard: cancel stale open orders from previous runs before
+    # submitting a fresh batch. This is best-effort and depends on broker
+    # status visibility.
+    cancel_stale_orders: true
+
+    # Only cancel orders older than this TTL (seconds). Default: 1 hour.
+    order_ttl_seconds: 3600
+
+    # How many days of order history to scan in the DB when searching for
+    # potentially-open orders.
+    lookback_days: 7

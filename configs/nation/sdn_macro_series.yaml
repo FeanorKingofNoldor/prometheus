@@ -1,0 +1,17 @@
+version: 1
+nation: SDN
+
+series:
+  - series_id: SDNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Sudan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02SDM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: SDG/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

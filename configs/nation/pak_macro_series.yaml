@@ -1,0 +1,45 @@
+version: 1
+nation: PAK
+
+series:
+  - series_id: MKTGDPPKA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Pakistan Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTPKM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Pakistan Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: PAKCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Pakistan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01PKM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Pakistan 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01PKM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Pakistan Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSPK
+    category: fx
+    indicator_role: exchange_rate
+    description: PKR/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

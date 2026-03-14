@@ -1,0 +1,17 @@
+version: 1
+nation: GHA
+
+series:
+  - series_id: GHACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Ghana CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02GHM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: GHS/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

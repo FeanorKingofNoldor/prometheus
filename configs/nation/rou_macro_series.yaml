@@ -1,0 +1,45 @@
+version: 1
+nation: ROU
+
+series:
+  - series_id: CLVMNACSCAB1GQRO
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Romania Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTROM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Romania Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: ROUCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Romania CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01ROM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Romania 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01ROM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Romania Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02ROM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: RON/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

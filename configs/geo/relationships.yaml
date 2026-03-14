@@ -1,0 +1,11 @@
+# Nation relationship graph seed (v1)
+#
+# This file is intentionally conservative: start with a small curated set of edges
+# and iterate as you learn which dependencies matter for SPX transmission.
+
+version: 1
+
+# Optional: pin the seed to a specific as_of_date (else the seeder will use the run date).
+as_of_date: null
+
+edges: []

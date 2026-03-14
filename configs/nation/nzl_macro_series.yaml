@@ -1,0 +1,45 @@
+version: 1
+nation: NZL
+
+series:
+  - series_id: NZLGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: New Zealand GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTNZM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: New Zealand Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: NZLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: New Zealand CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01NZM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: New Zealand 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01NZM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: New Zealand Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSNZ
+    category: fx
+    indicator_role: exchange_rate
+    description: NZD/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

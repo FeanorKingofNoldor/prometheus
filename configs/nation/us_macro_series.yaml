@@ -1,0 +1,152 @@
+# US macro indicator series for the Nation Profile Engine.
+#
+# Each entry maps a FRED series_id to its category, human description,
+# frequency, and an optional transform applied before storage.
+#
+# Transforms:
+#   raw       – store as-is (default)
+#   yoy_pct   – year-over-year percent change
+#   mom_pct   – month-over-month percent change
+#   diff      – first difference
+#   invert    – 1 - value (for scores where lower = better)
+
+version: 1
+nation: USA
+
+series:
+  # ── Macroeconomic Fundamentals ──────────────────────────────────────
+  - series_id: GDP
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Real Gross Domestic Product (quarterly, SAAR)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: PAYEMS
+    category: macro_fundamentals
+    indicator_role: payrolls
+    description: Total nonfarm payrolls (monthly, SA)
+    frequency: monthly
+    transform: mom_pct
+
+  - series_id: UNRATE
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Civilian unemployment rate (monthly, SA)
+    frequency: monthly
+    transform: raw
+
+  - series_id: ICSA
+    category: macro_fundamentals
+    indicator_role: initial_claims
+    description: Initial claims for unemployment insurance (weekly, SA)
+    frequency: weekly
+    transform: raw
+
+  - series_id: RSAFS
+    category: macro_fundamentals
+    indicator_role: retail_sales
+    description: Advance retail sales (monthly, SA)
+    frequency: monthly
+    transform: mom_pct
+
+  - series_id: UMCSENT
+    category: macro_fundamentals
+    indicator_role: consumer_sentiment
+    description: University of Michigan consumer sentiment (monthly)
+    frequency: monthly
+    transform: raw
+
+  # ── Inflation & Prices ──────────────────────────────────────────────
+  - series_id: CPIAUCSL
+    category: inflation
+    indicator_role: cpi
+    description: CPI for all urban consumers (monthly, SA)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CPILFESL
+    category: inflation
+    indicator_role: core_cpi
+    description: Core CPI (ex food & energy, monthly, SA)
+    frequency: monthly
+    transform: yoy_pct
+
+  # ── Monetary Policy & Rates ─────────────────────────────────────────
+  - series_id: FEDFUNDS
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Effective federal funds rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DGS2
+    category: monetary_policy
+    indicator_role: short_rate
+    description: 2-Year Treasury constant maturity rate (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: DGS10
+    category: monetary_policy
+    indicator_role: long_rate
+    description: 10-Year Treasury constant maturity rate (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: DGS3MO
+    category: monetary_policy
+    indicator_role: short_rate_3m
+    description: 3-Month Treasury constant maturity rate (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: T10Y2Y
+    category: monetary_policy
+    indicator_role: yield_curve
+    description: 10-Year minus 2-Year Treasury spread (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: DFII10
+    category: monetary_policy
+    indicator_role: real_yield
+    description: 10-Year Treasury inflation-indexed (real yield, daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: WALCL
+    category: monetary_policy
+    indicator_role: cb_balance_sheet
+    description: Federal Reserve total assets (weekly)
+    frequency: weekly
+    transform: raw
+
+  # ── Financial Conditions & Risk ─────────────────────────────────────
+  - series_id: VIXCLS
+    category: financial_conditions
+    indicator_role: vix
+    description: CBOE VIX close (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: BAMLH0A0HYM2
+    category: financial_conditions
+    indicator_role: hy_spread
+    description: ICE BofA US High Yield OAS (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: BAMLC0A0CM
+    category: financial_conditions
+    indicator_role: ig_spread
+    description: ICE BofA US Corporate (IG) OAS (daily)
+    frequency: daily
+    transform: raw
+
+  - series_id: STLFSI2
+    category: financial_conditions
+    indicator_role: financial_stress
+    description: St. Louis Fed Financial Stress Index (weekly)
+    frequency: weekly
+    transform: raw

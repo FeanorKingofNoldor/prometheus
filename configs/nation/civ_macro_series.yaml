@@ -1,0 +1,17 @@
+version: 1
+nation: CIV
+
+series:
+  - series_id: CIVCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Côte d'Ivoire CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02CIM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: XOF/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

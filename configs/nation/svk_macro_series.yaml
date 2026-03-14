@@ -1,0 +1,45 @@
+version: 1
+nation: SVK
+
+series:
+  - series_id: CLVMNACSCAB1GQSK
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Slovakia Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTSKM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Slovakia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: SVKCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Slovakia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01SKM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Slovakia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01SKM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Slovakia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (Eurozone) (daily)
+    frequency: daily
+    transform: raw

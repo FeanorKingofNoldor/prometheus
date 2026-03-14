@@ -1,0 +1,45 @@
+version: 1
+nation: MEX
+
+series:
+  - series_id: MEXGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Mexico GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTMXM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Mexico Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: MEXCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Mexico CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01MXM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Mexico 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01MXM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Mexico Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXMXUS
+    category: fx
+    indicator_role: exchange_rate
+    description: MXN/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

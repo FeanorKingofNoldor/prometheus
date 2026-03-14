@@ -1,0 +1,45 @@
+version: 1
+nation: RUS
+
+series:
+  - series_id: RUSGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Russia GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTRUM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Russia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: RUSCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Russia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01RUM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Russia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01RUM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Russia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02RUM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: RUB/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

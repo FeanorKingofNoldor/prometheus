@@ -1,0 +1,45 @@
+version: 1
+nation: UKR
+
+series:
+  - series_id: MKTGDPURA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Ukraine Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTUKM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Ukraine Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: UKRCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Ukraine CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01UAM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Ukraine 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01UAM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Ukraine Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02UAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: UAH/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

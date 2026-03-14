@@ -1,0 +1,21 @@
+# Prometheus v2 - Core Configuration (Base)
+
+# Database connection pool settings (per DB)
+database:
+  historical:
+    pool_size: 5
+    max_overflow: 10
+    pool_timeout: 30
+    echo: false
+  runtime:
+    pool_size: 5
+    max_overflow: 10
+    pool_timeout: 30
+    echo: false
+
+logging:
+  level: INFO
+  file: prometheus.log
+
+# Global settings
+environment: development

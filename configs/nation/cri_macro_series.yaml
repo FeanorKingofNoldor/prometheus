@@ -1,0 +1,45 @@
+version: 1
+nation: CRI
+
+series:
+  - series_id: MKTGDPCRA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Costa Rica Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTCRM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Costa Rica Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CRICPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Costa Rica CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01CRM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Costa Rica 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01CRM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Costa Rica Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02CRM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: CRC/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

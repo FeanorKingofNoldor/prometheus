@@ -1,0 +1,17 @@
+version: 1
+nation: SEN
+
+series:
+  - series_id: SENCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Senegal CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02SNM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: XOF/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

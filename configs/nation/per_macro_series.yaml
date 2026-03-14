@@ -1,0 +1,45 @@
+version: 1
+nation: PER
+
+series:
+  - series_id: MKTGDPPEA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Peru GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTPEM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Peru Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: PERCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Peru CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01PEM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Peru 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01PEM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Peru Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02PEM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: PEN/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

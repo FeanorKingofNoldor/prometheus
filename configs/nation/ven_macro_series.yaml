@@ -1,0 +1,17 @@
+version: 1
+nation: VEN
+
+series:
+  - series_id: VENCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Venezuela CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02VEM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: VES/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

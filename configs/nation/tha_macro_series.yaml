@@ -1,0 +1,17 @@
+version: 1
+nation: THA
+
+series:
+  - series_id: THACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Thailand CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: DEXTHUS
+    category: fx
+    indicator_role: exchange_rate
+    description: THB/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

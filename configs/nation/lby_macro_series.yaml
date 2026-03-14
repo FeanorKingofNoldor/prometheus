@@ -1,0 +1,17 @@
+version: 1
+nation: LBY
+
+series:
+  - series_id: LBYCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Libya CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02LYM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: LYD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

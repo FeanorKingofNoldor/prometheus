@@ -1,0 +1,17 @@
+version: 1
+nation: MYS
+
+series:
+  - series_id: MYSCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Malaysia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: DEXMAUS
+    category: fx
+    indicator_role: exchange_rate
+    description: MYR/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

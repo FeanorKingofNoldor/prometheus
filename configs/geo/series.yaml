@@ -1,0 +1,97 @@
+# Observable series registry for the Nation Profile Engine (v1)
+#
+# Design:
+# - Each series is represented as a runtime `instruments.instrument_id` and ingested into `historical_db.prices_daily`.
+# - For convenience, we typically set `series_id == provider.symbol` (EODHD-style IDs like GSPC.INDX).
+# - Set enabled=false until you have confirmed the provider symbol.
+
+version: 1
+
+default_market_id: GEO_SERIES
+
+default_provider:
+  name: eodhd
+
+series:
+  # Core US equity proxy (known-good in this repo via EODHD fundamentals).
+  GSPC.INDX:
+    enabled: true
+    asset_class: INDEX
+    currency: USD
+    provider:
+      name: eodhd
+      symbol: GSPC.INDX
+    role: EQUITY_INDEX
+    tags: [GLOBAL, SPX_PROXY]
+
+  # Common candidates (provider symbols may need confirmation).
+  VIX.INDX:
+    enabled: false
+    asset_class: INDEX
+    currency: USD
+    provider:
+      name: eodhd
+      symbol: VIX.INDX
+    role: VOLATILITY_INDEX
+    tags: [GLOBAL, VOL]
+
+  EURUSD.FOREX:
+    enabled: false
+    asset_class: FX
+    currency: USD
+    provider:
+      name: eodhd
+      symbol: EURUSD.FOREX
+    role: FX_USD_CROSS
+    tags: [FX, EUR]
+
+  GBPUSD.FOREX:
+    enabled: false
+    asset_class: FX
+    currency: USD
+    provider:
+      name: eodhd
+      symbol: GBPUSD.FOREX
+    role: FX_USD_CROSS
+    tags: [FX, GBP]
+
+  USDJPY.FOREX:
+    enabled: false
+    asset_class: FX
+    currency: JPY
+    provider:
+      name: eodhd
+      symbol: USDJPY.FOREX
+    role: FX_USD_CROSS
+    tags: [FX, JPY]
+
+  USDCNH.FOREX:
+    enabled: false
+    asset_class: FX
+    currency: CNH
+    provider:
+      name: eodhd
+      symbol: USDCNH.FOREX
+    role: FX_USD_CROSS
+    tags: [FX, CNH]
+
+# Nation → required observable series (v1).
+# Keep this minimal; add credit/rates proxies as instrument series later.
+
+nation_series:
+  USA:
+    required: [GSPC.INDX]
+  CHN:
+    required: []
+  DEU:
+    required: [EURUSD.FOREX]
+  FRA:
+    required: [EURUSD.FOREX]
+  ITA:
+    required: [EURUSD.FOREX]
+  ESP:
+    required: [EURUSD.FOREX]
+  GBR:
+    required: [GBPUSD.FOREX]
+  JPN:
+    required: [USDJPY.FOREX]

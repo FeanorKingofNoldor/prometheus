@@ -1,0 +1,45 @@
+version: 1
+nation: NOR
+
+series:
+  - series_id: CLVMNACSCAB1GQNO
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Norway Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTNOM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Norway Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: NORCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Norway CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01NOM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Norway 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01NOM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Norway Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXNOUS
+    category: fx
+    indicator_role: exchange_rate
+    description: NOK/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

@@ -1,0 +1,45 @@
+version: 1
+nation: BEL
+
+series:
+  - series_id: CLVMNACSCAB1GQBE
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Belgium Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTBEM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Belgium Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: BELCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Belgium CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01BEM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Belgium 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01BEM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Belgium Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (daily)
+    frequency: daily
+    transform: raw

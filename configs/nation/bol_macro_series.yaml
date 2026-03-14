@@ -1,0 +1,17 @@
+version: 1
+nation: BOL
+
+series:
+  - series_id: BOLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Bolivia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02BOM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: BOB/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

@@ -1,0 +1,45 @@
+version: 1
+nation: KAZ
+
+series:
+  - series_id: MKTGDPKZA646NWDB
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Kazakhstan Real GDP (annual, World Bank)
+    frequency: annual
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTKZM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Kazakhstan Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: KAZCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Kazakhstan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01KZM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Kazakhstan 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01KZM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Kazakhstan Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02KZM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: KZT/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

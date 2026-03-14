@@ -1,0 +1,17 @@
+version: 1
+nation: SGP
+
+series:
+  - series_id: SGPCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Singapore CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: DEXSIUS
+    category: fx
+    indicator_role: exchange_rate
+    description: SGD/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

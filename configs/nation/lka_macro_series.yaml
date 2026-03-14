@@ -1,0 +1,17 @@
+version: 1
+nation: LKA
+
+series:
+  - series_id: LKACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Sri Lanka CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02LKM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: LKR/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

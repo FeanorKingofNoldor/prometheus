@@ -1,0 +1,45 @@
+version: 1
+nation: TUR
+
+series:
+  - series_id: TURGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Turkey GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTTRM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Turkey Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: TURCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Turkey CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01TRM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Turkey 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01TRM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Turkey Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXTAUS
+    category: fx
+    indicator_role: exchange_rate
+    description: TRY/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

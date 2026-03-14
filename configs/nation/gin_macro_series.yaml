@@ -1,0 +1,17 @@
+version: 1
+nation: GIN
+
+series:
+  - series_id: GINCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Guinea CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02GNM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: GNF/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

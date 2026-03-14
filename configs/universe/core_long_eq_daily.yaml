@@ -1,0 +1,30 @@
+# Prometheus v2 - Daily universe lambda configuration for CORE_EQ_<REGION> universes
+#
+# This small config surface allows daily UNIVERSES runs to consume
+# lambda_hat predictions from the opportunity-density experiment and
+# apply them as an additional ranking component in BasicUniverseModel.
+#
+# Schema:
+#
+#   core_long_eq:
+#     <REGION>:
+#       lambda_predictions_csv: <path to predictions CSV>
+#       lambda_experiment_id: <optional experiment_id filter>
+#       lambda_score_column: lambda_hat  # optional, defaults to "lambda_hat"
+#       lambda_score_weight: 10.0        # non-zero to enable lambda
+#
+# All fields are optional. When lambda_predictions_csv is null or
+# lambda_score_weight is 0.0, lambda integration is disabled for that
+# region.
+
+core_long_eq:
+  # Example configuration for the US core long equity universe.
+  #
+  # To enable lambda-aware universes for US, uncomment and customise the
+  # block below. Paths are resolved relative to the project root when
+  # not absolute.
+  US:
+    lambda_predictions_csv: data/lambda_predictions_US_EQ.csv
+    lambda_experiment_id: US_EQ_GL_POLY2_V0
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 10.0

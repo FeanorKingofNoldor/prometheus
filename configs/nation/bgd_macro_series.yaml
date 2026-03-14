@@ -1,0 +1,17 @@
+version: 1
+nation: BGD
+
+series:
+  - series_id: BGDCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Bangladesh CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02BDM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: BDT/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

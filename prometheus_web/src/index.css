@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+/* Bloomberg-esque dark terminal theme */
+@theme {
+  --color-surface: #09090b;
+  --color-surface-raised: #18181b;
+  --color-surface-overlay: #27272a;
+  --color-border-dim: #3f3f46;
+  --color-border-bright: #52525b;
+  --color-accent: #facc15;
+  --color-accent-dim: #a16207;
+  --color-positive: #22c55e;
+  --color-negative: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-muted: #a1a1aa;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-dim);
+  border-radius: 3px;
+}
+
+/* Base overrides */
+body {
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code",
+    ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Select / option overrides for dark dropdowns */
+select option {
+  background: #18181b;
+  color: #f4f4f5;
+}
+
+/* Map animations */
+@keyframes map-pulse {
+  0%, 100% { r: 4; opacity: 0.4; }
+  50% { r: 7; opacity: 0.1; }
+}
+@keyframes contagion-dash {
+  to { stroke-dashoffset: -14; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Directional flow: dashes move start→end (export direction) */
+@keyframes flow-forward {
+  to { stroke-dashoffset: -12; }
+}
+/* Reverse flow: dashes move end→start (import direction) */
+@keyframes flow-reverse {
+  to { stroke-dashoffset: 12; }
+}
+/* Slow flow for background routes */
+@keyframes flow-slow {
+  to { stroke-dashoffset: -12; }
+}
+.animate-map-pulse { animation: map-pulse 2.5s ease-in-out infinite; }
+.animate-contagion-dash { animation: contagion-dash 0.8s linear infinite; }
+.animate-fade-in { animation: fade-in 0.15s ease-out; }
+.animate-flow-forward { animation: flow-forward 0.6s linear infinite; }
+.animate-flow-reverse { animation: flow-reverse 0.6s linear infinite; }
+.animate-flow-slow { animation: flow-slow 1.5s linear infinite; }
+
+/* Recharts overrides for dark theme */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: var(--color-border-dim);
+}
+.recharts-text {
+  fill: var(--color-muted);
+  font-size: 11px;
+}

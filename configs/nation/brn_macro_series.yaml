@@ -1,0 +1,17 @@
+version: 1
+nation: BRN
+
+series:
+  - series_id: BRNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Brunei CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02BNM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: BND/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

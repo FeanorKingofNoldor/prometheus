@@ -1,0 +1,17 @@
+version: 1
+nation: ZWE
+
+series:
+  - series_id: ZWECPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Zimbabwe CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02ZWM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: ZWL/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

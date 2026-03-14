@@ -1,0 +1,45 @@
+version: 1
+nation: PRT
+
+series:
+  - series_id: CLVMNACSCAB1GQPT
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Portugal Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTPTM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Portugal Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: PRTCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Portugal CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01PTM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Portugal 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01PTM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Portugal Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (daily)
+    frequency: daily
+    transform: raw

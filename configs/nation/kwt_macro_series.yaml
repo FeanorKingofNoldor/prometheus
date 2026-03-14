@@ -1,0 +1,10 @@
+version: 1
+nation: KWT
+
+series:
+  - series_id: CCUSMA02KWM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: KWD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

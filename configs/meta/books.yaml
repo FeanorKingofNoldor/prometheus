@@ -1,0 +1,194 @@
+# Prometheus v2 - Books & Sleeves registry
+#
+# Books represent macro objectives (what to do in each broad market situation).
+# Sleeves are concrete implementation variants (knobs) within a book.
+#
+# This file is consumed by prometheus.books.registry.load_book_registry().
+# If this file is missing or malformed, the system falls back to an in-code
+# default registry.
+
+books:
+  US_EQ_LONG:
+    kind: LONG_EQUITY
+    region: US
+    market_id: US_EQ
+    default_sleeve_id: US_EQ_LONG_BASE_P10
+    sleeves:
+      US_EQ_LONG_BASE_P10:
+        portfolio_max_names: 10
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: false
+      US_EQ_LONG_BASE_P10_FRAG_EMA_M095_T40:
+        # Optional "advance" fragility overlay sleeve (mild trim).
+        # Not used by default policy; switch to it by editing configs/meta/policy.yaml.
+        portfolio_max_names: 10
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: true
+        fragility_overlay_mode: ema_hysteresis
+        fragility_overlay_ema_span: 10
+        fragility_overlay_trim_on: 0.40
+        fragility_overlay_trim_off: 0.36
+        fragility_overlay_off_on: 0.60
+        fragility_overlay_off_off: 0.55
+        fragility_overlay_mid_mult: 0.95
+        fragility_overlay_high_mult: 0.0
+      US_EQ_LONG_BASE_P15:
+        portfolio_max_names: 15
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: false
+      US_EQ_LONG_BASE_P20:
+        portfolio_max_names: 20
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: false
+
+  US_EQ_LONG_DEFENSIVE:
+    kind: LONG_EQUITY
+    region: US
+    market_id: US_EQ
+    default_sleeve_id: US_EQ_LONG_DEF_BASE_P10
+    sleeves:
+      US_EQ_LONG_DEF_BASE_P10:
+        portfolio_max_names: 10
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: true
+        # Default overlay parameters (legacy step rule).
+        fragility_overlay_mode: step
+        fragility_overlay_t1: 0.30
+        fragility_overlay_t2: 0.50
+        fragility_overlay_mid_mult: 0.5
+        fragility_overlay_high_mult: 0.0
+      US_EQ_LONG_DEF_BASE_P15:
+        portfolio_max_names: 15
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: true
+        fragility_overlay_mode: step
+        fragility_overlay_t1: 0.30
+        fragility_overlay_t2: 0.50
+        fragility_overlay_mid_mult: 0.5
+        fragility_overlay_high_mult: 0.0
+      US_EQ_LONG_DEF_BASE_P20:
+        portfolio_max_names: 20
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        apply_fragility_overlay: true
+        fragility_overlay_mode: step
+        fragility_overlay_t1: 0.30
+        fragility_overlay_t2: 0.50
+        fragility_overlay_mid_mult: 0.5
+        fragility_overlay_high_mult: 0.0
+
+  US_EQ_HEDGE_ETF:
+    kind: HEDGE_ETF
+    region: US
+    market_id: US_EQ
+    default_sleeve_id: US_EQ_HEDGE_SH
+    sleeves:
+      US_EQ_HEDGE_SH:
+        instrument_ids: ["SH.US"]
+        sizing_mode: regime_based
+        max_hedge_allocation: 1.0
+        rebalance_frequency: daily
+      US_EQ_HEDGE_SDS:
+        instrument_ids: ["SDS.US"]
+        sizing_mode: regime_based
+        max_hedge_allocation: 1.0
+        rebalance_frequency: daily
+      US_EQ_HEDGE_SH_VIXY:
+        instrument_ids: ["SH.US", "VIXY.US"]
+        sizing_mode: regime_based
+        max_hedge_allocation: 1.0
+        rebalance_frequency: daily
+
+  US_EQ_ALLOCATOR:
+    # Blended book that produces a single master target portfolio by
+    # splitting NAV between the long sleeve and hedge ETFs.
+    kind: ALLOCATOR
+    region: US
+    market_id: US_EQ
+    default_sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
+    gate_csv_path: data/gates/allocator_gates.csv
+    # Map market situation -> sleeve_id for dynamic selection.
+    situation_sleeve_map:
+      CRISIS: US_EQ_ALLOCATOR_DEFENSIVE
+      RISK_OFF: US_EQ_ALLOCATOR_DEFENSIVE
+      RECOVERY: US_EQ_ALLOCATOR_DEFENSIVE
+      NEUTRAL: US_EQ_ALLOCATOR_GROWTH_XL
+      RISK_ON: US_EQ_ALLOCATOR_GROWTH_XL
+    # Crossfade + risk rails.
+    sleeve_transition_days: 1
+    max_turnover_one_way: 0.25
+    crisis_force_hedge_allocation: 1.0
+    drawdown_brake_threshold: -0.06
+    drawdown_brake_hedge_allocation: 1.0
+    vol_target_annual: 0.22
+    vol_target_lookback_days: 21
+    sleeves:
+      US_EQ_ALLOCATOR_GROWTH:
+        # With a 5% per-name cap, we need at least 20 names to be able to
+        # fully invest the long leg (otherwise residual becomes cash).
+        portfolio_max_names: 20
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        profitability_weight: 15.0
+        # Hedge allocation is driven by fragility (advance behaviour).
+        hedge_instrument_ids: ["SH.US"]
+        hedge_sizing_mode: fragility_linear
+        fragility_threshold: 0.35
+        # SH.US is ~-1x market beta; allow full hedge in crisis.
+        max_hedge_allocation: 1.00
+        non_crisis_hedge_cap: 0.40
+        # Optional situation-based adjustments (config-driven; keys are MarketSituation values).
+        hedge_allocation_overrides:
+          CRISIS: 1.00
+          RISK_ON: 0.00
+          NEUTRAL: 0.00
+        hedge_allocation_floors:
+          RISK_OFF: 0.35
+          RECOVERY: 0.20
+      US_EQ_ALLOCATOR_GROWTH_XL:
+        portfolio_max_names: 40
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.035
+        profitability_weight: 15.0
+        hedge_instrument_ids: ["SH.US"]
+        hedge_sizing_mode: fragility_linear
+        fragility_threshold: 0.35
+        max_hedge_allocation: 1.00
+        non_crisis_hedge_cap: 0.40
+        hedge_allocation_overrides:
+          CRISIS: 1.00
+          RISK_ON: 0.00
+          NEUTRAL: 0.00
+        hedge_allocation_floors:
+          RISK_OFF: 0.35
+          RECOVERY: 0.20
+        non_crisis_hedge_cap: 0.40
+      US_EQ_ALLOCATOR_DEFENSIVE:
+        portfolio_max_names: 20
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.05
+        hedge_instrument_ids: ["SH.US", "VIXY.US"]
+        hedge_sizing_mode: fragility_linear
+        fragility_threshold: 0.30
+        max_hedge_allocation: 1.00
+        non_crisis_hedge_cap: 0.60
+        profitability_weight: 0.0
+        hedge_allocation_overrides:
+          CRISIS: 1.00
+          RISK_ON: 0.00
+          NEUTRAL: 0.00
+        hedge_allocation_floors:
+          RISK_OFF: 0.40
+          RECOVERY: 0.30
+
+  CASH:
+    kind: CASH
+    region: US
+    market_id: US_EQ
+    sleeves: {}

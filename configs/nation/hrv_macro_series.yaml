@@ -1,0 +1,45 @@
+version: 1
+nation: HRV
+
+series:
+  - series_id: CLVMNACSCAB1GQHR
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Croatia Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTHRM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Croatia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: HRVCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Croatia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01HRM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Croatia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01HRM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Croatia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (Eurozone) (daily)
+    frequency: daily
+    transform: raw

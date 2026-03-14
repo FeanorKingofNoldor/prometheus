@@ -1,0 +1,45 @@
+version: 1
+nation: GRC
+
+series:
+  - series_id: CLVMNACSCAB1GQGR
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Greece Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTGRM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Greece Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: GRCCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Greece CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01GRM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Greece 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01GRM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Greece Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (daily)
+    frequency: daily
+    transform: raw

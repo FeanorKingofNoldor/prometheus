@@ -1,0 +1,45 @@
+version: 1
+nation: CZE
+
+series:
+  - series_id: CLVMNACSCAB1GQCZ
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Czechia Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTCZM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Czechia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CZECPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Czechia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01CZM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Czechia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01CZM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Czechia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02CZM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: CZK/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

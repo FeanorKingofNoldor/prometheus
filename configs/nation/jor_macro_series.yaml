@@ -1,0 +1,17 @@
+version: 1
+nation: JOR
+
+series:
+  - series_id: JORCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Jordan CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02JOM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: JOD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

@@ -1,0 +1,17 @@
+version: 1
+nation: IRN
+
+series:
+  - series_id: IRNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Iran CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02IRM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: IRR/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

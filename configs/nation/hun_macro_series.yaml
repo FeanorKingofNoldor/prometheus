@@ -1,0 +1,45 @@
+version: 1
+nation: HUN
+
+series:
+  - series_id: CLVMNACSCAB1GQHU
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Hungary Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTHU M156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Hungary Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: HUNCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Hungary CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01HUM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Hungary 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01HUM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Hungary Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02HUM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: HUF/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

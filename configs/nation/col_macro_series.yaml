@@ -1,0 +1,45 @@
+version: 1
+nation: COL
+
+series:
+  - series_id: COLGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Colombia GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTCOM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Colombia Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: COLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Colombia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01COM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Colombia 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01COM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Colombia Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: CCUSMA02COM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: COP/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

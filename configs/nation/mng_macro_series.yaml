@@ -1,0 +1,17 @@
+version: 1
+nation: MNG
+
+series:
+  - series_id: MNGCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Mongolia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02MNM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: MNT/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

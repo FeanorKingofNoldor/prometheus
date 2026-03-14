@@ -1,0 +1,17 @@
+version: 1
+nation: GAB
+
+series:
+  - series_id: GABCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Gabon CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02GAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: XAF/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

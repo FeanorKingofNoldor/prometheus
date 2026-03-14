@@ -1,0 +1,17 @@
+version: 1
+nation: ETH
+
+series:
+  - series_id: ETHCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Ethiopia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02ETM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: ETB/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

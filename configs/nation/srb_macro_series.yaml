@@ -1,0 +1,17 @@
+version: 1
+nation: SRB
+
+series:
+  - series_id: SRBCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Serbia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02RSM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: RSD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

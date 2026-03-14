@@ -1,0 +1,17 @@
+version: 1
+nation: MMR
+
+series:
+  - series_id: MMRCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Myanmar CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02MMM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: MMK/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

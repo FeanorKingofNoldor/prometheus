@@ -1,0 +1,11 @@
+version: 1
+nation: PAN
+
+series:
+  - series_id: PANCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Panama CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+

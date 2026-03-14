@@ -1,0 +1,17 @@
+version: 1
+nation: ZMB
+
+series:
+  - series_id: ZMBCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Zambia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02ZMM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: ZMW/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

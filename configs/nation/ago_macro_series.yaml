@@ -1,0 +1,17 @@
+version: 1
+nation: AGO
+
+series:
+  - series_id: AGOCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Angola CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02AOM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: AOA/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

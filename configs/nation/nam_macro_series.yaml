@@ -1,0 +1,17 @@
+version: 1
+nation: NAM
+
+series:
+  - series_id: NAMCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Namibia CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02NAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: NAD/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

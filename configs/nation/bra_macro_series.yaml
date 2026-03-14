@@ -1,0 +1,45 @@
+version: 1
+nation: BRA
+
+series:
+  - series_id: BRAGDPNQDSMEI
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Brazil GDP (quarterly, OECD)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTBRM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Brazil Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: BRACPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Brazil CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01BRM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Brazil 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01BRM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Brazil Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXBZUS
+    category: fx
+    indicator_role: exchange_rate
+    description: BRL/USD Exchange Rate (daily)
+    frequency: daily
+    transform: raw

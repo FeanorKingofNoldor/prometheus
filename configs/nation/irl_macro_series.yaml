@@ -1,0 +1,45 @@
+version: 1
+nation: IRL
+
+series:
+  - series_id: CLVMNACSCAB1GQIE
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Ireland Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTIEM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Ireland Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Ireland CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01IEM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Ireland 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01IEM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Ireland Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (daily)
+    frequency: daily
+    transform: raw

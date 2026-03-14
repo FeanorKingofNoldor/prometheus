@@ -1,0 +1,44 @@
+# Prometheus v2 - Daily portfolio scenario risk configuration
+#
+# This config surface allows daily BOOKS runs to enable scenario-based
+# portfolio risk for the core long equity book <REGION>_CORE_LONG_EQ via
+# BasicLongOnlyPortfolioModel.
+#
+# Schema:
+#
+#   core_long_eq:
+#     <REGION>:
+#       scenario_risk_set_id: <scenario_set_id>
+#       stab_scenario_set_id: <scenario_set_id used for STAB-scenario diagnostics>
+#       stab_joint_model_id: joint-stab-fragility-v1
+#
+# When scenario_risk_set_id is null or omitted, scenario P&L is disabled
+# for that region in the daily pipeline (it can still be computed via
+# dedicated research/backfill scripts). When stab_scenario_set_id is
+# null, STAB-scenario metrics are not computed for daily books.
+
+core_long_eq:
+  # Example configuration for the US core long equity book.
+  #
+  # To enable scenario-aware daily portfolios for US, set a concrete
+  # scenario_set_id below, e.g. "US_EQ_HIST_20D_2020ON".
+  # To additionally compute STAB-scenario diagnostics for the daily
+  # book, set stab_scenario_set_id to a scenario set that has
+  # STAB_FRAGILITY_V0 embeddings and optionally override
+  # stab_joint_model_id.
+  US:
+    scenario_risk_set_id: US_EQ_HIST_20D_2020ON
+    stab_scenario_set_id: US_EQ_HIST_20D_2020ON
+    stab_joint_model_id: joint-stab-fragility-v1
+
+    # Meta budget (capital allocation) driven by regime state-change risk.
+    #
+    # When enabled, Meta computes a budget multiplier in [0,1] and the book
+    # consumes that budget (no separate book-level cash overlay).
+    meta_budget_enabled: true
+    meta_budget_alpha: 1.0
+    meta_budget_min: 0.35
+    meta_budget_horizon_steps: 21
+
+    # Hazard profile used by the market-proxy regime detector.
+    hazard_profile: US_PROXY_THR0P90_AD1P20_MM0P35

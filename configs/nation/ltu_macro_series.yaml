@@ -1,0 +1,45 @@
+version: 1
+nation: LTU
+
+series:
+  - series_id: CLVMNACSCAB1GQLT
+    category: macro_fundamentals
+    indicator_role: gdp
+    description: Lithuania Real GDP (quarterly, Eurostat)
+    frequency: quarterly
+    transform: yoy_pct
+
+  - series_id: LRHUTTTTLTM156S
+    category: macro_fundamentals
+    indicator_role: unemployment
+    description: Lithuania Harmonized Unemployment Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: LTUCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Lithuania CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: IR3TIB01LTM156N
+    category: monetary_policy
+    indicator_role: policy_rate
+    description: Lithuania 3-Month Interbank Rate (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: IRLTLT01LTM156N
+    category: monetary_policy
+    indicator_role: long_rate
+    description: Lithuania Long-Term Government Bond Yield (monthly)
+    frequency: monthly
+    transform: raw
+
+  - series_id: DEXUSEU
+    category: fx
+    indicator_role: exchange_rate
+    description: USD/EUR Exchange Rate (Eurozone) (daily)
+    frequency: daily
+    transform: raw

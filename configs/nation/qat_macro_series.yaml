@@ -1,0 +1,10 @@
+version: 1
+nation: QAT
+
+series:
+  - series_id: CCUSMA02QAM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: QAR/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

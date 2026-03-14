@@ -1,0 +1,10 @@
+version: 1
+nation: ARE
+
+series:
+  - series_id: CCUSMA02AEM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: AED/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw

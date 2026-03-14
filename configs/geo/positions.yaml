@@ -1,0 +1,8 @@
+# POSITION occupancy seed (v1)
+#
+# Roles are stable identifiers (e.g. US_FED_CHAIR). Occupants change over time.
+# This file can start empty; it is only required once you wire POSITION features.
+
+version: 1
+
+positions: []

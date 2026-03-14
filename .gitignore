@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.env
+prometheus_web/node_modules/
+prometheus_web/dist/
+prometheus_web/.vite/
+*.log

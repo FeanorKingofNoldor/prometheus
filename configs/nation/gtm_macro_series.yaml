@@ -1,0 +1,17 @@
+version: 1
+nation: GTM
+
+series:
+  - series_id: GTMCPIALLMINMEI
+    category: inflation
+    indicator_role: cpi
+    description: Guatemala CPI All Items (monthly)
+    frequency: monthly
+    transform: yoy_pct
+
+  - series_id: CCUSMA02GTM618N
+    category: fx
+    indicator_role: exchange_rate
+    description: GTQ/USD Exchange Rate (monthly)
+    frequency: monthly
+    transform: raw
