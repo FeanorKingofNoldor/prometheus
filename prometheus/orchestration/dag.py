@@ -564,3 +564,131 @@ def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
     )
     
     return dag
+
+
+def build_kronos_dag(as_of_date: date) -> DAG:
+    """Build the Kronos meta-intelligence DAG.
+
+    Kronos evaluates the quality of all trading decisions at 5/21/63-day
+    horizons, builds prediction scorecards, runs diagnostics against
+    backtest history, generates config-improvement proposals, and produces
+    the daily operational log-health report.
+
+    Jobs (all OPTIONAL, required_state=None — never block the pipeline):
+
+        kronos_outcome_eval   — OutcomeEvaluator: evaluate pending decisions
+        kronos_scorecard      — PredictionScorecard: assessment hit-rate / Sharpe IC
+        kronos_lambda_sc      — LambdaScorecard: lambda-hat direction accuracy
+        kronos_diagnostics    — DiagnosticsEngine: backtest performance analysis
+        kronos_proposals      — ProposalGenerator: generate config proposals
+        kronos_log_report     — Kronos log-health LLM report
+
+    Args:
+        as_of_date: Date for this DAG.
+
+    Returns:
+        DAG with Kronos intelligence jobs.
+    """
+    dag_id = f"kronos_daily_{as_of_date.isoformat()}"
+    date_str = as_of_date.isoformat()
+
+    jobs: dict[str, JobMetadata] = {}
+
+    # 1. Outcome evaluation — must run first; evaluates all pending decisions
+    jobs[f"kronos_outcome_eval_{date_str}"] = JobMetadata(
+        job_id=f"kronos_outcome_eval_{date_str}",
+        job_type="kronos_outcome_eval",
+        market_id=None,
+        required_state=None,
+        dependencies=(),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=1800,  # Can be slow for large backlogs
+    )
+
+    # 2. Prediction scorecard — compares assessment scores vs realized returns
+    jobs[f"kronos_scorecard_{date_str}"] = JobMetadata(
+        job_id=f"kronos_scorecard_{date_str}",
+        job_type="kronos_scorecard",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=600,
+    )
+
+    # 3. Lambda scorecard — evaluates lambda_hat directional accuracy
+    jobs[f"kronos_lambda_sc_{date_str}"] = JobMetadata(
+        job_id=f"kronos_lambda_sc_{date_str}",
+        job_type="kronos_lambda_scorecard",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
+    # 4. Diagnostics — analyzes backtest performance (non-fatal if no data)
+    jobs[f"kronos_diagnostics_{date_str}"] = JobMetadata(
+        job_id=f"kronos_diagnostics_{date_str}",
+        job_type="kronos_diagnostics",
+        market_id=None,
+        required_state=None,
+        dependencies=(),
+        priority=JobPriority.OPTIONAL,
+        max_retries=1,
+        retry_delay_seconds=300,
+        timeout_seconds=600,
+    )
+
+    # 5. Proposals — generates config-improvement proposals from diagnostics
+    jobs[f"kronos_proposals_{date_str}"] = JobMetadata(
+        job_id=f"kronos_proposals_{date_str}",
+        job_type="kronos_proposals",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_diagnostics_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=1,
+        retry_delay_seconds=300,
+        timeout_seconds=300,
+    )
+
+    # 6. Log-health LLM report — runs after outcome eval for fresh data
+    jobs[f"kronos_log_report_{date_str}"] = JobMetadata(
+        job_id=f"kronos_log_report_{date_str}",
+        job_type="kronos_log_report",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=600,
+    )
+
+    dag = DAG(
+        dag_id=dag_id,
+        market_id="KRONOS",
+        as_of_date=as_of_date,
+        jobs=jobs,
+    )
+
+    errors = dag.validate()
+    if errors:
+        logger.error("Kronos DAG validation failed: %s", errors)
+        raise ValueError(f"Invalid Kronos DAG: {errors}")
+
+    logger.info(
+        "Built Kronos DAG %s with %d jobs: %s",
+        dag_id,
+        len(jobs),
+        ", ".join(job.job_type for job in jobs.values()),
+    )
+
+    return dag

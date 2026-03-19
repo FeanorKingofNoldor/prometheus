@@ -42,6 +42,7 @@ from prometheus.orchestration.dag import (
     JobMetadata,
     JobStatus,
     build_intel_dag,
+    build_kronos_dag,
     build_market_dag,
 )
 from prometheus.pipeline.tasks import (
@@ -396,8 +397,10 @@ def execute_job(
     )
 
     try:
-        # Intel jobs have no market_id — execute directly without an EngineRun.
+        # Intel and Kronos jobs have no market_id — execute without an EngineRun.
         if job.market_id is None:
+            if job.job_type.startswith("kronos_"):
+                return _execute_kronos_job(job, execution)
             return _execute_intel_job(job, execution)
 
         # Get or create EngineRun
@@ -541,6 +544,150 @@ def _execute_intel_job(
         return False, error_msg
 
 
+# Strategies to run DiagnosticsEngine + ProposalGenerator against.
+# These all need backtest_runs data to produce output; missing data is
+# handled gracefully (ValueError caught, job still succeeds).
+_KRONOS_STRATEGY_IDS = [
+    "US_CORE_LONG_EQ",
+    "US_SMALL_CAP",
+    "EU_CORE_LONG_EQ",
+]
+
+
+def _execute_kronos_job(
+    job: JobMetadata,
+    execution: "JobExecution",
+) -> Tuple[bool, str | None]:
+    """Execute a Kronos meta-intelligence job.
+
+    Runs with no EngineRun.  All jobs are non-fatal — failures are logged
+    but never propagate to the trading pipeline.
+    """
+    try:
+        if job.job_type == "kronos_outcome_eval":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.evaluator import OutcomeEvaluator
+
+            db = get_db_manager()
+            evaluator = OutcomeEvaluator(db_manager=db)
+            count = evaluator.evaluate_pending_outcomes(
+                as_of_date=execution.as_of_date,
+                max_decisions=500,
+                num_workers=8,
+            )
+            logger.info("[Kronos] outcome_eval: evaluated %d outcomes", count)
+            return True, None
+
+        elif job.job_type == "kronos_scorecard":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.scorecard import PredictionScorecard
+
+            db = get_db_manager()
+            sc = PredictionScorecard(db_manager=db)
+            for horizon in (5, 21, 63):
+                try:
+                    report = sc.build_scorecard(
+                        horizon_days=horizon,
+                        max_decisions=500,
+                        end_date=execution.as_of_date,
+                    )
+                    logger.info(
+                        "[Kronos] scorecard %dd: n=%d hit_rate=%.1f%% spearman_rho=%.3f",
+                        horizon,
+                        report.total_predictions,
+                        report.hit_rate * 100,
+                        report.spearman_rho,
+                    )
+                except Exception:
+                    logger.exception("[Kronos] scorecard %dd failed", horizon)
+            return True, None
+
+        elif job.job_type == "kronos_lambda_scorecard":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.lambda_scorecard import LambdaScorecard
+
+            db = get_db_manager()
+            sc = LambdaScorecard(db_manager=db)
+            try:
+                report = sc.build_scorecard(
+                    market_id="US_EQ",
+                    end_date=execution.as_of_date,
+                )
+                logger.info(
+                    "[Kronos] lambda_scorecard: n=%d mae=%.4f dir_acc=%.1f%% r2=%.3f",
+                    report.total_predictions,
+                    report.mae,
+                    report.direction_accuracy * 100,
+                    report.r_squared,
+                )
+            except Exception:
+                logger.exception("[Kronos] lambda_scorecard failed (non-fatal)")
+            return True, None
+
+        elif job.job_type == "kronos_diagnostics":
+            from apathis.core.database import get_db_manager
+            from prometheus.meta.diagnostics import DiagnosticsEngine
+
+            db = get_db_manager()
+            engine = DiagnosticsEngine(db_manager=db)
+            for strategy_id in _KRONOS_STRATEGY_IDS:
+                try:
+                    report = engine.analyze_strategy(strategy_id)
+                    logger.info(
+                        "[Kronos] diagnostics %s: sharpe=%.3f return=%.2f%% drawdown=%.2f%%"
+                        " underperforming=%d high_risk=%d",
+                        strategy_id,
+                        report.overall_performance.sharpe,
+                        report.overall_performance.return_ * 100,
+                        report.overall_performance.max_drawdown * 100,
+                        len(report.underperforming_configs),
+                        len(report.high_risk_configs),
+                    )
+                except ValueError:
+                    # Insufficient backtest data — expected early in live operation
+                    logger.info("[Kronos] diagnostics %s: insufficient data (skipped)", strategy_id)
+                except Exception:
+                    logger.exception("[Kronos] diagnostics %s failed", strategy_id)
+            return True, None
+
+        elif job.job_type == "kronos_proposals":
+            from apathis.core.database import get_db_manager
+            from prometheus.meta.diagnostics import DiagnosticsEngine
+            from prometheus.meta.proposal_generator import ProposalGenerator
+
+            db = get_db_manager()
+            engine = DiagnosticsEngine(db_manager=db)
+            gen = ProposalGenerator(db_manager=db, diagnostics_engine=engine)
+            total = 0
+            for strategy_id in _KRONOS_STRATEGY_IDS:
+                try:
+                    proposals = gen.generate_proposals(strategy_id, auto_save=True)
+                    logger.info(
+                        "[Kronos] proposals %s: generated %d proposals",
+                        strategy_id, len(proposals),
+                    )
+                    total += len(proposals)
+                except ValueError:
+                    logger.info("[Kronos] proposals %s: insufficient data (skipped)", strategy_id)
+                except Exception:
+                    logger.exception("[Kronos] proposals %s failed", strategy_id)
+            logger.info("[Kronos] proposals total: %d generated", total)
+            return True, None
+
+        elif job.job_type == "kronos_log_report":
+            from prometheus.monitoring.report_service import generate_log_report
+            generate_log_report("log_daily")
+            return True, None
+
+        else:
+            return False, f"Unknown kronos job_type: {job.job_type}"
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.exception("_execute_kronos_job: failed job_id=%s: %s", job.job_id, error_msg)
+        return False, error_msg
+
+
 # ============================================================================
 # Retry Logic
 # ============================================================================
@@ -646,6 +793,9 @@ class MarketAwareDaemon:
             if market_id == "INTEL":
                 dag = build_intel_dag(as_of_date, is_sunday=as_of_date.weekday() == 6)
                 dag_id = dag.dag_id  # e.g. "intel_daily_2026-03-19"
+            elif market_id == "KRONOS":
+                dag = build_kronos_dag(as_of_date)
+                dag_id = dag.dag_id  # e.g. "kronos_daily_2026-03-19"
             else:
                 dag = build_market_dag(market_id, as_of_date)
                 dag_id = f"{market_id}_{as_of_date.isoformat()}"
@@ -817,9 +967,9 @@ class MarketAwareDaemon:
                 continue
 
             dag, dag_id = self.active_dags[market_id]
-            # INTEL is not a real market — intel jobs use required_state=None so
-            # any state passes.  Use POST_CLOSE as a safe placeholder.
-            if market_id == "INTEL":
+            # INTEL/KRONOS are not real markets — their jobs use required_state=None
+            # so any state passes.  Use POST_CLOSE as a safe placeholder.
+            if market_id in ("INTEL", "KRONOS"):
                 current_state = MarketState.POST_CLOSE
             else:
                 current_state = get_market_state(market_id, now)
