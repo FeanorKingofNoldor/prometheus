@@ -361,6 +361,7 @@ def _get_region_instruments(
         FROM instruments
         WHERE market_id = ANY(%s)
           AND status = 'ACTIVE'
+          AND instrument_id NOT LIKE 'SYNTH_%%'
     """
 
     with db_manager.get_runtime_connection() as conn:
@@ -1994,6 +1995,7 @@ def run_books_for_run(
         per_instrument_max_weight=float(getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.05) or 0.05),
         max_names=getattr(long_sleeve, "portfolio_max_names", None),
         hysteresis_buffer=getattr(long_sleeve, "portfolio_hysteresis_buffer", None),
+        score_concentration_power=float(getattr(long_sleeve, "score_concentration_power", 1.0) or 1.0),
         sector_limits={},
         country_limits={},
         factor_limits={},
@@ -3093,15 +3095,55 @@ def run_options_for_run(
 
     try:
         tracker = DecisionTracker(db_manager=db_manager)
+
+        # Map underlying symbol → canonical instrument ID for price lookups
+        _UNDERLYING_MAP: Dict[str, str] = {
+            "VIX": "VIX.INDX",
+            "SPY": "SPY.US",
+            "QQQ": "QQQ.US",
+            "IWM": "IWM.US",
+            "EFA": "EFA.US",
+            "TLT": "TLT.US",
+            "GLD": "GLD.US",
+            "ES":  "ES.CME",
+        }
+
+        orders_for_log = []
+        for d in all_directives:
+            underlying_id = _UNDERLYING_MAP.get(d.symbol, f"{d.symbol}.US")
+            # Instrument ID: SYMBOL_YYMMDD_STRIKEC/P.US
+            exp_short = d.expiry[2:] if len(d.expiry) == 8 else d.expiry
+            instrument_id = f"{d.symbol}_{exp_short}_{d.strike:.0f}{d.right}.US"
+            orders_for_log.append({
+                "symbol":         d.symbol,
+                "underlying_id":  underlying_id,
+                "instrument_id":  instrument_id,
+                "right":          d.right,
+                "expiry":         d.expiry,
+                "strike":         d.strike,
+                "action":         "BUY" if d.quantity > 0 else "SELL",
+                "quantity":       abs(d.quantity),
+                "entry_price":    d.limit_price or 0.0,
+                "strategy":       d.strategy,
+                "reason":         d.reason,
+                "trade_action":   d.action.value,
+            })
+
+        signals_snap = {
+            "vix_level":     signals.get("vix_level"),
+            "nav":           signals.get("nav"),
+            "mhi":           signals.get("mhi"),
+            "frag":          signals.get("frag"),
+            "market_state":  market_situation,
+        }
+
         tracker.record_options_decision(
-            strategy_id=f"{run.region.upper()}_OPTIONS_OVERLAY",
-            market_id=markets[0] if markets else "UNKNOWN",
+            strategy_id=f"{run.region.upper()}_OPTIONS",
+            market_id=markets[0] if markets else "US_EQ",
             as_of_date=run.as_of_date,
+            orders=orders_for_log,
+            signals_snapshot=signals_snap,
             run_id=run.run_id,
-            market_situation=market_situation,
-            directives_count=len(all_directives),
-            enabled_strategies=enabled,
-            mode=mode,
         )
     except Exception:  # pragma: no cover - non-fatal
         logger.warning(
