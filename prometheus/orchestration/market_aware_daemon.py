@@ -679,6 +679,93 @@ def _execute_kronos_job(
             generate_log_report("log_daily")
             return True, None
 
+        elif job.job_type == "kronos_live_perf":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.live_performance import LivePerformanceTracker
+
+            db = get_db_manager()
+            tracker = LivePerformanceTracker(db_manager=db)
+            perf = tracker.compute_rolling_performance(execution.as_of_date)
+            if "error" not in perf:
+                import math
+                sharpe_str = f"{perf['sharpe']:.3f}" if not math.isnan(perf.get('sharpe', float('nan'))) else "n/a"
+                logger.info(
+                    "[Kronos] live_perf @21d: n=%d sharpe=%s win=%.0f%% max_dd=%.1f%% pnl=%+.2f",
+                    perf["n"], sharpe_str,
+                    (perf["win_rate"] or 0) * 100,
+                    (perf["max_drawdown"] or 0) * 100,
+                    perf["total_pnl"],
+                )
+                for s in perf.get("by_strategy", []):
+                    logger.info(
+                        "[Kronos] live_perf strategy=%s n=%d avg_ret=%s win=%.0f%%",
+                        s["engine"], s["n"],
+                        f"{s['avg_return']:+.4f}" if s["avg_return"] is not None else "n/a",
+                        (s["win_rate"] or 0) * 100,
+                    )
+            else:
+                logger.warning("[Kronos] live_perf error: %s", perf["error"])
+            return True, None
+
+        elif job.job_type == "kronos_regime_eval":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.live_performance import LivePerformanceTracker
+
+            db = get_db_manager()
+            tracker = LivePerformanceTracker(db_manager=db)
+            regimes = tracker.compute_regime_breakdown(execution.as_of_date)
+            for r in regimes:
+                if "error" in r:
+                    logger.warning("[Kronos] regime_eval error: %s", r["error"])
+                else:
+                    import math
+                    logger.info(
+                        "[Kronos] regime_eval %s: n=%d sharpe=%s win=%.0f%%",
+                        r["regime_label"], r["n"],
+                        f"{r['sharpe']:.3f}" if not math.isnan(r["sharpe"]) else "n/a",
+                        r["win_rate"] * 100,
+                    )
+            return True, None
+
+        elif job.job_type == "kronos_fragility_check":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.live_performance import LivePerformanceTracker
+
+            db = get_db_manager()
+            tracker = LivePerformanceTracker(db_manager=db)
+            result = tracker.validate_fragility_signal(execution.as_of_date)
+            if "error" not in result:
+                import math
+                rho_str = f"{result['spearman_rho']:.3f}" if not math.isnan(result.get('spearman_rho', float('nan'))) else "n/a"
+                icon = "\u2713" if result.get("verdict") == "SIGNAL_VALID" else "\u26a0"
+                logger.info(
+                    "[Kronos] fragility_check: n=%d spearman_rho=%s verdict=%s %s",
+                    result["n"], rho_str, result.get("verdict", "?"), icon,
+                )
+            else:
+                logger.warning("[Kronos] fragility_check error: %s", result["error"])
+            return True, None
+
+        elif job.job_type == "kronos_hedge_eval":
+            from apathis.core.database import get_db_manager
+            from prometheus.decisions.live_performance import LivePerformanceTracker
+
+            db = get_db_manager()
+            tracker = LivePerformanceTracker(db_manager=db)
+            result = tracker.compute_hedge_effectiveness(execution.as_of_date)
+            if "error" not in result:
+                import math
+                r_str = f"{result['pearson_r']:.3f}" if not math.isnan(result.get('pearson_r', float('nan'))) else "n/a"
+                icon = "\u2713" if result.get("verdict") == "HEDGE_EFFECTIVE" else "\u26a0"
+                logger.info(
+                    "[Kronos] hedge_eval: n=%d pearson_r=%s verdict=%s %s opts_pnl=%+.2f",
+                    result["n_dates"], r_str, result.get("verdict", "?"), icon,
+                    result.get("options_pnl_total", 0),
+                )
+            else:
+                logger.warning("[Kronos] hedge_eval error: %s", result["error"])
+            return True, None
+
         else:
             return False, f"Unknown kronos job_type: {job.job_type}"
 

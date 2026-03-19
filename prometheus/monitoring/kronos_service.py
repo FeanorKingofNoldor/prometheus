@@ -146,6 +146,118 @@ def _fetch_fragility_context() -> str:
         return "Fragility: unavailable."
 
 
+def _fetch_outcomes_context(lookback_days: int = 90) -> str:
+    """Decision outcomes summary per engine+horizon for the last N days."""
+    from datetime import date, timedelta
+
+    db = get_db_manager()
+    as_of = date.today()
+    start = as_of - timedelta(days=lookback_days)
+    try:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT ed.engine_name,
+                       dout.horizon_days,
+                       COUNT(*) AS n,
+                       ROUND(AVG(dout.realized_return)::numeric, 4) AS avg_ret,
+                       ROUND(
+                           SUM(CASE WHEN dout.realized_return > 0 THEN 1 ELSE 0 END)::numeric
+                           / COUNT(*), 3
+                       ) AS hit_rate,
+                       ROUND(SUM(dout.realized_pnl)::numeric, 2) AS total_pnl
+                FROM decision_outcomes dout
+                JOIN engine_decisions ed ON dout.decision_id = ed.decision_id
+                WHERE (ed.as_of_date + dout.horizon_days) >= %s
+                  AND (ed.as_of_date + dout.horizon_days) <= %s
+                GROUP BY ed.engine_name, dout.horizon_days
+                ORDER BY ed.engine_name, dout.horizon_days
+                """,
+                (start, as_of),
+            )
+            rows = cur.fetchall()
+            cur.close()
+        if not rows:
+            return f"Decision outcomes (last {lookback_days}d): no data."
+        lines = [
+            f"  {r[0]} @{r[1]}d: n={r[2]}, hit={float(r[4]):.0%}, avg_ret={float(r[3]):+.4f}, pnl={float(r[5]):+.2f}"
+            for r in rows
+        ]
+        return f"Decision outcomes (last {lookback_days}d):\n" + "\n".join(lines)
+    except Exception as exc:
+        logger.warning("[kronos] Failed to fetch outcomes context: %s", exc)
+        return "Decision outcomes: unavailable."
+
+
+def _fetch_live_performance_context() -> str:
+    """Live Sharpe, regime breakdown, fragility validation, hedge effectiveness."""
+    import math
+    from datetime import date
+
+    from apathis.core.database import get_db_manager as _get_db
+    from prometheus.decisions.live_performance import LivePerformanceTracker
+
+    db = _get_db()
+    tracker = LivePerformanceTracker(db_manager=db)
+    as_of = date.today()
+    parts = []
+
+    try:
+        perf = tracker.compute_rolling_performance(as_of)
+        if "error" not in perf:
+            sharpe_str = f"{perf['sharpe']:.3f}" if not math.isnan(perf.get('sharpe', float('nan'))) else "n/a"
+            wr_str = f"{perf['win_rate']:.0%}" if not math.isnan(perf.get('win_rate', float('nan'))) else "n/a"
+            dd_str = f"{perf['max_drawdown']:.1%}" if not math.isnan(perf.get('max_drawdown', float('nan'))) else "n/a"
+            parts.append(
+                f"Live performance (PORTFOLIO @21d, 90d): n={perf['n']}"
+                f" sharpe={sharpe_str} win={wr_str} max_dd={dd_str}"
+                f" total_pnl={perf.get('total_pnl', 0):+.2f}"
+            )
+    except Exception as exc:
+        parts.append(f"Live performance: unavailable ({exc})")
+
+    try:
+        regimes = tracker.compute_regime_breakdown(as_of)
+        if regimes and "error" not in regimes[0]:
+            regime_lines = [
+                f"  {r['regime_label']}: n={r['n']}"
+                f" sharpe={'%.3f' % r['sharpe'] if not math.isnan(r['sharpe']) else 'n/a'}"
+                f" win={r['win_rate']:.0%}"
+                for r in regimes
+            ]
+            parts.append("Regime breakdown (@21d):\n" + "\n".join(regime_lines))
+    except Exception as exc:
+        parts.append(f"Regime breakdown: unavailable ({exc})")
+
+    try:
+        frag = tracker.validate_fragility_signal(as_of)
+        if "error" not in frag:
+            rho_str = f"{frag['spearman_rho']:.3f}" if not math.isnan(frag.get('spearman_rho', float('nan'))) else "n/a"
+            icon = "✓" if frag.get("verdict") == "SIGNAL_VALID" else "⚠"
+            parts.append(
+                f"Fragility signal: n={frag['n']} spearman_rho={rho_str}"
+                f" verdict={frag.get('verdict', '?')} {icon}"
+            )
+    except Exception as exc:
+        parts.append(f"Fragility signal: unavailable ({exc})")
+
+    try:
+        hedge = tracker.compute_hedge_effectiveness(as_of)
+        if "error" not in hedge:
+            r_str = f"{hedge['pearson_r']:.3f}" if not math.isnan(hedge.get('pearson_r', float('nan'))) else "n/a"
+            icon = "✓" if hedge.get("verdict") == "HEDGE_EFFECTIVE" else "⚠"
+            parts.append(
+                f"Hedge effectiveness: n={hedge['n_dates']} pearson_r={r_str}"
+                f" verdict={hedge.get('verdict', '?')} {icon}"
+                f" opts_pnl={hedge.get('options_pnl_total', 0):+.2f}"
+            )
+    except Exception as exc:
+        parts.append(f"Hedge effectiveness: unavailable ({exc})")
+
+    return "\n".join(parts) if parts else "Live performance: no data."
+
+
 def _fetch_intel_context() -> str:
     """Latest intel SITREP + flash alerts for Kronos context."""
     try:
@@ -179,6 +291,8 @@ def build_system_context() -> str:
         _fetch_portfolio_context(),
         _fetch_orders_context(),
         _fetch_fragility_context(),
+        _fetch_outcomes_context(),
+        _fetch_live_performance_context(),
         _fetch_intel_context(),
     ]
     return "\n\n".join(sections)

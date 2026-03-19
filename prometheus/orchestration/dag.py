@@ -659,6 +659,58 @@ def build_kronos_dag(as_of_date: date) -> DAG:
         timeout_seconds=300,
     )
 
+    # 7. Live performance — rolling Sharpe/drawdown from live outcomes
+    jobs[f"kronos_live_perf_{date_str}"] = JobMetadata(
+        job_id=f"kronos_live_perf_{date_str}",
+        job_type="kronos_live_perf",
+        market_id=None,
+        required_state=None,
+        dependencies=(),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
+    # 8. Regime-conditioned evaluation — depends on outcome_eval for fresh data
+    jobs[f"kronos_regime_eval_{date_str}"] = JobMetadata(
+        job_id=f"kronos_regime_eval_{date_str}",
+        job_type="kronos_regime_eval",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
+    # 9. Fragility signal check — depends on outcome_eval
+    jobs[f"kronos_fragility_check_{date_str}"] = JobMetadata(
+        job_id=f"kronos_fragility_check_{date_str}",
+        job_type="kronos_fragility_check",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
+    # 10. Hedge effectiveness — depends on outcome_eval
+    jobs[f"kronos_hedge_eval_{date_str}"] = JobMetadata(
+        job_id=f"kronos_hedge_eval_{date_str}",
+        job_type="kronos_hedge_eval",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
     # 6. Log-health LLM report — runs after outcome eval for fresh data
     jobs[f"kronos_log_report_{date_str}"] = JobMetadata(
         job_id=f"kronos_log_report_{date_str}",
