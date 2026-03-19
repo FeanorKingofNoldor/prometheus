@@ -29,6 +29,8 @@ Steps
 from __future__ import annotations
 
 import argparse
+import math
+import re
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -49,9 +51,14 @@ def _load_signals(
 ) -> Dict[str, Any]:
     """Assemble the signals dict consumed by all strategies.
 
-    In production this pulls from the real FRAG, STAB, lambda, SHI
-    pipelines and live market data.  For now it provides sensible
-    defaults so the orchestration loop can run end-to-end.
+    Fetching priority for live prices:
+      1. IBKR streaming delayed data (reqMarketDataType=3, non-competing)
+      2. DB ``prices_daily`` table (SPY.US / VIX.INDX) as reliable fallback
+      3. Hardcoded defaults if both sources fail
+
+    Using streaming instead of reqTickers (snapshot) avoids Error 10197
+    "competing live session" that occurs when another TWS/Gateway session
+    holds the market data subscription lock.
     """
     nav = float(account_state.get("NetLiquidation", 0))
 
@@ -82,39 +89,120 @@ def _load_signals(
         "equity_prices": {},
     }
 
-    # Try to get live VIX
-    try:
-        from prometheus.execution.ib_compat import Index
-        vix_contract = Index("VIX", "CBOE", "USD")
-        qualified = ib.qualifyContracts(vix_contract)
-        if qualified:
-            tickers = ib.reqTickers(qualified[0])
-            if tickers:
-                vix_val = getattr(tickers[0], "last", None) or getattr(tickers[0], "close", 20.0)
-                if vix_val and vix_val > 0:
-                    signals["vix_level"] = float(vix_val)
-    except Exception as exc:
-        logger.debug("Could not fetch live VIX: %s", exc)
+    def _valid_price(v: Any) -> Optional[float]:
+        """Return float if v is a real positive price, else None."""
+        try:
+            fv = float(v)
+            if fv > 0 and not math.isnan(fv):
+                return fv
+        except (TypeError, ValueError):
+            pass
+        return None
 
-    # Try to get live ES price
+    def _fetch_streaming(contract: Any, timeout: float = 5.0) -> Optional[float]:
+        """Subscribe to delayed streaming data and wait *timeout* seconds.
+
+        Uses ``reqMarketDataType(3)`` (delayed) which does not compete with
+        a live session, so avoids Error 10197.
+        """
+        try:
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                return None
+            ticker = ib.reqMktData(qualified[0], "", False, False)
+            ib.sleep(timeout)
+            for attr in ("last", "close", "bid", "ask"):
+                p = _valid_price(getattr(ticker, attr, None))
+                if p is not None:
+                    return p
+            ib.cancelMktData(qualified[0])
+        except Exception as exc:
+            logger.debug("IBKR streaming fetch error for %s: %s",
+                         getattr(contract, "symbol", str(contract)), exc)
+        return None
+
+    def _db_price(instrument_id: str) -> Optional[float]:
+        """Fetch the most recent close from ``prices_daily`` in the historical DB."""
+        try:
+            from apathis.core.database import get_db_manager
+            db = get_db_manager()
+            with db.get_historical_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT close, trade_date FROM prices_daily "
+                        "WHERE instrument_id=%s ORDER BY trade_date DESC LIMIT 1",
+                        (instrument_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        p = _valid_price(row[0])
+                        if p is not None:
+                            logger.info(
+                                "DB price for %s: %.4f (as of %s)",
+                                instrument_id, p, row[1],
+                            )
+                            return p
+        except Exception as exc:
+            logger.debug("DB price lookup failed for %s: %s", instrument_id, exc)
+        return None
+
+    # Request delayed data type once — applies to all subsequent reqMktData calls.
+    # Type 3 = delayed (15-20 min) which is independent of live session.
+    try:
+        ib.reqMarketDataType(3)
+    except Exception:
+        pass
+
+    # ── VIX ────────────────────────────────────────────────────────────
+    from prometheus.execution.ib_compat import Index
+    vix_ibkr = _fetch_streaming(Index("VIX", "CBOE", "USD"))
+    if vix_ibkr is not None:
+        signals["vix_level"] = vix_ibkr
+        logger.info("VIX from IBKR: %.2f", vix_ibkr)
+    else:
+        vix_db = _db_price("VIX.INDX")
+        if vix_db is not None:
+            signals["vix_level"] = vix_db
+        else:
+            logger.warning("VIX unavailable from IBKR and DB — using default %.1f",
+                           signals["vix_level"])
+
+    # ── SPY price ───────────────────────────────────────────────────────
+    from prometheus.execution.ib_compat import Stock
+    spy_ibkr = _fetch_streaming(Stock("SPY", "ARCA", "USD"))
+    if spy_ibkr is not None:
+        signals["spy_price"] = spy_ibkr
+        logger.info("SPY from IBKR: %.2f", spy_ibkr)
+    else:
+        spy_db = _db_price("SPY.US")
+        if spy_db is not None:
+            signals["spy_price"] = spy_db
+        else:
+            logger.warning("SPY price unavailable from IBKR and DB")
+
+    # ── ES price ────────────────────────────────────────────────────────
     try:
         from prometheus.execution.ib_compat import Future
         from prometheus.execution.futures_manager import PRODUCTS
-        es_product = PRODUCTS.get("ES")
-        if es_product:
+        if PRODUCTS.get("ES"):
             es_contract = Future("ES", exchange="CME", currency="USD")
-            es_contract.secType = "CONTFUT"  # Continuous
-            qualified = ib.qualifyContracts(es_contract)
-            if qualified:
-                tickers = ib.reqTickers(qualified[0])
-                if tickers:
-                    es_val = getattr(tickers[0], "last", None) or getattr(tickers[0], "close", 0)
-                    if es_val and es_val > 0:
-                        signals["es_price"] = float(es_val)
+            es_contract.secType = "CONTFUT"
+            es_ibkr = _fetch_streaming(es_contract)
+            if es_ibkr is not None:
+                signals["es_price"] = es_ibkr
+                logger.info("ES from IBKR: %.2f", es_ibkr)
+                # Use ES/10 as secondary SPY proxy only if SPY is still unset
+                if signals["spy_price"] == 0.0:
+                    signals["spy_price"] = es_ibkr / 10
     except Exception as exc:
         logger.debug("Could not fetch live ES price: %s", exc)
 
-    # Build equity_prices from positions
+    # Derive ES from SPY if ES is still missing
+    if signals["es_price"] == 0.0 and signals["spy_price"] > 0:
+        signals["es_price"] = signals["spy_price"] * 10
+        logger.debug("ES estimated from SPY×10: %.1f", signals["es_price"])
+
+    # ── Equity prices from live portfolio positions ─────────────────────
     for iid, pos in positions.items():
         if iid.endswith(".US") or (not iid.endswith(".FUT") and "_" not in iid):
             symbol = iid.replace(".US", "").split(".")[0]
@@ -233,19 +321,67 @@ def run_derivatives_daily(
         # ── Step 2: Sync positions & account ──────────────────────────
         logger.info("Syncing positions and account state...")
 
+        # Brief pause so IBKR streams account values before we read them.
+        # Without this, accountValues() often returns an empty list immediately
+        # after connect() and NAV comes out as $0.
+        ib.sleep(2)
+
         account_values = ib.accountValues()
         account_state: Dict[str, Any] = {}
         for av in account_values:
-            if av.currency == "USD" or av.currency == "":
+            # Accept USD and empty-currency tags (always); also accept BASE
+            # currency which is present when the account base currency is not
+            # USD (e.g. CHF paper accounts).
+            if av.currency in ("USD", "BASE", ""):
                 account_state[av.tag] = av.value
+            # For key financial metrics, accept any currency as a last resort
+            # (covers e.g. NetLiquidation [CHF] on CHF-base accounts).
+            elif av.tag in ("NetLiquidation", "TotalCashValue",
+                            "AvailableFunds", "BuyingPower") \
+                    and av.tag not in account_state:
+                account_state[av.tag] = av.value
+        # NetLiquidationByCurrency [BASE] is the canonical cross-currency NAV;
+        # alias it to NetLiquidation if the direct tag wasn't found.
+        if "NetLiquidation" not in account_state \
+                and "NetLiquidationByCurrency" in account_state:
+            account_state["NetLiquidation"] = account_state["NetLiquidationByCurrency"]
 
-        # Get all positions
+        # Fallback: if NetLiquidation still missing, sum portfolio market values
+        if not account_state.get("NetLiquidation"):
+            portfolio_items = ib.portfolio()
+            if portfolio_items:
+                total_mv = sum(abs(float(getattr(item, "marketValue", 0) or 0))
+                               for item in portfolio_items)
+                if total_mv > 0:
+                    account_state["NetLiquidation"] = str(total_mv)
+                    logger.info("NAV computed from portfolio market values: $%.0f", total_mv)
+
+        # Get all positions and convert to internal Position dataclass.
+        # Strategies expect Position.quantity / .market_value / etc. (broker_interface.py),
+        # not the raw ib_insync Position namedtuple (.position / .avgCost).
+        # Market values come from ib.portfolio() which streams per-position MV.
         raw_positions = ib.positions()
+        portfolio_mv: Dict[int, float] = {}  # conId → market_value
+        portfolio_unreal: Dict[int, float] = {}
+        for item in ib.portfolio():
+            con_id = getattr(item.contract, "conId", None)
+            if con_id:
+                portfolio_mv[con_id] = float(getattr(item, "marketValue", 0) or 0)
+                portfolio_unreal[con_id] = float(getattr(item, "unrealizedPNL", 0) or 0)
+
+        from prometheus.execution.broker_interface import Position as InternalPosition
         positions: Dict[str, Any] = {}
         for p in raw_positions:
             contract = p.contract
             iid = InstrumentMapper.contract_to_instrument_id(contract)
-            positions[iid] = p
+            con_id = getattr(contract, "conId", None)
+            positions[iid] = InternalPosition(
+                instrument_id=iid,
+                quantity=float(p.position),
+                avg_cost=float(p.avgCost),
+                market_value=portfolio_mv.get(con_id, 0.0),
+                unrealized_pnl=portfolio_unreal.get(con_id, 0.0),
+            )
 
         summary["position_count"] = len(positions)
         summary["steps_completed"].append("sync_positions")
@@ -305,6 +441,20 @@ def run_derivatives_daily(
         portfolio_greeks = options_portfolio.compute_portfolio_greeks()
         existing_options = options_portfolio.get_positions_as_dicts()
 
+        # Inject derivatives-budget cap signals — mirrors options_backtest.py
+        # _build_signals() exactly.  Without this, butterfly/condor margin cap
+        # defaults to AvailableFunds (full account BP) and margin_used = 0,
+        # making the book-level cap a no-op.
+        _spread_strats = {"iron_butterfly", "iron_condor"}
+        signals["butterfly_condor_margin_used"] = sum(
+            abs(opt.get("entry_price", 0)) * abs(opt.get("quantity", 0)) * 100
+            for opt in existing_options
+            if opt.get("strategy") in _spread_strats and opt.get("quantity", 0) < 0
+        )
+        # Override buying_power to mean the derivatives budget (NAV × 30%),
+        # not the raw IBKR AvailableFunds figure.
+        signals["buying_power"] = signals["nav"] * 0.30
+
         allocations = allocator.allocate(
             market_situation=market_state,
             signals=signals,
@@ -320,26 +470,163 @@ def run_derivatives_daily(
         # ── Step 6: Run derivative strategies ───────────────────────
         logger.info("Running derivative strategies...")
 
-        # Build a stub broker for the strategy manager
-        # (in production, use the real IbkrClientImpl)
+        # Broker implementations used by the strategy manager.
+        # _StubBroker: logs orders (always used inside evaluate_all, which runs
+        #              with dry_run=True so it never actually submits).
+        # _IbkrDirectBroker: submits real orders via the already-connected `ib`
+        #              instance; used in Step 8 when not dry_run.
         class _StubBroker(BrokerInterface):
             """Minimal stub — logs orders instead of submitting."""
             def submit_order(self, order):
                 logger.info("[SUBMIT] %s %s x%d", order.side.value, order.instrument_id, order.quantity)
             def cancel_order(self, order_id):
-                pass
+                return False
             def get_positions(self):
                 return positions
             def get_order_status(self, order_id):
                 return None
+            def get_account_state(self):
+                return account_state
+            def get_fills(self, since=None):
+                return []
+            def sync(self):
+                pass
 
+        class _IbkrDirectBroker(BrokerInterface):
+            """Submit option orders via the already-connected ib_insync/ib_async instance."""
+
+            # Instrument-id pattern: SYMBOL_YYMMDD_STRIKEC/P.US
+            # e.g.  VIX_260417_32C.US   SPY_260418_560P.US
+            _OPT_RE = re.compile(r'^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.US$')
+
+            def submit_order(self, order) -> str:
+                from prometheus.execution.ib_compat import (
+                    Option, LimitOrder, MarketOrder,
+                )
+                from prometheus.execution.broker_interface import OrderSide, OrderType
+
+                m = self._OPT_RE.match(order.instrument_id)
+                if not m:
+                    raise ValueError(
+                        f"_IbkrDirectBroker cannot parse instrument_id: "
+                        f"{order.instrument_id!r}  (expected SYMBOL_YYMMDD_STRIKE[CP].US)"
+                    )
+
+                symbol = m.group(1)
+                exp_raw = m.group(2)
+                # Accept both YYMMDD (6 digits) and YYYYMMDD (8 digits)
+                expiry = "20" + exp_raw if len(exp_raw) == 6 else exp_raw
+                strike = float(m.group(3))
+                right = m.group(4)  # 'C' or 'P'
+
+                # VIX index options trade on CBOE (not CFE which is for VX futures).
+                # Everything else routes through SMART.
+                exchange = "CBOE" if symbol == "VIX" else "SMART"
+
+                # VIX options on CBOE require multiplier=100 to uniquely identify
+                # the contract (avoids ambiguity with VIX mini-options).
+                # IBKR lastTradeDateOrContractMonth = settlement_wednesday - 1 day.
+                # Our formula may compute the settlement date rather than the
+                # last-trade date, so we try the given expiry and also expiry-1
+                # as a fallback (handles the off-by-one seen in some months).
+                if symbol == "VIX":
+                    from datetime import datetime as _dt, timedelta as _td
+                    _expiry_attempts = [
+                        expiry,
+                        (_dt.strptime(expiry, "%Y%m%d").date() - _td(days=1)).strftime("%Y%m%d"),
+                    ]
+                    contract = None
+                    for _try_expiry in _expiry_attempts:
+                        _c = Option(
+                            symbol=symbol,
+                            lastTradeDateOrContractMonth=_try_expiry,
+                            strike=strike,
+                            right=right,
+                            exchange="CBOE",
+                            currency="USD",
+                            multiplier="100",
+                        )
+                        _q = ib.qualifyContracts(_c)
+                        _qualified = _q[0] if _q else None
+                        if _qualified and getattr(_qualified, "conId", 0):
+                            contract = _qualified
+                            logger.debug("VIX contract qualified with expiry=%s", _try_expiry)
+                            break
+                    if not contract:
+                        raise RuntimeError(
+                            f"Could not qualify VIX contract for {order.instrument_id} "
+                            f"(tried expiries: {_expiry_attempts})"
+                        )
+                else:
+                    contract = Option(
+                        symbol=symbol,
+                        lastTradeDateOrContractMonth=expiry,
+                        strike=strike,
+                        right=right,
+                        exchange=exchange,
+                        currency="USD",
+                    )
+                    qualified = ib.qualifyContracts(contract)
+                    # ib_async may return [None] (not []) when Error 200 fires;
+                    # guard against both empty list and None element.
+                    contract = qualified[0] if qualified else None
+                    if not contract or not getattr(contract, "conId", 0):
+                        raise RuntimeError(
+                            f"Could not qualify IBKR contract for {order.instrument_id} "
+                            f"(no conId — check symbol, expiry, strike, exchange)"
+                        )
+
+                action = "BUY" if order.side == OrderSide.BUY else "SELL"
+                qty = int(order.quantity)
+
+                if order.order_type == OrderType.LIMIT and order.limit_price is not None:
+                    ib_order = LimitOrder(action, qty, round(order.limit_price, 2))
+                else:
+                    ib_order = MarketOrder(action, qty)
+
+                ib_order.tif = "DAY"
+
+                # ib_async placeOrder accesses contract.secIdType; if the
+                # field is None (contract qualified but field not set),
+                # it raises AttributeError.  Guard against that here.
+                if getattr(contract, "secIdType", None) is None:
+                    contract.secIdType = ""
+
+                trade = ib.placeOrder(contract, ib_order)
+                logger.info(
+                    "[IBKR] Placed %s %s x%d @ %s (orderId=%s)",
+                    action, order.instrument_id, qty,
+                    order.limit_price, trade.order.orderId,
+                )
+                return str(trade.order.orderId)
+
+            def cancel_order(self, order_id):
+                return False
+
+            def get_positions(self):
+                return positions
+
+            def get_order_status(self, order_id):
+                return None
+
+            def get_account_state(self):
+                return account_state
+
+            def get_fills(self, since=None):
+                return []
+
+            def sync(self):
+                pass
+
+        # evaluate_all always runs with dry_run=True so it never submits.
+        # Actual submission is done below in Step 8 after risk checks.
         broker = _StubBroker()
 
         strategy_mgr = OptionsStrategyManager(
             broker=broker,
             mapper=mapper,
             discovery=discovery,
-            dry_run=dry_run,
+            dry_run=True,  # always — real submission handled in Step 8 after risk checks
         )
 
         all_directives = strategy_mgr.evaluate_all(
@@ -394,8 +681,9 @@ def run_derivatives_daily(
                     d.strike, d.quantity, d.reason,
                 )
         else:
-            logger.info("Submitting %d approved directives...", len(approved))
-            # The strategy manager's _submit_directives handles conversion
+            logger.info("Submitting %d approved directives via IBKR...", len(approved))
+            # Swap in the real broker so _submit_directives routes to IBKR.
+            strategy_mgr._broker = _IbkrDirectBroker()
             strategy_mgr._submit_directives(approved)
 
         summary["steps_completed"].append("submit_orders")
@@ -471,8 +759,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     else:
         port = 4001
 
-    # Default to dry-run for paper
-    dry_run = args.dry_run or args.paper
+    dry_run = args.dry_run
 
     summary = run_derivatives_daily(
         host=args.host,

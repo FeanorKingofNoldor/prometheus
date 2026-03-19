@@ -48,6 +48,35 @@ from prometheus.execution.instrument_mapper import InstrumentMapper
 logger = get_logger(__name__)
 
 
+# ── Inline Black-Scholes pricer (no external deps) ──────────────────
+# Used internally by IronButterflyStrategy and IronCondorStrategy to
+# estimate the true net credit at sizing time so that max_loss per
+# contract reflects (wing_width - net_credit) rather than wing_width.
+
+def _bs_price(
+    S: float, K: float, T: float, r: float, sigma: float, right: str,
+) -> float:
+    """Minimal Black-Scholes option price using math.erf (no scipy).
+
+    Returns intrinsic value for degenerate inputs (T≤0, sigma≤0, etc.).
+    """
+    if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+        return max((S - K if right.upper() == "C" else K - S), 0.0)
+    sqrt2 = math.sqrt(2.0)
+    sqrtT = math.sqrt(T)
+
+    def _n(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / sqrt2))
+
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrtT)
+    d2 = d1 - sigma * sqrtT
+    disc = math.exp(-r * T)
+    if right.upper() == "C":
+        return S * _n(d1) - K * disc * _n(d2)
+    else:
+        return K * disc * _n(-d2) - S * _n(-d1)
+
+
 # ── Configuration dataclasses ────────────────────────────────────────
 
 @dataclass
@@ -107,16 +136,22 @@ class VixTailHedgeConfig:
 @dataclass
 class ShortPutConfig:
     """Configuration for short (cash-secured) put strategy."""
-    enabled: bool = True
+    # Disabled: IV engine uses VIX as base vol for single stocks, understating
+    # individual IV — short_put is consistently -EV in backtest.  Valid for live
+    # trading with real IV feeds but not enabled in the model-driven pipeline.
+    enabled: bool = False
     target_delta: float = 0.25        # Sell 0.20–0.30 delta puts
     target_dte_min: int = 30
     target_dte_max: int = 45
     max_buying_power_pct: float = 0.05  # Max 5% of buying power per underlying
     profit_target: float = 0.50       # Buy back at 50% profit
     roll_dte: int = 14
-    min_lambda_score: float = 0.60    # Revert: tighter filter hurt more than helped
+    min_lambda_score: float = 0.60    # Min λ score (real DB scores [-1,1] post-2015)
     min_stab_score: float = 0.50      # Must be stable
-    max_positions: int = 10            # Max concurrent short put positions
+    max_positions: int = 10           # Max concurrent short put positions
+    min_vix: float = 15.0             # Only sell when IV is meaningful
+    max_vix: float = 35.0             # Raised from 30 — sell into mildly elevated vol
+    max_loss_stop: float = 3.0        # Close at 3x credit received
 
 
 @dataclass
@@ -158,13 +193,13 @@ class FuturesOptionConfig:
 class BullCallSpreadConfig:
     """Configuration for bull call spread strategy."""
     enabled: bool = True
-    min_lambda_score: float = 0.65    # Only on high-conviction names
+    min_lambda_score: float = 0.65    # Min momentum proxy score (see momentum_scores in signals)
     min_stab_score: float = 0.50
     spread_width_pct: float = 0.07    # 7% between long and short strikes
     target_dte_min: int = 30
     target_dte_max: int = 60
-    max_risk_per_trade_pct: float = 0.03   # 3% NAV risk per trade (doubled for v9)
-    max_positions: int = 9            # Increased from 7 (top-3 strategy)
+    max_risk_per_trade_pct: float = 0.04   # 4% NAV risk per trade (raised from 3%)
+    max_positions: int = 12           # Raised from 9 — more slots for momentum names
     profit_target: float = 0.60       # Close at 60% of max profit
     long_delta: float = 0.55          # Slightly ITM long leg
     short_delta: float = 0.30         # OTM short leg
@@ -180,12 +215,12 @@ class MomentumCallConfig:
     """
     enabled: bool = True
     underlying: str = "SPY"
-    max_vix: float = 20.0              # Only when VIX < 20 (calm bull)
-    min_momentum_63d: float = 0.02     # SPY must be up ≥ 2% over 63 days
+    max_vix: float = 22.0              # Raised from 20 — allow mildly elevated vol
+    min_momentum_63d: float = 0.01     # Lowered from 0.02 — SPY up ≥ 1% over 63 days
     spread_width_pct: float = 0.05     # 5% wide call spread
     target_dte_min: int = 30
     target_dte_max: int = 60
-    nav_pct: float = 0.03              # 3% of equity NAV per position
+    nav_pct: float = 0.03              # Kept at 0.03 — larger size degrades Sharpe (directional debit, no calm-market gate)
     max_positions: int = 3             # Max concurrent positions
     profit_target: float = 0.70        # Close at 70% of max profit
     roll_dte: int = 14                 # Close/roll when DTE < 14
@@ -212,17 +247,18 @@ class IronCondorConfig:
     """Configuration for iron condor strategy."""
     enabled: bool = True
     underlying: str = "SPY"           # Default underlying
-    max_vix: float = 20.0             # Only when VIX < 20
+    min_vix: float = 14.0             # Only when VIX > 14 (meaningful premium)
+    max_vix: float = 18.0             # Reverted: condor at VIX 18-20 underperforms vs butterfly
     max_frag: float = 0.30            # Only when FRAG < 0.30
     put_delta: float = 0.18           # Short put delta
     call_delta: float = 0.18          # Short call delta
     wing_width: float = 5.0           # $5 wide wings
     target_dte_min: int = 30
     target_dte_max: int = 45
-    nav_pct: float = 0.04             # 4% of NAV risk budget (doubled for v9)
+    nav_pct: float = 0.04             # 4% of NAV risk budget
     profit_target: float = 0.50       # Close at 50% profit
     max_loss_multiple: float = 2.0    # Close at 2x credit received
-    max_positions: int = 4            # Increased from 3
+    max_positions: int = 5            # Raised from 4
 
 
 @dataclass
@@ -230,14 +266,15 @@ class IronButterflyConfig:
     """Configuration for iron butterfly strategy."""
     enabled: bool = True
     underlying: str = "SPY"
-    max_vix: float = 18.0             # Relaxed from 16 — more entry windows for #1 strategy
-    max_frag: float = 0.20
+    max_vix: float = 20.0             # Raised from 18 — more entry windows for #1 strategy
+    max_frag: float = 0.20            # Keep tight: frag > 0.20 = fragile market, avoid short premium
     wing_width: float = 10.0          # $10 wide wings
     target_dte_min: int = 30
     target_dte_max: int = 45
-    nav_pct: float = 0.03             # 3% of NAV risk budget (doubled for v9)
-    profit_target: float = 0.40       # Close at 40% profit
-    max_positions: int = 4            # Increased from 3 (#1 strategy by P&L)
+    nav_pct: float = 0.20             # v34 test
+    profit_target: float = 0.50       # Hold winners longer (was 0.40)
+    max_loss_multiple: float = 2.0    # Close short legs at 2x credit received
+    max_positions: int = 6            # Raised from 5
 
 
 @dataclass
@@ -599,13 +636,22 @@ class CoveredCallStrategy(OptionStrategy):
                 continue
 
             # ~0.20 delta ≈ ~8-12% OTM for 30-45 DTE
-            strike = round(current_price * 1.10, 1)
+            # Round to nearest whole dollar — fractional strikes (e.g. 29.9) are
+            # not listed and cause Error 200 from IBKR qualifyContracts.
+            strike = float(round(current_price * 1.10))
 
             target_expiry = ProtectivePutStrategy._find_target_expiry(
                 today,
                 self._config.target_dte_min,
                 self._config.target_dte_max,
             )
+
+            # Limit price: sell at or above 90% of BS mid so the order fills
+            # promptly while avoiding giving away premium at market.
+            _T_cc = (self._config.target_dte_min + self._config.target_dte_max) / 2 / 365.0
+            _cc_prem = _bs_price(current_price, strike, _T_cc, 0.04,
+                                 max(vix, 10.0) / 100.0, "C")
+            cc_limit = max(round(_cc_prem * 0.9, 2), 0.01)
 
             directives.append(OptionTradeDirective(
                 strategy=self.name,
@@ -616,8 +662,9 @@ class CoveredCallStrategy(OptionStrategy):
                 strike=strike,
                 quantity=-n_contracts,  # Negative = sell
                 order_type=OrderType.LIMIT,
+                limit_price=cc_limit,
                 reason=f"Covered call on {symbol}: {n_contracts} contracts "
-                       f"@ {strike} ({pos.quantity:.0f} shares held)",
+                       f"@ {strike} (lmt={cc_limit:.2f}, {pos.quantity:.0f} shares held)",
                 metadata={"position_qty": pos.quantity, "coverage": self._config.coverage_ratio},
             ))
 
@@ -824,9 +871,18 @@ class VixTailHedgeStrategy(OptionStrategy):
             return directives
 
         # Open new VIX call
-        strike = round(vix_level * (1 + self._config.strike_premium_pct), 0)
+        # VIX option strike increments: 0.5-pt below ~25, 1-pt from 25-40,
+        # 2.5-pt above 40.  Snap to the appropriate grid so IBKR qualifyContracts
+        # doesn't return Error 200 for a non-listed strike (e.g. 41 doesn't exist).
+        raw_strike = vix_level * (1 + self._config.strike_premium_pct)
+        if raw_strike > 40:
+            strike = float(round(raw_strike / 2.5) * 2.5)
+        else:
+            strike = float(round(raw_strike))
 
-        target_expiry = ProtectivePutStrategy._find_target_expiry(
+        # VIX options expire on Wednesdays (30 days before the 3rd Friday of
+        # the following month), NOT on standard equity 3rd-Friday expiries.
+        target_expiry = VixTailHedgeStrategy._find_vix_expiry(
             today,
             self._config.target_dte_min,
             self._config.target_dte_max,
@@ -838,6 +894,11 @@ class VixTailHedgeStrategy(OptionStrategy):
         estimated_premium = max(vix_level * 0.03, 0.5) * 100  # ~$0.50-$2 per contract
         n_contracts = max(1, int(budget / max(estimated_premium, 1)))
 
+        # Generous limit: 1.5× estimated premium to ensure a fill while
+        # still avoiding runaway debit on a spike.  VIX options REQUIRE a
+        # limit order (no market orders accepted at CFE).
+        vix_limit_price = round(max(vix_level * 0.03, 0.5) * 1.5, 2)
+
         directives.append(OptionTradeDirective(
             strategy=self.name,
             action=TradeAction.OPEN,
@@ -847,8 +908,9 @@ class VixTailHedgeStrategy(OptionStrategy):
             strike=strike,
             quantity=n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=vix_limit_price,
             reason=f"VIX tail hedge: {n_contracts} calls @ {strike} "
-                   f"(VIX={vix_level:.1f})",
+                   f"(VIX={vix_level:.1f}, lmt={vix_limit_price:.2f})",
             metadata={
                 "vix_level": vix_level,
                 "budget": budget,
@@ -857,6 +919,45 @@ class VixTailHedgeStrategy(OptionStrategy):
         ))
 
         return directives
+
+    @staticmethod
+    def _find_vix_expiry(today: date, min_dte: int, max_dte: int) -> str:
+        """Return YYYYMMDD for a VIX option expiry within [min_dte, max_dte].
+
+        VIX options expire on the Wednesday that is exactly 30 days before
+        the 3rd Friday of the following calendar month (i.e. the day used
+        as the settlement reference for SPX standard monthly options).
+        """
+        candidates = []
+        for month_offset in range(1, 9):
+            year = today.year
+            month = today.month + month_offset
+            while month > 12:
+                month -= 12
+                year += 1
+            # 3rd Friday of (year, month)
+            first_day = date(year, month, 1)
+            days_to_fri = (4 - first_day.weekday()) % 7
+            third_friday = first_day + timedelta(days=days_to_fri + 14)
+            # VIX settlement Wednesday is 30 calendar days before the 3rd Friday.
+            # IBKR's lastTradeDateOrContractMonth is the calendar day BEFORE the
+            # settlement date (i.e. the last day orders are accepted).
+            settlement_wed = third_friday - timedelta(days=30)
+            vix_exp = settlement_wed - timedelta(days=1)
+            candidates.append(vix_exp)
+
+        # Return first candidate within the DTE window
+        for exp in candidates:
+            dte = (exp - today).days
+            if min_dte <= dte <= max_dte:
+                return exp.strftime("%Y%m%d")
+
+        # Fallback: nearest future candidate
+        for exp in candidates:
+            if exp > today:
+                return exp.strftime("%Y%m%d")
+
+        return candidates[0].strftime("%Y%m%d")
 
 
 # ── Short Puts (cash-secured) ─────────────────────────────────────────
@@ -899,7 +1000,7 @@ class ShortPutStrategy(OptionStrategy):
         directives: List[OptionTradeDirective] = []
         today = signals.get("as_of_date", date.today())
 
-        # Manage existing short puts — profit target & roll
+        # Manage existing short puts — profit target, stop-loss & roll
         existing_puts = [
             opt for opt in existing_options
             if opt.get("strategy") == self.name
@@ -913,8 +1014,8 @@ class ShortPutStrategy(OptionStrategy):
             entry_price = opt.get("entry_price", 0)
             current_price = opt.get("current_price", entry_price)
 
-            # Profit target: buy back at 50% decay
             if entry_price > 0 and current_price > 0:
+                # Profit target: buy back at 50% decay
                 profit_pct = (entry_price - current_price) / entry_price
                 if profit_pct >= self._config.profit_target:
                     directives.append(OptionTradeDirective(
@@ -926,6 +1027,21 @@ class ShortPutStrategy(OptionStrategy):
                         strike=opt["strike"],
                         quantity=-opt["quantity"],
                         reason=f"Profit target {profit_pct:.0%} on {opt['symbol']}",
+                    ))
+                    continue
+
+                # Stop-loss: close when loss exceeds max_loss_stop x credit received
+                loss_multiple = (current_price - entry_price) / max(entry_price, 0.01)
+                if loss_multiple >= self._config.max_loss_stop:
+                    directives.append(OptionTradeDirective(
+                        strategy=self.name,
+                        action=TradeAction.CLOSE,
+                        symbol=opt["symbol"],
+                        right="P",
+                        expiry=opt["expiry"],
+                        strike=opt["strike"],
+                        quantity=-opt["quantity"],
+                        reason=f"Short put stop-loss: {loss_multiple:.1f}x on {opt['symbol']}",
                     ))
                     continue
 
@@ -948,6 +1064,11 @@ class ShortPutStrategy(OptionStrategy):
             return directives
 
         if buying_power <= 0:
+            return directives
+
+        # VIX gate: only sell puts when there's real premium and market isn't already pricing in collapse
+        vix = signals.get("vix_level", 20.0)
+        if vix < self._config.min_vix or vix > self._config.max_vix:
             return directives
 
         max_per_underlying = buying_power * self._config.max_buying_power_pct
@@ -1449,7 +1570,12 @@ class BullCallSpreadStrategy(OptionStrategy):
             return []
 
         nav = signals.get("nav", 0.0)
-        lambda_scores: Dict[str, float] = signals.get("lambda_scores", {})
+        # Use momentum_scores (63d proxy) for directional conviction;
+        # fall back to lambda_scores when momentum_scores not in signals.
+        lambda_scores: Dict[str, float] = (
+            signals.get("momentum_scores")
+            or signals.get("lambda_scores", {})
+        )
         stab_scores: Dict[str, float] = signals.get("stab_scores", {})
         equity_prices: Dict[str, float] = signals.get("equity_prices", {})
 
@@ -1928,15 +2054,13 @@ class IronCondorStrategy(OptionStrategy):
         vix = signals.get("vix_level", 25.0)
         frag = signals.get("frag", 0.5)
         nav = signals.get("nav", 0.0)
-
-        # Only in calm markets
-        if vix > self._config.max_vix or frag > self._config.max_frag:
-            return []
+        regime_hostile = vix > self._config.max_vix or frag > self._config.max_frag
 
         directives: List[OptionTradeDirective] = []
         today = signals.get("as_of_date", date.today())
 
-        # Manage existing condors
+        # Always manage existing condors regardless of current regime —
+        # positions opened in calm markets must be exited when conditions deteriorate.
         existing_condors = [
             opt for opt in existing_options
             if opt.get("strategy") == self.name
@@ -1947,8 +2071,8 @@ class IronCondorStrategy(OptionStrategy):
             entry_price = opt.get("entry_price", 0)
             current_price = opt.get("current_price", entry_price)
 
-            # Profit target
             if entry_price > 0 and current_price > 0:
+                # Profit target: buy back at configured % of max credit
                 profit_pct = (entry_price - current_price) / max(entry_price, 0.01)
                 if profit_pct >= self._config.profit_target:
                     directives.append(OptionTradeDirective(
@@ -1963,6 +2087,22 @@ class IronCondorStrategy(OptionStrategy):
                     ))
                     continue
 
+                # Stop-loss on short legs: exit when loss exceeds max_loss_multiple x credit
+                if opt.get("quantity", 0) < 0:
+                    loss_multiple = (current_price - entry_price) / max(entry_price, 0.01)
+                    if loss_multiple >= self._config.max_loss_multiple:
+                        directives.append(OptionTradeDirective(
+                            strategy=self.name,
+                            action=TradeAction.CLOSE,
+                            symbol=opt["symbol"],
+                            right=opt.get("right", "P"),
+                            expiry=opt["expiry"],
+                            strike=opt["strike"],
+                            quantity=-opt["quantity"],
+                            reason=f"Iron condor stop-loss: {loss_multiple:.1f}x credit",
+                        ))
+                        continue
+
             # Close at 14 DTE to avoid gamma risk
             if dte <= 14:
                 directives.append(OptionTradeDirective(
@@ -1975,6 +2115,24 @@ class IronCondorStrategy(OptionStrategy):
                     quantity=-opt["quantity"],
                     reason=f"Closing iron condor: {dte} DTE (gamma risk)",
                 ))
+                continue
+
+            # Emergency exit: regime turned hostile after entry
+            if regime_hostile:
+                directives.append(OptionTradeDirective(
+                    strategy=self.name,
+                    action=TradeAction.CLOSE,
+                    symbol=opt["symbol"],
+                    right=opt.get("right", "P"),
+                    expiry=opt["expiry"],
+                    strike=opt["strike"],
+                    quantity=-opt["quantity"],
+                    reason=f"Iron condor regime exit: VIX={vix:.1f} FRAG={frag:.2f}",
+                ))
+
+        # No new positions when regime is hostile or VIX floor not met (premium too thin)
+        if regime_hostile or vix < self._config.min_vix:
+            return directives
 
         # Count unique expiries to track position count
         existing_expiries = {opt["expiry"] for opt in existing_condors}
@@ -2000,12 +2158,41 @@ class IronCondorStrategy(OptionStrategy):
             today, self._config.target_dte_min, self._config.target_dte_max,
         )
 
-        # Size: risk budget / max loss per condor
-        budget = nav * self._config.nav_pct
-        max_loss_per_condor = self._config.wing_width * 100  # Per contract
-        n_contracts = max(1, int(budget / max(max_loss_per_condor, 1)))
+        # Bug fix: same as butterfly — use (wing_width - net_credit) as max-loss.
+        # For condors the OTM spreads collect less credit so the error is smaller,
+        # but the principle is identical.
+        _r_c   = 0.04
+        _sig_c = max(vix, 1.0) / 100.0
+        _T_c   = max(self._config.target_dte_min + self._config.target_dte_max, 2) / 2 / 365.0
+        # Individual leg premiums (needed for per-leg limit prices)
+        _sp_prem = _bs_price(price, short_put,  _T_c, _r_c, _sig_c, "P")
+        _lp_prem = _bs_price(price, long_put,   _T_c, _r_c, _sig_c, "P")
+        _sc_prem = _bs_price(price, short_call, _T_c, _r_c, _sig_c, "C")
+        _lc_prem = _bs_price(price, long_call,  _T_c, _r_c, _sig_c, "C")
+        _put_spread_credit  = _sp_prem - _lp_prem
+        _call_spread_credit = _sc_prem - _lc_prem
+        _condor_net_credit = _put_spread_credit + _call_spread_credit
+        _condor_max_loss   = max(
+            self._config.wing_width * 0.10,
+            self._config.wing_width - _condor_net_credit,
+        ) * 100
+        budget                    = nav * self._config.nav_pct
+        n_by_max_loss             = int(budget / max(_condor_max_loss, 1))
+        _condor_credit_per_contract = max(_condor_net_credit, 0.01) * 100
+        n_by_credit               = int(budget / _condor_credit_per_contract)
+        n_contracts               = max(1, min(n_by_max_loss, n_by_credit))
+
+        # Book-level margin cap (same logic as butterfly)
+        _deriv_budget_c = signals.get("buying_power", nav * 0.15)
+        _margin_used_c  = signals.get("butterfly_condor_margin_used", 0.0)
+        _margin_avail_c = max(0.0, _deriv_budget_c - _margin_used_c)
+        if _margin_avail_c <= 0:
+            return directives
+        _n_by_margin_c = int(_margin_avail_c / max(_condor_credit_per_contract, 1))
+        n_contracts    = max(1, min(n_contracts, _n_by_margin_c))
 
         # Put spread (short put + long put wing)
+        # Store wing_strike so lifecycle barrier-stop can fire when price breaches wing.
         short_put_leg = OptionTradeDirective(
             strategy=self.name,
             action=TradeAction.OPEN,
@@ -2015,8 +2202,9 @@ class IronCondorStrategy(OptionStrategy):
             strike=short_put,
             quantity=-n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_sp_prem * 0.9, 2), 0.01),  # SELL: accept 10% below BS mid
             reason=f"Iron condor {underlying}: sell {short_put}P (VIX={vix:.1f})",
-            metadata={"leg": "short_put"},
+            metadata={"leg": "short_put", "wing_strike": long_put},
         )
 
         long_put_leg = OptionTradeDirective(
@@ -2028,6 +2216,7 @@ class IronCondorStrategy(OptionStrategy):
             strike=long_put,
             quantity=n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_lp_prem * 1.1, 2), 0.01),  # BUY: pay up to 10% above BS mid
             reason=f"Iron condor {underlying}: buy {long_put}P wing",
             metadata={"leg": "long_put_wing"},
         )
@@ -2042,8 +2231,9 @@ class IronCondorStrategy(OptionStrategy):
             strike=short_call,
             quantity=-n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_sc_prem * 0.9, 2), 0.01),  # SELL: accept 10% below BS mid
             reason=f"Iron condor {underlying}: sell {short_call}C",
-            metadata={"leg": "short_call"},
+            metadata={"leg": "short_call", "wing_strike": long_call},
         )
 
         long_call_leg = OptionTradeDirective(
@@ -2055,6 +2245,7 @@ class IronCondorStrategy(OptionStrategy):
             strike=long_call,
             quantity=n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_lc_prem * 1.1, 2), 0.01),  # BUY: pay up to 10% above BS mid
             reason=f"Iron condor {underlying}: buy {long_call}C wing",
             metadata={"leg": "long_call_wing"},
         )
@@ -2099,14 +2290,12 @@ class IronButterflyStrategy(OptionStrategy):
         vix = signals.get("vix_level", 25.0)
         frag = signals.get("frag", 0.5)
         nav = signals.get("nav", 0.0)
-
-        if vix > self._config.max_vix or frag > self._config.max_frag:
-            return []
+        regime_hostile = vix > self._config.max_vix or frag > self._config.max_frag
 
         directives: List[OptionTradeDirective] = []
         today = signals.get("as_of_date", date.today())
 
-        # Manage existing butterflies
+        # Always manage existing butterflies regardless of current regime.
         existing_flies = [
             opt for opt in existing_options
             if opt.get("strategy") == self.name
@@ -2132,6 +2321,22 @@ class IronButterflyStrategy(OptionStrategy):
                     ))
                     continue
 
+                # Stop-loss on short legs
+                if opt.get("quantity", 0) < 0:
+                    loss_multiple = (current_price - entry_price) / max(entry_price, 0.01)
+                    if loss_multiple >= self._config.max_loss_multiple:
+                        directives.append(OptionTradeDirective(
+                            strategy=self.name,
+                            action=TradeAction.CLOSE,
+                            symbol=opt["symbol"],
+                            right=opt.get("right", "P"),
+                            expiry=opt["expiry"],
+                            strike=opt["strike"],
+                            quantity=-opt["quantity"],
+                            reason=f"Iron butterfly stop-loss: {loss_multiple:.1f}x credit",
+                        ))
+                        continue
+
             if dte <= 14:
                 directives.append(OptionTradeDirective(
                     strategy=self.name,
@@ -2143,6 +2348,23 @@ class IronButterflyStrategy(OptionStrategy):
                     quantity=-opt["quantity"],
                     reason=f"Closing iron butterfly: {dte} DTE",
                 ))
+                continue
+
+            # Emergency exit: regime turned hostile
+            if regime_hostile:
+                directives.append(OptionTradeDirective(
+                    strategy=self.name,
+                    action=TradeAction.CLOSE,
+                    symbol=opt["symbol"],
+                    right=opt.get("right", "P"),
+                    expiry=opt["expiry"],
+                    strike=opt["strike"],
+                    quantity=-opt["quantity"],
+                    reason=f"Iron butterfly regime exit: VIX={vix:.1f} FRAG={frag:.2f}",
+                ))
+
+        if regime_hostile:
+            return directives
 
         existing_expiries = {opt["expiry"] for opt in existing_flies}
         if len(existing_expiries) >= self._config.max_positions or nav <= 0:
@@ -2163,19 +2385,56 @@ class IronButterflyStrategy(OptionStrategy):
             today, self._config.target_dte_min, self._config.target_dte_max,
         )
 
-        budget = nav * self._config.nav_pct
-        max_loss = self._config.wing_width * 100
-        n_contracts = max(1, int(budget / max(max_loss, 1)))
+        # Bug fix: use actual max-loss per contract = (wing_width - net_credit) × 100.
+        # The old formula used wing_width × 100, which overstates max-loss by 5–10× in
+        # low-VIX environments because ATM credit ≈ wing_width.  That inflated n_contracts
+        # by the same factor, creating unrealistic P&L.
+        _r   = 0.04
+        _sig = max(vix, 1.0) / 100.0
+        _T   = max(self._config.target_dte_min + self._config.target_dte_max, 2) / 2 / 365.0
+        # Individual leg premiums (needed for per-leg limit prices)
+        _atm_c_prem = _bs_price(price, atm_strike,    _T, _r, _sig, "C")
+        _atm_p_prem = _bs_price(price, atm_strike,    _T, _r, _sig, "P")
+        _lc_w_prem  = _bs_price(price, long_call_wing, _T, _r, _sig, "C")
+        _lp_w_prem  = _bs_price(price, long_put_wing,  _T, _r, _sig, "P")
+        _net_credit = _atm_c_prem + _atm_p_prem - _lc_w_prem - _lp_w_prem
+        # Floor at 10 % of wing so we never divide by near-zero
+        _max_loss_per_contract = max(
+            self._config.wing_width * 0.10,
+            self._config.wing_width - _net_credit,
+        ) * 100
+        budget        = nav * self._config.nav_pct
+        n_by_max_loss = int(budget / max(_max_loss_per_contract, 1))
+        # Second constraint: total premium written ≤ budget.
+        # In low-VIX envs the 10 % max-loss floor is binding, which lets us write
+        # credit ≈ 9× budget — unrealistic.  Capping here ensures the amount of
+        # premium collected is proportional to the stated risk allocation.
+        _credit_per_contract = max(_net_credit, 0.01) * 100
+        n_by_credit   = int(budget / _credit_per_contract)
+        n_contracts   = max(1, min(n_by_max_loss, n_by_credit))
 
-        # Short ATM put
+        # Book-level margin cap ── prevent total butterfly/condor credit from
+        # exceeding the derivatives budget.  Without this, max_positions × nav_pct
+        # can far exceed the stated budget, producing unrealistic compounding.
+        _deriv_budget = signals.get("buying_power", nav * 0.15)
+        _margin_used  = signals.get("butterfly_condor_margin_used", 0.0)
+        _margin_avail = max(0.0, _deriv_budget - _margin_used)
+        if _margin_avail <= 0:
+            return directives  # Book is full — no room for a new position
+        # Scale down n_contracts to fit remaining budget
+        _n_by_margin = int(_margin_avail / max(_credit_per_contract, 1))
+        n_contracts  = max(1, min(n_contracts, _n_by_margin))
+
+        # Short ATM put — store wing_strike so lifecycle barrier-stop can use it
         short_put = OptionTradeDirective(
             strategy=self.name,
             action=TradeAction.OPEN,
             symbol=underlying, right="P", expiry=target_expiry,
             strike=atm_strike, quantity=-n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_atm_p_prem * 0.9, 2), 0.01),  # SELL: accept 10% below BS mid
             reason=f"Iron butterfly {underlying}: sell ATM {atm_strike}P (VIX={vix:.1f})",
-            metadata={"leg": "short_put"},
+            metadata={"leg": "short_put", "wing_strike": long_put_wing},
         )
         # Short ATM call
         short_call = OptionTradeDirective(
@@ -2184,8 +2443,9 @@ class IronButterflyStrategy(OptionStrategy):
             symbol=underlying, right="C", expiry=target_expiry,
             strike=atm_strike, quantity=-n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_atm_c_prem * 0.9, 2), 0.01),  # SELL: accept 10% below BS mid
             reason=f"Iron butterfly {underlying}: sell ATM {atm_strike}C",
-            metadata={"leg": "short_call"},
+            metadata={"leg": "short_call", "wing_strike": long_call_wing},
         )
         # Long put wing
         lp_wing = OptionTradeDirective(
@@ -2194,6 +2454,7 @@ class IronButterflyStrategy(OptionStrategy):
             symbol=underlying, right="P", expiry=target_expiry,
             strike=long_put_wing, quantity=n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_lp_w_prem * 1.1, 2), 0.01),  # BUY: pay up to 10% above BS mid
             reason=f"Iron butterfly {underlying}: buy {long_put_wing}P wing",
             metadata={"leg": "long_put_wing"},
         )
@@ -2204,6 +2465,7 @@ class IronButterflyStrategy(OptionStrategy):
             symbol=underlying, right="C", expiry=target_expiry,
             strike=long_call_wing, quantity=n_contracts,
             order_type=OrderType.LIMIT,
+            limit_price=max(round(_lc_w_prem * 1.1, 2), 0.01),  # BUY: pay up to 10% above BS mid
             reason=f"Iron butterfly {underlying}: buy {long_call_wing}C wing",
             metadata={"leg": "long_call_wing"},
         )

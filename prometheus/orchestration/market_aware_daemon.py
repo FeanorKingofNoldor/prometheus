@@ -374,8 +374,14 @@ def execute_job(
     db_manager: DatabaseManager,
     job: JobMetadata,
     execution: JobExecution,
+    *,
+    options_mode: str = "paper",
 ) -> Tuple[bool, str | None]:
     """Execute a single job.
+
+    Args:
+        options_mode: Passed through to the ``run_options`` handler;
+            one of ``"paper"``, ``"live"``, or ``"dry_run"``.
 
     Returns:
         (success: bool, error_message: str | None)
@@ -465,12 +471,25 @@ def execute_job(
             return True, None
 
         elif job.job_type == "run_options":
-            # Evaluate and execute options strategies.
-            from prometheus.pipeline.tasks import run_options_for_run, OptionsExecutionConfig
+            # Evaluate and execute options strategies via the full derivatives pipeline.
+            # run_derivatives_daily handles: IBKR connect, position sync, signal loading
+            # (IBKR streaming + DB fallback), strategy evaluation, greeks/margin risk
+            # checks, futures roll detection, and order submission.
+            from prometheus.scripts.run.run_derivatives_daily import run_derivatives_daily
 
             if run.phase in (RunPhase.EXECUTION_DONE, RunPhase.BOOKS_DONE):
-                opts_cfg = OptionsExecutionConfig(mode="paper")
-                run_options_for_run(db_manager, run, options_config=opts_cfg)
+                # Map execution mode → IBKR port and dry_run flag.
+                _port = 4001 if options_mode == "live" else 4002
+                _dry = options_mode == "dry_run"
+
+                result = run_derivatives_daily(
+                    port=_port,
+                    client_id=10,
+                    dry_run=_dry,
+                )
+                if result.get("errors"):
+                    return False, "; ".join(result["errors"])
+                update_phase(db_manager, run.run_id, RunPhase.OPTIONS_DONE)
             return True, None
 
         else:
@@ -536,11 +555,14 @@ class MarketAwareDaemonConfig:
         markets: List of market IDs to orchestrate (e.g., ["US_EQ", "EU_EQ"])
         poll_interval_seconds: Sleep interval between polling cycles
         as_of_date: Optional fixed date for orchestration (defaults to today)
+        options_mode: Execution mode for the run_options job — ``"paper"``,
+            ``"live"``, or ``"dry_run"`` (default: ``"paper"``)
     """
 
     markets: List[str]
     poll_interval_seconds: int = 60
     as_of_date: date | None = None
+    options_mode: str = "paper"
 
 
 class MarketAwareDaemon:
@@ -690,7 +712,10 @@ class MarketAwareDaemon:
             self.running_jobs[execution.execution_id] = (job, now)
 
             # Execute job
-            success, error_msg = execute_job(self.db_manager, job, execution)
+            success, error_msg = execute_job(
+                self.db_manager, job, execution,
+                options_mode=self.config.options_mode,
+            )
 
             # Update status
             if success:
@@ -811,6 +836,13 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         type=str,
         help="Fixed as-of date for orchestration (YYYY-MM-DD). Defaults to today.",
     )
+    parser.add_argument(
+        "--options-mode",
+        type=str,
+        default="paper",
+        choices=["paper", "live", "dry_run"],
+        help="Execution mode for the run_options job (default: paper)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -842,6 +874,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         markets=args.market,
         poll_interval_seconds=args.poll_interval_seconds,
         as_of_date=args.as_of_date,
+        options_mode=args.options_mode,
     )
 
     db_manager = get_db_manager()
