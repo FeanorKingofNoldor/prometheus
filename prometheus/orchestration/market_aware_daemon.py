@@ -41,6 +41,7 @@ from prometheus.orchestration.dag import (
     DAG,
     JobMetadata,
     JobStatus,
+    build_intel_dag,
     build_market_dag,
 )
 from prometheus.pipeline.tasks import (
@@ -395,6 +396,10 @@ def execute_job(
     )
 
     try:
+        # Intel jobs have no market_id — execute directly without an EngineRun.
+        if job.market_id is None:
+            return _execute_intel_job(job, execution)
+
         # Get or create EngineRun
         run = _get_or_create_engine_run(db_manager, job.market_id, execution.as_of_date)
         if not run:
@@ -501,6 +506,41 @@ def execute_job(
         return False, error_msg
 
 
+def _execute_intel_job(
+    job: JobMetadata,
+    execution: "JobExecution",
+) -> Tuple[bool, str | None]:
+    """Execute an intel DAG job (no EngineRun required)."""
+    try:
+        if job.job_type == "intel_flash_check":
+            from apathis.intel.pipeline import run_flash_check
+            run_flash_check()
+            return True, None
+
+        elif job.job_type == "intel_daily_sitrep":
+            from apathis.intel.pipeline import run_daily_sitrep
+            run_daily_sitrep()
+            return True, None
+
+        elif job.job_type == "intel_weekly_assessment":
+            from apathis.intel.pipeline import run_weekly_assessment
+            run_weekly_assessment()
+            return True, None
+
+        elif job.job_type == "intel_log_health":
+            from prometheus.monitoring.report_service import generate_log_report
+            generate_log_report("log_daily")
+            return True, None
+
+        else:
+            return False, f"Unknown intel job_type: {job.job_type}"
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.exception("_execute_intel_job: failed job_id=%s: %s", job.job_id, error_msg)
+        return False, error_msg
+
+
 # ============================================================================
 # Retry Logic
 # ============================================================================
@@ -603,8 +643,12 @@ class MarketAwareDaemon:
     def _initialize_dags(self, as_of_date: date) -> None:
         """Initialize or refresh DAGs for all configured markets."""
         for market_id in self.config.markets:
-            dag = build_market_dag(market_id, as_of_date)
-            dag_id = f"{market_id}_{as_of_date.isoformat()}"
+            if market_id == "INTEL":
+                dag = build_intel_dag(as_of_date, is_sunday=as_of_date.weekday() == 6)
+                dag_id = dag.dag_id  # e.g. "intel_daily_2026-03-19"
+            else:
+                dag = build_market_dag(market_id, as_of_date)
+                dag_id = f"{market_id}_{as_of_date.isoformat()}"
             self.active_dags[market_id] = (dag, dag_id)
             logger.info(
                 "_initialize_dags: initialized dag_id=%s with %d jobs",
@@ -773,7 +817,12 @@ class MarketAwareDaemon:
                 continue
 
             dag, dag_id = self.active_dags[market_id]
-            current_state = get_market_state(market_id, now)
+            # INTEL is not a real market — intel jobs use required_state=None so
+            # any state passes.  Use POST_CLOSE as a safe placeholder.
+            if market_id == "INTEL":
+                current_state = MarketState.POST_CLOSE
+            else:
+                current_state = get_market_state(market_id, now)
 
             self._process_market(market_id, dag, dag_id, current_state, as_of_date, now)
 

@@ -686,6 +686,66 @@ def run_derivatives_daily(
             strategy_mgr._broker = _IbkrDirectBroker()
             strategy_mgr._submit_directives(approved)
 
+            # ── Log options decisions to DecisionTracker ──────────────────
+            if approved:
+                try:
+                    from apathis.core.database import get_db_manager
+                    from prometheus.decisions.tracker import DecisionTracker
+
+                    # Map underlying symbol → canonical instrument ID for price lookups
+                    _UNDERLYING_MAP: Dict[str, str] = {
+                        "VIX": "VIX.INDX",
+                        "SPY": "SPY.US",
+                        "QQQ": "QQQ.US",
+                        "IWM": "IWM.US",
+                        "EFA": "EFA.US",
+                        "TLT": "TLT.US",
+                        "GLD": "GLD.US",
+                        "ES": "ES.CME",
+                    }
+
+                    orders_for_log = []
+                    for d in approved:
+                        underlying_id = _UNDERLYING_MAP.get(d.symbol, f"{d.symbol}.US")
+                        # Instrument ID: SYMBOL_YYMMDD_STRIKEC/P.US
+                        exp_short = d.expiry[2:] if len(d.expiry) == 8 else d.expiry
+                        instrument_id = f"{d.symbol}_{exp_short}_{d.strike:.0f}{d.right}.US"
+                        orders_for_log.append({
+                            "symbol": d.symbol,
+                            "underlying_id": underlying_id,
+                            "instrument_id": instrument_id,
+                            "right": d.right,
+                            "expiry": d.expiry,
+                            "strike": d.strike,
+                            "action": "BUY" if d.quantity > 0 else "SELL",
+                            "quantity": abs(d.quantity),
+                            "entry_price": d.limit_price or 0.0,
+                            "strategy": d.strategy,
+                            "reason": d.reason,
+                            "trade_action": d.action.value,
+                        })
+
+                    signals_snap = {
+                        "vix_level": signals.get("vix_level"),
+                        "nav": signals.get("nav"),
+                        "mhi": signals.get("mhi"),
+                        "frag": signals.get("frag"),
+                        "market_state": signals.get("market_state"),
+                    }
+
+                    tracker = DecisionTracker(db_manager=get_db_manager())
+                    tracker.record_options_decision(
+                        strategy_id="US_OPTIONS",
+                        market_id="US_EQ",
+                        as_of_date=date.today(),
+                        orders=orders_for_log,
+                        signals_snapshot=signals_snap,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to record options decision in tracker (non-fatal)"
+                    )
+
         summary["steps_completed"].append("submit_orders")
 
         # ── Step 9: Portfolio status ──────────────────────────────────

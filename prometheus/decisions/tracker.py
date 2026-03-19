@@ -379,4 +379,84 @@ class DecisionTracker:
         )
         
         return decision_id
+    
+    def record_options_decision(
+        self,
+        *,
+        strategy_id: str,
+        market_id: str,
+        as_of_date: date,
+        orders: List[Dict[str, Any]],
+        signals_snapshot: Dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        """Record an options/derivatives trade decision.
+        
+        Args:
+            strategy_id: Strategy group identifier (e.g., "US_OPTIONS")
+            market_id: Market being traded (e.g., "US_EQ")
+            as_of_date: Decision date
+            orders: List of order dicts, each containing:
+                - symbol: Underlying symbol (e.g., "VIX")
+                - underlying_id: Instrument ID of the underlying (e.g., "VIX.INDX")
+                - instrument_id: Option instrument ID (e.g., "VIX_260519_38C.US")
+                - right: "C" or "P"
+                - expiry: YYYYMMDD string
+                - strike: float
+                - action: "BUY" or "SELL"
+                - quantity: positive int
+                - entry_price: limit price (premium)
+                - strategy: strategy name (e.g., "vix_tail_hedge")
+                - reason: reasoning string
+                - trade_action: TradeAction value ("OPEN", "CLOSE", "ROLL", etc.)
+            signals_snapshot: Optional dict of market signals at decision time
+                (vix_level, nav, mhi, frag, etc.)
+            run_id: Optional engine run identifier
+            
+        Returns:
+            decision_id: UUID of the recorded decision
+        """
+        decision_id = generate_uuid()
+        
+        input_refs: Dict[str, Any] = {
+            "order_count": len(orders),
+        }
+        if signals_snapshot is not None:
+            input_refs["signals_snapshot"] = signals_snapshot
+        
+        output_refs: Dict[str, Any] = {
+            "orders": orders[:100],  # Cap at 100 orders
+            "order_count": len(orders),
+        }
+        
+        # Aggregate summary for quick inspection
+        strategies = list({o.get("strategy", "") for o in orders})
+        symbols = list({o.get("symbol", "") for o in orders})
+        output_refs["strategies"] = strategies
+        output_refs["symbols"] = symbols
+        
+        decision = EngineDecision(
+            decision_id=decision_id,
+            engine_name="OPTIONS",
+            run_id=run_id,
+            strategy_id=strategy_id,
+            market_id=market_id,
+            as_of_date=as_of_date,
+            config_id=None,
+            input_refs=input_refs,
+            output_refs=output_refs,
+            metadata={},
+        )
+        
+        self._storage.save_engine_decision(decision)
+        
+        logger.info(
+            "Recorded options decision: decision_id=%s strategy_id=%s orders=%d strategies=%s",
+            decision_id,
+            strategy_id,
+            len(orders),
+            strategies,
+        )
+        
+        return decision_id
 
