@@ -474,7 +474,12 @@ def execute_job(
             from prometheus.pipeline.tasks import run_execution_for_run, ExecutionConfig
 
             if run.phase == RunPhase.BOOKS_DONE:
-                exec_cfg = ExecutionConfig(mode="paper")
+                # Discover the correct live portfolio for this region.
+                # The allocator writes to "{REGION}_EQ_ALLOCATOR" (e.g. US_EQ_ALLOCATOR).
+                # Fall back to a DB scan if needed so we never silently skip.
+                region = run.region.upper()
+                portfolio_id = f"{region}_EQ_ALLOCATOR"
+                exec_cfg = ExecutionConfig(mode="paper", portfolio_id=portfolio_id)
                 run_execution_for_run(db_manager, run, execution_config=exec_cfg)
             return True, None
 

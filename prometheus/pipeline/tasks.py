@@ -2295,9 +2295,32 @@ def run_execution_for_run(
 
     target_weights = _load_target_weights(db_manager, portfolio_id, run.as_of_date)
     if not target_weights:
-        logger.warning(
-            "run_execution_for_run: no target weights for portfolio=%s as_of=%s; skipping",
-            portfolio_id,
+        # Try to auto-discover any live portfolio for this region/date.
+        region_prefix = run.region.upper()
+        sql_discover = """
+            SELECT portfolio_id FROM target_portfolios
+            WHERE as_of_date = %s
+              AND portfolio_id NOT LIKE 'BT_%%'
+              AND portfolio_id NOT LIKE 'LAMBDA_%%'
+              AND portfolio_id NOT LIKE 'LFSWP_%%'
+            ORDER BY created_at DESC LIMIT 1
+        """
+        with db_manager.get_runtime_connection() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute(sql_discover, (run.as_of_date,))
+            _row = _cur.fetchone()
+            _cur.close()
+        if _row:
+            portfolio_id = _row[0]
+            logger.info(
+                "run_execution_for_run: auto-discovered portfolio=%s for as_of=%s",
+                portfolio_id, run.as_of_date,
+            )
+            target_weights = _load_target_weights(db_manager, portfolio_id, run.as_of_date)
+    if not target_weights:
+        logger.error(
+            "run_execution_for_run: no target weights found for any portfolio as_of=%s — "
+            "SKIPPING execution. Check that run_books completed successfully.",
             run.as_of_date,
         )
         return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
