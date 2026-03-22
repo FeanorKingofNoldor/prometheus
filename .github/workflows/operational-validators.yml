@@ -1,0 +1,67 @@
+name: prometheus-operational-validators
+
+on:
+  workflow_dispatch:
+    inputs:
+      apathis_repository:
+        description: "Repository slug for apathis checkout (owner/repo)"
+        required: true
+        type: string
+      book_id:
+        description: "Book id for hedge ETF data validation"
+        required: true
+        default: "US_EQ_HEDGE_ETF"
+        type: string
+      run_upgrade:
+        description: "Run validate_layer0 with --upgrade"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  validators:
+    runs-on: self-hosted
+    env:
+      RUNTIME_DB_HOST: ${{ secrets.RUNTIME_DB_HOST }}
+      RUNTIME_DB_PORT: ${{ secrets.RUNTIME_DB_PORT }}
+      RUNTIME_DB_NAME: ${{ secrets.RUNTIME_DB_NAME }}
+      RUNTIME_DB_USER: ${{ secrets.RUNTIME_DB_USER }}
+      RUNTIME_DB_PASSWORD: ${{ secrets.RUNTIME_DB_PASSWORD }}
+      HISTORICAL_DB_HOST: ${{ secrets.HISTORICAL_DB_HOST }}
+      HISTORICAL_DB_PORT: ${{ secrets.HISTORICAL_DB_PORT }}
+      HISTORICAL_DB_NAME: ${{ secrets.HISTORICAL_DB_NAME }}
+      HISTORICAL_DB_USER: ${{ secrets.HISTORICAL_DB_USER }}
+      HISTORICAL_DB_PASSWORD: ${{ secrets.HISTORICAL_DB_PASSWORD }}
+    steps:
+      - name: Checkout Prometheus
+        uses: actions/checkout@v4
+
+      - name: Checkout Apathis
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.apathis_repository }}
+          path: apathis_src
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./apathis_src
+          python -m pip install -e . --no-deps
+          python -m pip install alembic fastapi ib_insync numpy pandas pydantic pydantic-settings psycopg2-binary python-dateutil python-dotenv pyyaml requests scikit-learn scipy sqlalchemy "uvicorn[standard]"
+
+      - name: Run validators
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apathis_src
+        run: |
+          python -m prometheus.scripts.show.show_alembic_status
+          if [ "${{ inputs.run_upgrade }}" = "true" ]; then
+            python -m prometheus.scripts.validate.validate_layer0 --upgrade
+          else
+            python -m prometheus.scripts.validate.validate_layer0
+          fi
+          python -m prometheus.scripts.validate.validate_hedge_etf_data --book-id "${{ inputs.book_id }}"
