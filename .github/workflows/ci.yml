@@ -34,7 +34,7 @@ jobs:
         run: python -m mypy
 
       - name: Pytest
-        run: python -m pytest -q
+        run: python -m pytest -q tests
 
   frontend:
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
           cache-dependency-path: prometheus_web/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Build frontend
         run: npm run build
