@@ -22,16 +22,17 @@ jobs:
       - name: Install backend quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ruff mypy pytest
+          python -m pip install ruff mypy pytest alembic
+          python -m pip install git+https://github.com/FeanorKingofNoldor/apathis.git
 
       - name: Compile backend
         run: python -m compileall -q prometheus
 
       - name: Ruff
-        run: python -m ruff check prometheus/scripts/show/show_alembic_status.py prometheus/scripts/validate/validate_layer0.py tests/test_smoke.py
+        run: python -m ruff check prometheus/scripts/show/show_alembic_status.py prometheus/scripts/validate/validate_layer0.py prometheus/scripts/validate/validate_hedge_etf_data.py tests/test_smoke.py tests/test_show_alembic_status.py
 
       - name: Mypy (scoped targets from pyproject)
-        run: python -m mypy --ignore-missing-imports --follow-imports skip prometheus/scripts/show/show_alembic_status.py prometheus/scripts/validate/validate_layer0.py
+        run: python -m mypy --ignore-missing-imports --follow-imports skip prometheus/scripts/show/show_alembic_status.py prometheus/scripts/validate/validate_layer0.py prometheus/scripts/validate/validate_hedge_etf_data.py tests/test_smoke.py tests/test_show_alembic_status.py
 
       - name: Pytest
         run: python -m pytest -q tests
