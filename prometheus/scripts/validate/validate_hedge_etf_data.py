@@ -20,8 +20,9 @@ import argparse
 import json
 from typing import Any, Optional, Sequence
 
-from prometheus.books.registry import BookKind, HedgeEtfSleeveSpec, load_book_registry
 from apathis.core.database import get_db_manager
+
+from prometheus.books.registry import BookKind, HedgeEtfSleeveSpec, load_book_registry
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

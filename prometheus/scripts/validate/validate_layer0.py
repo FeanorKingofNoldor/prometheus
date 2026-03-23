@@ -32,7 +32,6 @@ from typing import Any, Optional, Sequence
 
 from alembic import command as alembic_command
 from alembic.config import Config
-
 from apathis.core.database import get_db_manager
 from apathis.core.time import US_EQ
 from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
@@ -75,6 +74,7 @@ def _project_root() -> Path:
 
 def _alembic_upgrade(project_root: Path, *, db_selector: str) -> None:
     cfg = Config(str(project_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(project_root / "migrations"))
 
     old = os.environ.get("ALEMBIC_DB")
     os.environ["ALEMBIC_DB"] = db_selector

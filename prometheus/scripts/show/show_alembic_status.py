@@ -20,12 +20,12 @@ from typing import Optional, Sequence
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-
 from apathis.core.database import get_db_manager
 
 
 def _get_alembic_heads(project_root: Path) -> list[str]:
     cfg = Config(str(project_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(project_root / "migrations"))
     script_dir = ScriptDirectory.from_config(cfg)
     return list(script_dir.get_heads())
 
