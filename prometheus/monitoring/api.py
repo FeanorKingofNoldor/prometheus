@@ -2337,25 +2337,33 @@ async def get_portfolio_risk_computed(
     db = get_db_manager()
     port_id = str(portfolio_id)
 
-    # 1) Get latest positions (instrument + weight + market_value)
+    # 1) Get positions from the latest snapshot timestamp (current holdings).
+    # Using the most recent timestamp ensures we only see positions that
+    # are actually held now, not closed positions from earlier snapshots.
     with db.get_runtime_connection() as conn:
         cur = conn.cursor()
         try:
+            cur.execute(
+                "SELECT MAX(timestamp) FROM positions_snapshots WHERE portfolio_id = %s",
+                (port_id,),
+            )
+            snap_ts = (cur.fetchone() or (None,))[0]
+
+            if snap_ts is None:
+                cur.close()
+                return ComputedPortfolioRisk(portfolio_id=port_id)
+
             cur.execute(
                 """
                 SELECT instrument_id, quantity, avg_cost, market_value,
                        CASE WHEN SUM(market_value) OVER () > 0
                             THEN market_value / SUM(market_value) OVER ()
                             ELSE 0 END AS weight
-                FROM (
-                    SELECT DISTINCT ON (instrument_id)
-                           instrument_id, quantity, avg_cost, market_value
-                    FROM positions_snapshots
-                    WHERE portfolio_id = %s AND as_of_date IS NOT NULL
-                    ORDER BY instrument_id, as_of_date DESC, timestamp DESC
-                ) latest
+                FROM positions_snapshots
+                WHERE portfolio_id = %s AND timestamp = %s
+                ORDER BY market_value DESC
                 """,
-                (port_id,),
+                (port_id, snap_ts),
             )
             pos_rows = cur.fetchall()
         finally:

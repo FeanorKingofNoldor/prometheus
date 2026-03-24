@@ -354,7 +354,7 @@ export default function Intelligence() {
             className="mt-1 block w-48 rounded border border-border-dim bg-surface-overlay px-2 py-1.5 text-xs text-zinc-100"
             value={strategyId}
             onChange={(e) => setStrategyId(e.target.value)}
-            placeholder="e.g. STRAT_001"
+            placeholder="e.g. US_CORE_LONG_EQ"
           />
         </label>
         <button

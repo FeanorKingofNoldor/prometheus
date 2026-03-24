@@ -269,6 +269,7 @@ export const usePortfolioEquity = (portfolioId: string, benchmark = "SPY.US") =>
     queryKey: ["status", "portfolio_equity", portfolioId, benchmark],
     queryFn: () => api.get(`/status/portfolio_equity?portfolio_id=${portfolioId}&benchmark=${benchmark}`),
     enabled: !!portfolioId,
+    staleTime: 60_000,
   });
 
 // ── Position P&L History ─────────────────────────────────
@@ -277,6 +278,7 @@ export const usePositionPnlHistory = (portfolioId: string) =>
     queryKey: ["status", "position_pnl_history", portfolioId],
     queryFn: () => api.get(`/status/position_pnl_history?portfolio_id=${portfolioId}`),
     enabled: !!portfolioId,
+    staleTime: 60_000,
   });
 
 // ── Computed Risk ────────────────────────────────────────
@@ -285,6 +287,7 @@ export const usePortfolioRiskComputed = (portfolioId: string) =>
     queryKey: ["status", "portfolio_risk_computed", portfolioId],
     queryFn: () => api.get(`/status/portfolio_risk_computed?portfolio_id=${portfolioId}`),
     enabled: !!portfolioId,
+    staleTime: 60_000,
   });
 
 // ── IBKR Status ─────────────────────────────────────────
