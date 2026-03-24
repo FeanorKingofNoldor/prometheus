@@ -1805,6 +1805,16 @@ async def get_execution_status(
     port_id = str(portfolio_id)
     mode_norm = mode.upper() if mode is not None else None
 
+    # IBKR_PAPER positions are synced under "IBKR_PAPER" but the execution
+    # pipeline stores orders/fills under the allocator portfolio_id
+    # (e.g. "US_EQ_ALLOCATOR").  Include both so the execution page shows
+    # real trading activity.
+    _IBKR_ALIAS = {
+        "IBKR_PAPER": ["IBKR_PAPER", "US_EQ_ALLOCATOR"],
+        "IBKR_LIVE": ["IBKR_LIVE", "US_EQ_ALLOCATOR"],
+    }
+    port_ids = _IBKR_ALIAS.get(port_id, [port_id])
+
     orders: List[Dict[str, Any]] = []
     fills: List[Dict[str, Any]] = []
     positions: List[Dict[str, Any]] = []
@@ -1813,8 +1823,9 @@ async def get_execution_status(
         cursor = conn.cursor()
         try:
             # Orders
-            where_clauses = ["portfolio_id = %s"]
-            params: list[object] = [port_id]
+            placeholders = ",".join(["%s"] * len(port_ids))
+            where_clauses = [f"portfolio_id IN ({placeholders})"]
+            params: list[object] = list(port_ids)
             if mode_norm is not None:
                 where_clauses.append("mode = %s")
                 params.append(mode_norm)
@@ -1972,8 +1983,16 @@ async def get_execution_decisions(
     db = get_db_manager()
     port_id = str(portfolio_id)
 
-    where_clauses = ["engine_name = 'EXECUTION'", "strategy_id = %s"]
-    params: list[object] = [port_id]
+    # Same IBKR alias mapping as get_execution_status
+    _IBKR_ALIAS = {
+        "IBKR_PAPER": ["IBKR_PAPER", "US_EQ_ALLOCATOR"],
+        "IBKR_LIVE": ["IBKR_LIVE", "US_EQ_ALLOCATOR"],
+    }
+    port_ids = _IBKR_ALIAS.get(port_id, [port_id])
+    placeholders = ",".join(["%s"] * len(port_ids))
+
+    where_clauses = ["engine_name = 'EXECUTION'", f"strategy_id IN ({placeholders})"]
+    params: list[object] = list(port_ids)
 
     if as_of_date is not None:
         where_clauses.append("as_of_date = %s")
