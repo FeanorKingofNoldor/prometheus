@@ -2543,6 +2543,10 @@ def run_execution_for_run(
 
     # Poll for statuses with timeout.
     # Poll for fills with timeout.
+    # IMPORTANT: use client._ib.sleep() instead of time.sleep() so the
+    # ib_async event loop can process fill callbacks (execDetailsEvent).
+    # Blocking with time.sleep() prevents fills from being recorded.
+    _ib_sleep = client._ib.sleep if client is not None else _time.sleep
     deadline = _time.monotonic() + execution_config.fill_timeout_sec
     pending = set(submitted_ids)
     terminal_statuses = {
@@ -2552,7 +2556,7 @@ def run_execution_for_run(
     }
     order_statuses: Dict[str, OrderStatus] = {}
     while pending and _time.monotonic() < deadline:
-        _time.sleep(2.0)
+        _ib_sleep(2)
         for oid in list(pending):
             try:
                 status = broker.get_order_status(oid)
