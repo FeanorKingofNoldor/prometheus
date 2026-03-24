@@ -47,6 +47,13 @@ def _install_apathis_stubs() -> None:
         # Already loaded (either real or previously stubbed) — skip.
         return
 
+    # If the real apathis package is importable, don't stub it.
+    try:
+        import apathis  # noqa: F401
+        return
+    except ImportError:
+        pass
+
     # -- apathis --
     apathis = types.ModuleType("apathis")
 
