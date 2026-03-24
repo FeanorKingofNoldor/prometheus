@@ -2137,9 +2137,38 @@ async def get_portfolio_equity(
     if not port_rows:
         return []
 
-    port_by_date: Dict[str, float] = {}
+    raw_by_date: Dict[str, float] = {}
     for d, mv in port_rows:
-        port_by_date[str(d)] = float(mv or 0.0)
+        raw_by_date[str(d)] = float(mv or 0.0)
+
+    # 1b) Build flow-adjusted equity series.
+    # Detect capital-flow days (deposits/withdrawals) where NLV jumps >15%
+    # and rebase so the chart shows investment performance, not cash movements.
+    _FLOW_THRESHOLD = 0.15
+    sorted_raw = sorted(raw_by_date.keys())
+    port_by_date: Dict[str, float] = {}
+
+    if sorted_raw:
+        # Start the adjusted series at the first raw NLV
+        adj_equity = raw_by_date[sorted_raw[0]]
+        port_by_date[sorted_raw[0]] = adj_equity
+
+        for i in range(1, len(sorted_raw)):
+            d = sorted_raw[i]
+            prev_d = sorted_raw[i - 1]
+            prev_raw = raw_by_date[prev_d]
+            curr_raw = raw_by_date[d]
+
+            if prev_raw > 0:
+                daily_ret = (curr_raw - prev_raw) / prev_raw
+                if abs(daily_ret) > _FLOW_THRESHOLD:
+                    # Capital flow — carry adjusted equity flat (rebase)
+                    port_by_date[d] = adj_equity
+                else:
+                    adj_equity *= (1.0 + daily_ret)
+                    port_by_date[d] = round(adj_equity, 2)
+            else:
+                port_by_date[d] = adj_equity
 
     # 2) Benchmark prices from prices_daily (historical_db)
     bench_by_date: Dict[str, float] = {}
@@ -2453,8 +2482,17 @@ async def get_portfolio_risk_computed(
         dd = cum - running_max
         max_dd = float(np.min(dd)) if len(dd) > 0 else None
 
-    # 5) HHI (Herfindahl-Hirschman Index)
-    hhi = float(np.sum(weights ** 2)) if len(weights) > 0 else None
+    # 5) HHI (Herfindahl-Hirschman Index) — use only priced (equity) positions
+    if priced_idx:
+        equity_weights = weights[priced_idx]
+        ew_sum = equity_weights.sum()
+        if ew_sum > 0:
+            equity_weights_norm = equity_weights / ew_sum
+            hhi = float(np.sum(equity_weights_norm ** 2))
+        else:
+            hhi = None
+    else:
+        hhi = float(np.sum(weights ** 2)) if len(weights) > 0 else None
 
     # 6) Fragility scores for held instruments
     frag_map: Dict[str, float] = {}
