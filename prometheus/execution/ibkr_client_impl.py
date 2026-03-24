@@ -749,7 +749,7 @@ class IbkrClientImpl(IbkrClient):
         prometheus_fill = Fill(
             fill_id=execution.execId,
             order_id=order_id,
-            instrument_id=trade.contract.symbol,
+            instrument_id=self.contract_to_instrument_id(trade.contract),
             side=side,
             quantity=float(execution.shares),
             price=float(execution.price),
@@ -782,9 +782,13 @@ class IbkrClientImpl(IbkrClient):
         contract: Optional[Contract],
     ) -> None:
         """Handle error messages from IBKR."""
-        # Error codes < 1000 are system messages, not actual errors
-        if errorCode < 1000:
-            logger.debug("IBKR message [%d]: %s", errorCode, errorString)
+        # IBKR error codes: 100-449 are real errors (order rejects, limits, etc.),
+        # 2100-2199 are informational system messages.
+        # Codes 1100-1102 are connection-related (also important).
+        if 2100 <= errorCode <= 2199:
+            logger.debug("IBKR info [%d]: %s", errorCode, errorString)
+        elif errorCode < 100:
+            logger.debug("IBKR system [%d]: %s", errorCode, errorString)
         else:
             logger.warning("IBKR error [%d]: %s (reqId=%d)", errorCode, errorString, reqId)
 

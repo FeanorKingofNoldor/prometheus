@@ -91,7 +91,9 @@ def apply_execution_plan(
         :class:`ExecutionSummary` with counts of orders and fills.
     """
 
-    # 1) Compute orders from current vs target positions.
+    # 1) Sync broker state so positions reflect the latest IBKR data.
+    if hasattr(broker, "sync"):
+        broker.sync()
     current_positions = broker.get_positions()
     orders = plan_orders(current_positions=current_positions, target_positions=target_positions)
 

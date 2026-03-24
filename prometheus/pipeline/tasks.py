@@ -391,6 +391,7 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # Regime detection (provider-only)
     # ------------------------------------------------------------------
 
+    regime_ok = False
     try:
         risk_cfg = _load_daily_portfolio_risk_config(run.region)
         regime_storage = RegimeStorage(db_manager=db_manager)
@@ -400,9 +401,11 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         )
         regime_engine = RegimeEngine(model=regime_model, storage=regime_storage)
         regime_engine.get_regime(as_of_date=run.as_of_date, region=run.region.upper())
+        regime_ok = True
     except Exception:  # pragma: no cover - defensive
         logger.exception(
-            "run_signals_for_run: regime detection failed for run_id=%s as_of=%s region=%s",
+            "run_signals_for_run: CRITICAL — regime detection failed for run_id=%s as_of=%s region=%s. "
+            "Downstream policy routing will use fallback defaults.",
             run.run_id,
             run.as_of_date,
             run.region,
@@ -2093,11 +2096,22 @@ def run_books_for_run(
                 as_of_date=run.as_of_date,
             )
 
-            # Replace target weights with sector-adjusted weights.
+            # Replace target weights with sector-adjusted weights,
+            # then re-apply risk constraints so the sector allocator
+            # can't push weights above per-instrument or portfolio limits.
+            adjusted_weights = alloc_decision.adjusted_weights
+            from prometheus.risk.api import apply_risk_constraints
+
+            adjusted_weights = apply_risk_constraints(
+                weights=adjusted_weights,
+                strategy_id=book_id,
+                max_single_name=getattr(long_eq_sleeve, "portfolio_per_instrument_max_weight", 0.10),
+            )
+
             target = TargetPortfolio(
                 portfolio_id=target.portfolio_id,
                 as_of_date=target.as_of_date,
-                weights=alloc_decision.adjusted_weights,
+                weights=adjusted_weights,
                 expected_return=target.expected_return,
                 expected_volatility=target.expected_volatility,
                 risk_metrics=target.risk_metrics,
@@ -2369,17 +2383,33 @@ def run_execution_for_run(
             client_id=10,  # dedicated client_id for execution
         )
         client = IbkrClientImpl(config=conn_config)
-        broker = LiveBroker(account_id=conn_config.account_id, client=client)
+        inner_broker = LiveBroker(account_id=conn_config.account_id, client=client)
+
+        # Wrap with risk checks so no order bypasses notional/leverage limits.
+        from apathis.core.config import get_config as _get_config
+
+        _exec_risk = _get_config().execution_risk
+        from prometheus.execution.risk_broker import RiskCheckingBroker
+
+        broker = RiskCheckingBroker(
+            inner=inner_broker,
+            max_order_notional=_exec_risk.max_order_notional,
+            max_position_notional=_exec_risk.max_position_notional,
+            max_leverage=_exec_risk.max_leverage,
+        )
 
         try:
             client.connect()
         except Exception:
             logger.exception(
-                "run_execution_for_run: IBKR connection failed for run_id=%s mode=%s",
+                "run_execution_for_run: IBKR connection failed for run_id=%s mode=%s — "
+                "NOT advancing to EXECUTION_DONE (run will stay in current phase for retry)",
                 run.run_id,
                 mode,
             )
-            return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
+            # Do NOT advance to EXECUTION_DONE — leave the run in its current
+            # phase so the next cycle can retry the connection.
+            return run
 
         try:
             current_positions = broker.get_positions()
@@ -2451,6 +2481,8 @@ def run_execution_for_run(
     )
 
     # Safety check: max order count.
+    # On breach, mark the run as FAILED — do NOT advance to EXECUTION_DONE,
+    # which would let the pipeline complete as if trading happened.
     if len(orders) > execution_config.max_orders:
         logger.error(
             "run_execution_for_run: ABORTING — %d orders exceeds max_orders=%d",
@@ -2458,7 +2490,7 @@ def run_execution_for_run(
             execution_config.max_orders,
         )
         _safe_disconnect()
-        return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
+        return update_phase(db_manager, run.run_id, RunPhase.FAILED)
 
     # Safety check: max single-order value.
     for order in orders:
@@ -2472,7 +2504,7 @@ def run_execution_for_run(
                 execution_config.max_single_order_value,
             )
             _safe_disconnect()
-            return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
+            return update_phase(db_manager, run.run_id, RunPhase.FAILED)
 
     if not orders:
         logger.info("run_execution_for_run: no orders needed — portfolio is on target")
@@ -3338,10 +3370,19 @@ def _load_latest_prices(
     db_manager: DatabaseManager,
     instrument_ids: List[str],
     as_of_date: date,
+    max_staleness_days: int = 10,
 ) -> Dict[str, float]:
-    """Load latest close prices for instruments on or before as_of_date."""
+    """Load latest close prices for instruments on or before as_of_date.
+
+    Prices older than ``max_staleness_days`` are rejected to prevent stale
+    prices (e.g., from delisted stocks or corporate actions) from producing
+    wildly incorrect order quantities.
+    """
     if not instrument_ids:
         return {}
+
+    from datetime import timedelta
+    earliest_allowed = as_of_date - timedelta(days=max_staleness_days)
 
     sql = """
         SELECT DISTINCT ON (instrument_id)
@@ -3349,19 +3390,28 @@ def _load_latest_prices(
         FROM prices_daily
         WHERE instrument_id = ANY(%s)
           AND trade_date <= %s
+          AND trade_date >= %s
           AND close > 0
         ORDER BY instrument_id, trade_date DESC
     """
 
-    with db_manager.get_runtime_connection() as conn:
+    with db_manager.get_historical_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(sql, (instrument_ids, as_of_date))
+            cursor.execute(sql, (instrument_ids, as_of_date, earliest_allowed))
             rows = cursor.fetchall()
         finally:
             cursor.close()
 
-    return {str(row[0]): float(row[1]) for row in rows}
+    prices = {str(row[0]): float(row[1]) for row in rows}
+    missing = set(instrument_ids) - set(prices.keys())
+    if missing:
+        logger.warning(
+            "_load_latest_prices: %d/%d instruments have no price within %d days of %s: %s",
+            len(missing), len(instrument_ids), max_staleness_days, as_of_date,
+            list(missing)[:10],
+        )
+    return prices
 
 
 def _load_latest_prices_historical(

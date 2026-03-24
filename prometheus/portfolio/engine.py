@@ -155,6 +155,7 @@ class PortfolioStorage:
                 metadata,
                 created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (target_id) DO NOTHING
         """
 
         target_id = generate_uuid()

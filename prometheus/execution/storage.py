@@ -173,6 +173,7 @@ def record_fills(
             mode,
             metadata
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (fill_id) DO NOTHING
     """
 
     with db_manager.get_runtime_connection() as conn:

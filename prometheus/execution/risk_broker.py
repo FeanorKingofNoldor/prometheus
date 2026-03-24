@@ -152,28 +152,48 @@ class RiskCheckingBroker(BrokerInterface):
     def _estimate_price(self, instrument_id: str, positions: Dict[str, Position]) -> float:
         """Best-effort price estimate for risk checks.
 
-        For now we use the current position's market value when
-        available. If there is no existing position or the market value
-        is not available, we fall back to a conservative synthetic
-        price of ``100.0`` and log a warning.
+        Uses the current position's implied price when available. Falls
+        back to the latest close price from the historical DB. As a last
+        resort, returns a high synthetic price ($1,000) to be conservative
+        — this ensures oversized orders are blocked rather than allowed.
         """
 
         pos = positions.get(instrument_id)
         if pos is not None and pos.quantity:
             try:
-                # Avoid division by zero; quantity sign is irrelevant here.
                 price = abs(pos.market_value) / abs(pos.quantity)
                 if price > 0:
                     return price
             except Exception:  # pragma: no cover - defensive
                 logger.exception("Failed to infer price from position for %s", instrument_id)
 
+        # Try latest close from DB
+        try:
+            from apathis.core.database import get_db_manager
+
+            db = get_db_manager()
+            with db.get_historical_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT close FROM prices_daily WHERE instrument_id = %s AND close > 0 "
+                        "ORDER BY trade_date DESC LIMIT 1",
+                        (instrument_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return float(row[0])
+                finally:
+                    cur.close()
+        except Exception:
+            logger.exception("RiskCheckingBroker: DB price lookup failed for %s", instrument_id)
+
+        # Conservative fallback: high price means notional checks are STRICT
         logger.warning(
-            "RiskCheckingBroker: using synthetic price 100.0 for %s; "
-            "configure tighter limits or provide real-time pricing if needed.",
+            "RiskCheckingBroker: no price available for %s — using conservative $1000 fallback",
             instrument_id,
         )
-        return 100.0
+        return 1000.0
 
     @staticmethod
     def _gross_exposure(positions: Dict[str, Position]) -> float:
