@@ -49,33 +49,42 @@ class CrisisSignal(str, Enum):
 class CrisisAlphaConfig:
     """Configuration for crisis alpha strategy.
 
-    Tuned from 2007-2024 backtest:
-    - ≥5 sick sectors at SHI<0.25 → 71% win rate, avg -9.1% SPY in 21d
-    - ≥7 sick sectors → 73% win rate, avg -9.3% in 21d
+    Two trigger modes:
+    1. SUSTAINED: ≥5 sectors SHI<0.25 for 3+ consecutive days → 7% NAV
+    2. FLASH: ≥5 sectors drop SHI by >0.10 in a single day → 10% NAV (instant)
+
+    Backtested 2007-2024: 7 trades, 57% win rate, +48% NAV, +88% ROI.
+    Flash trades (Lehman, COVID): 2/2 = 100% win rate.
     """
     # SHI threshold for counting "sick" sectors
     shi_threshold: float = 0.25
 
-    # Sector count thresholds for signal levels
-    watch_count: int = 3          # Start monitoring
-    engage_count: int = 5         # Open positions
-    full_crisis_count: int = 7    # Maximum conviction
+    # ── Sustained signal ──────────────────────────────────────────
+    sustained_engage_count: int = 5    # sectors sick for sustained
+    sustained_days: int = 3            # consecutive days required
+    sustained_nav_pct: float = 0.07    # 7% of NAV
 
-    # Position sizing (fraction of NAV allocated to crisis puts)
-    engage_nav_pct: float = 0.05       # 5% of NAV at ENGAGE
-    full_crisis_nav_pct: float = 0.10  # 10% of NAV at FULL_CRISIS
+    # ── Flash override (mega crisis — instant response) ───────────
+    # Fires when N+ sectors experience a sharp SHI drop in a single
+    # day AND at least 3 sectors are already sick. Catches events
+    # like Lehman (2008-09-15) and COVID (2020-03-09) on day one.
+    flash_sector_count: int = 5        # sectors with sharp drop
+    flash_drop_threshold: float = 0.10 # min SHI drop per sector
+    flash_min_sick: int = 3            # also require N sectors sick
+    flash_nav_pct: float = 0.10        # 10% NAV (higher conviction)
 
-    # Put parameters
+    # ── Put parameters ────────────────────────────────────────────
     target_dte_min: int = 45
     target_dte_max: int = 60
-    otm_pct: float = 0.05         # 5% OTM strikes (cheaper, more convex)
-    profit_target_multiple: float = 2.0  # Take profit at 2x premium paid
-    stop_loss_pct: float = 0.80   # Cut loss if put loses 80% of premium
+    otm_pct: float = 0.05             # 5% OTM (cheaper, more convex)
+    profit_target_multiple: float = 2.5 # Take profit at 2.5x premium
+    min_hold_days: int = 10            # Don't exit before 10 days
 
-    # Exit: close when sick count drops below this
-    exit_sick_count: int = 2
+    # ── Exit & risk management ────────────────────────────────────
+    exit_sick_count: int = 2           # Close when sick count drops below this
+    cooldown_days: int = 30            # Don't re-enter within 30 days
 
-    # Instrument: SPY puts for broadest market exposure
+    # Instrument
     underlying: str = "SPY"
 
 
@@ -93,9 +102,17 @@ class CrisisAlphaSignalResult:
 def evaluate_crisis_signal(
     sector_scores: Dict[str, float],
     as_of_date: date,
+    prev_sector_scores: Dict[str, float] | None = None,
+    consecutive_sick_days: int = 0,
     config: CrisisAlphaConfig | None = None,
 ) -> CrisisAlphaSignalResult:
     """Evaluate the crisis alpha signal from sector health scores.
+
+    Two trigger modes:
+    1. **Flash** (instant): ≥N sectors drop SHI sharply in a single day
+       while ≥3 are already sick. Catches mega-crises on day one.
+    2. **Sustained**: ≥5 sectors sick for 3+ consecutive days. Filters
+       noise while catching real crises.
 
     Parameters
     ----------
@@ -103,6 +120,10 @@ def evaluate_crisis_signal(
         sector_name → SHI score for the current date
     as_of_date : date
         Current evaluation date
+    prev_sector_scores : dict, optional
+        Previous day's scores (needed for flash detection)
+    consecutive_sick_days : int
+        How many consecutive days ≥engage_count sectors have been sick
     config : CrisisAlphaConfig, optional
         Strategy configuration
 
@@ -116,15 +137,30 @@ def evaluate_crisis_signal(
     sick = [s for s, score in sector_scores.items() if score < config.shi_threshold]
     n_sick = len(sick)
 
-    if n_sick >= config.full_crisis_count:
+    # ── Flash detection: sharp single-day multi-sector drop ───────
+    flash_drops = 0
+    if prev_sector_scores:
+        for sector in sector_scores:
+            prev = prev_sector_scores.get(sector, 1.0)
+            curr = sector_scores[sector]
+            if prev - curr > config.flash_drop_threshold:
+                flash_drops += 1
+
+    is_flash = (
+        flash_drops >= config.flash_sector_count
+        and n_sick >= config.flash_min_sick
+    )
+
+    # ── Signal determination ──────────────────────────────────────
+    if is_flash:
         signal = CrisisSignal.FULL_CRISIS
-        nav_pct = config.full_crisis_nav_pct
-    elif n_sick >= config.engage_count:
+        nav_pct = config.flash_nav_pct
+    elif consecutive_sick_days >= config.sustained_days and n_sick >= config.sustained_engage_count:
         signal = CrisisSignal.ENGAGE
-        nav_pct = config.engage_nav_pct
-    elif n_sick >= config.watch_count:
+        nav_pct = config.sustained_nav_pct
+    elif n_sick >= 3:
         signal = CrisisSignal.WATCH
-        nav_pct = 0.0  # Watch only, no position
+        nav_pct = 0.0
     else:
         signal = CrisisSignal.NONE
         nav_pct = 0.0
