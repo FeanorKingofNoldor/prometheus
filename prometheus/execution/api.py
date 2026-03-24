@@ -195,10 +195,19 @@ def apply_execution_plan(
 
         if pending:
             logger.warning(
-                "apply_execution_plan: %d orders still non-terminal after %.1fs timeout",
+                "apply_execution_plan: %d orders still non-terminal after %.1fs timeout — "
+                "attempting to cancel remaining orders",
                 len(pending),
                 float(status_poll_timeout_sec),
             )
+            # Cancel any still-pending orders to prevent them from filling
+            # unexpectedly after we've moved on.
+            for order_id in pending:
+                try:
+                    broker.cancel_order(order_id)
+                    logger.info("apply_execution_plan: cancelled pending order %s", order_id)
+                except Exception:
+                    logger.warning("apply_execution_plan: failed to cancel order %s", order_id)
 
         try:
             broker_fills = broker.get_fills(since=submission_started_at)

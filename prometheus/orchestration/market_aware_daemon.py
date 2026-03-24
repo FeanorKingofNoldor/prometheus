@@ -399,7 +399,7 @@ def execute_job(
         # Intel and Kronos jobs have no market_id — execute without an EngineRun.
         if job.market_id is None:
             if job.job_type.startswith("kronos_"):
-                return _execute_kronos_job(job, execution)
+                return _execute_kronos_job(job, execution, db_manager=db_manager)
             return _execute_intel_job(job, execution)
 
         # Get or create EngineRun
@@ -494,7 +494,7 @@ def execute_job(
                 # Fall back to a DB scan if needed so we never silently skip.
                 region = run.region.upper()
                 portfolio_id = f"{region}_EQ_ALLOCATOR"
-                exec_cfg = ExecutionConfig(mode="paper", portfolio_id=portfolio_id)
+                exec_cfg = ExecutionConfig(mode=options_mode, portfolio_id=portfolio_id)
                 run_execution_for_run(db_manager, run, execution_config=exec_cfg)
             return True, None
 
@@ -512,7 +512,7 @@ def execute_job(
 
                 result = run_derivatives_daily(
                     port=_port,
-                    client_id=10,
+                    client_id=11,  # different from equity execution (client_id=10)
                     dry_run=_dry,
                 )
                 if result.get("errors"):
@@ -585,19 +585,22 @@ _KRONOS_STRATEGY_IDS = [
 def _execute_kronos_job(
     job: JobMetadata,
     execution: "JobExecution",
+    db_manager: DatabaseManager | None = None,
 ) -> Tuple[bool, str | None]:
     """Execute a Kronos meta-intelligence job.
 
     Runs with no EngineRun.  All jobs are non-fatal — failures are logged
     but never propagate to the trading pipeline.
     """
+    # Reuse the daemon's DB manager to avoid connection pool bloat.
+    if db_manager is None:
+        db_manager = get_db_manager()
     try:
         if job.job_type == "kronos_outcome_eval":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.evaluator import OutcomeEvaluator
 
-            db = get_db_manager()
+            db = db_manager
             evaluator = OutcomeEvaluator(db_manager=db)
             count = evaluator.evaluate_pending_outcomes(
                 as_of_date=execution.as_of_date,
@@ -608,11 +611,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_scorecard":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.scorecard import PredictionScorecard
 
-            db = get_db_manager()
+            db = db_manager
             sc = PredictionScorecard(db_manager=db)
             for horizon in (5, 21, 63):
                 try:
@@ -633,11 +635,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_lambda_scorecard":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.lambda_scorecard import LambdaScorecard
 
-            db = get_db_manager()
+            db = db_manager
             sc = LambdaScorecard(db_manager=db)
             try:
                 report = sc.build_scorecard(
@@ -656,11 +657,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_diagnostics":
-            from apathis.core.database import get_db_manager
 
             from prometheus.meta.diagnostics import DiagnosticsEngine
 
-            db = get_db_manager()
+            db = db_manager
             engine = DiagnosticsEngine(db_manager=db)
             for strategy_id in _KRONOS_STRATEGY_IDS:
                 try:
@@ -683,12 +683,11 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_proposals":
-            from apathis.core.database import get_db_manager
 
             from prometheus.meta.diagnostics import DiagnosticsEngine
             from prometheus.meta.proposal_generator import ProposalGenerator
 
-            db = get_db_manager()
+            db = db_manager
             engine = DiagnosticsEngine(db_manager=db)
             gen = ProposalGenerator(db_manager=db, diagnostics_engine=engine)
             total = 0
@@ -713,11 +712,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_live_perf":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
-            db = get_db_manager()
+            db = db_manager
             tracker = LivePerformanceTracker(db_manager=db)
             perf = tracker.compute_rolling_performance(execution.as_of_date)
             if "error" not in perf:
@@ -742,11 +740,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_regime_eval":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
-            db = get_db_manager()
+            db = db_manager
             tracker = LivePerformanceTracker(db_manager=db)
             regimes = tracker.compute_regime_breakdown(execution.as_of_date)
             for r in regimes:
@@ -763,11 +760,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_fragility_check":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
-            db = get_db_manager()
+            db = db_manager
             tracker = LivePerformanceTracker(db_manager=db)
             result = tracker.validate_fragility_signal(execution.as_of_date)
             if "error" not in result:
@@ -783,11 +779,10 @@ def _execute_kronos_job(
             return True, None
 
         elif job.job_type == "kronos_hedge_eval":
-            from apathis.core.database import get_db_manager
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
-            db = get_db_manager()
+            db = db_manager
             tracker = LivePerformanceTracker(db_manager=db)
             result = tracker.compute_hedge_effectiveness(execution.as_of_date)
             if "error" not in result:
@@ -1059,11 +1054,39 @@ class MarketAwareDaemon:
             update_job_execution_status(self.db_manager, execution.execution_id, JobStatus.RUNNING)
             self.running_jobs[execution.execution_id] = (job, now)
 
-            # Execute job
-            success, error_msg = execute_job(
-                self.db_manager, job, execution,
-                options_mode=self.config.options_mode,
-            )
+            # Execute job with timeout enforcement.
+            # Jobs run synchronously, so we use a thread + join(timeout)
+            # to enforce the configured timeout_seconds.
+            import threading
+
+            _result: list = []  # [(success, error_msg)]
+
+            def _run_job():
+                try:
+                    r = execute_job(
+                        self.db_manager, job, execution,
+                        options_mode=self.config.options_mode,
+                    )
+                    _result.append(r)
+                except Exception as exc:
+                    _result.append((False, f"unhandled exception: {exc}"))
+
+            timeout_sec = job.timeout_seconds or 3600  # default 1h
+            thread = threading.Thread(target=_run_job, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_sec)
+
+            if thread.is_alive():
+                # Job exceeded timeout — can't kill the thread but mark it failed
+                success, error_msg = False, f"job timed out after {timeout_sec}s"
+                logger.error(
+                    "_process_market: job_id=%s TIMED OUT after %ds",
+                    job.job_id, timeout_sec,
+                )
+            elif _result:
+                success, error_msg = _result[0]
+            else:
+                success, error_msg = False, "job thread completed without result"
 
             # Update status
             if success:
@@ -1164,6 +1187,28 @@ class MarketAwareDaemon:
                             as_of_date,
                             today,
                         )
+                        # Finalize any incomplete runs from yesterday before
+                        # clearing state — mark them as FAILED so they don't
+                        # accumulate as stale intermediate-state runs.
+                        try:
+                            from prometheus.pipeline.state import list_active_runs
+
+                            stale_runs = list_active_runs(self.db_manager)
+                            for stale_run in stale_runs:
+                                if stale_run.phase not in (
+                                    RunPhase.COMPLETED,
+                                    RunPhase.FAILED,
+                                ):
+                                    logger.warning(
+                                        "MarketAwareDaemon: finalizing stale run %s (phase=%s) from %s",
+                                        stale_run.run_id,
+                                        stale_run.phase.value,
+                                        as_of_date,
+                                    )
+                                    update_phase(self.db_manager, stale_run.run_id, RunPhase.FAILED)
+                        except Exception:
+                            logger.exception("MarketAwareDaemon: failed to finalize stale runs")
+
                         as_of_date = today
                         self.active_dags.clear()
                         self.running_jobs.clear()

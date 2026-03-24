@@ -36,6 +36,7 @@ logger = get_logger(__name__)
 # message. This keeps logs from exploding when many instruments share the
 # same data gap.
 _WARNING_LIMIT_PER_RUN = 50
+_WARNING_MAX_KEYS = 500  # Bound dict size to prevent memory leak in long-running daemons
 _warning_counts: Dict[str, int] = {}
 _warning_lock = threading.Lock()
 
@@ -279,6 +280,10 @@ class BasicAssessmentModel(AssessmentModel):
                         as_of_date,
                     )
                     _warning_counts[key] = count + 1
+
+                # Prune oldest entries if dict grows too large
+                if len(_warning_counts) > _WARNING_MAX_KEYS:
+                    _warning_counts.clear()
 
             momentum = 0.0
             realised_vol = 0.0

@@ -145,20 +145,6 @@ class DailyPortfolioRiskConfig:
     # Optional hazard profile used by the market-proxy regime detector.
     hazard_profile: str | None = None
 
-def _fragility_budget_multiplier(score: float) -> float:
-    """Step-function overlay using market fragility.
-
-    Mirrors the evaluated "step" strategy:
-    - <0.3  -> 1.0 (full exposure)
-    - 0.3-0.5 -> 0.5 (half exposure)
-    - >=0.5 -> 0.0 (go to cash)
-    """
-    if score < 0.3:
-        return 1.0
-    if score < 0.5:
-        return 0.5
-    return 0.0
-
 
 def _load_daily_universe_lambda_config(region: str) -> DailyUniverseLambdaConfig:
     """Load lambda config for CORE_EQ_<REGION> universes from YAML.
@@ -1553,8 +1539,11 @@ def run_books_for_run(
                 override = overrides.get(sit.value)
                 if override is not None:
                     hedge_alloc = float(override)
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception:
+            logger.exception(
+                "run_books_for_run: hedge allocation floor/cap/override failed — using default hedge_alloc=%.3f",
+                hedge_alloc,
+            )
 
         hedge_alloc = max(0.0, min(1.0, float(hedge_alloc)))
 

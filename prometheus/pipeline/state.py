@@ -196,6 +196,7 @@ def get_or_create_run(
             phase_started_at,
             phase_completed_at
         ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW(), NULL)
+        ON CONFLICT (as_of_date, region) DO NOTHING
     """
 
     with db_manager.get_runtime_connection() as conn:

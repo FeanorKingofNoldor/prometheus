@@ -304,8 +304,9 @@ class IbkrClientImpl(IbkrClient):
         try:
             logger.info("Cancelling order: %s (IBKR orderId=%s)", order_id, trade.order.orderId)
             self._ib.cancelOrder(trade.order)
-            # Status will update via callbacks; mark best-effort immediately.
-            self._order_statuses[order_id] = OrderStatus.CANCELLED
+            # Do NOT set status optimistically — let the IBKR callback
+            # (_on_order_status) update it when the cancel is confirmed.
+            # The order may have already filled by the time the cancel arrives.
             return True
         except Exception as e:
             logger.error("Failed to cancel order %s: %s", order_id, e, exc_info=True)
@@ -324,7 +325,11 @@ class IbkrClientImpl(IbkrClient):
 
         trade = self._find_trade(order_id)
         if trade is None:
-            return OrderStatus.REJECTED
+            # Don't return REJECTED for unknown orders — the order may
+            # still be processing or the Trade object may not have the
+            # orderRef populated yet. SUBMITTED is a safer default.
+            logger.debug("get_order_status: order_id=%s not found in IB trades, returning SUBMITTED", order_id)
+            return OrderStatus.SUBMITTED
 
         status = self._map_order_status(trade)
         self._order_statuses[order_id] = status
@@ -384,7 +389,7 @@ class IbkrClientImpl(IbkrClient):
         """Return fills since the given timestamp."""
         if since is None:
             return list(self._fills)
-        return [f for f in self._fills if f.timestamp > since]
+        return [f for f in self._fills if f.timestamp >= since]
 
     def get_positions(self) -> Dict[str, Position]:
         """Return current positions keyed by instrument_id."""
@@ -762,7 +767,19 @@ class IbkrClientImpl(IbkrClient):
             },
         )
 
+        # Dedup: IBKR can replay executions on reconnect
+        if not hasattr(self, "_seen_fill_ids"):
+            self._seen_fill_ids: set = set()
+        if prometheus_fill.fill_id in self._seen_fill_ids:
+            logger.debug("Duplicate fill %s ignored", prometheus_fill.fill_id)
+            return
+        self._seen_fill_ids.add(prometheus_fill.fill_id)
         self._fills.append(prometheus_fill)
+
+        # Bound the fills cache to prevent unbounded memory growth
+        _MAX_FILLS = 10_000
+        if len(self._fills) > _MAX_FILLS:
+            self._fills = self._fills[-_MAX_FILLS:]
 
         logger.info(
             "Fill received: %s %s %s x %.2f @ %.2f (commission=%.2f)",
