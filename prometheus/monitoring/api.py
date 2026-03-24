@@ -10,17 +10,16 @@ progressively wired to real engines and runtime DB as they mature.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Mapping
-
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Mapping, Optional
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.core.market_state import MarketState, get_market_state, get_next_state_transition
 from apathis.core.markets import MARKETS_BY_REGION
-from prometheus.orchestration.dag import build_market_dag
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
+from prometheus.orchestration.dag import build_market_dag
 
 router = APIRouter(prefix="/api/status", tags=["monitoring"])
 logger = get_logger(__name__)
@@ -226,11 +225,9 @@ async def get_status_overview() -> SystemOverview:
     logger.debug("[api/overview] Fetching system overview")
     """Return global system KPIs and current state.
 
-    This implementation derives aggregate exposure metrics from the
-    latest ``portfolio_risk_reports`` rows and a simple global stability
-    index from the most recent ``stability_vectors`` snapshot. P&L
-    fields remain placeholders until a dedicated P&L aggregation path is
-    implemented.
+    P&L figures are derived from NLV changes in ``positions_snapshots``
+    for the primary PAPER/LIVE portfolios.  Exposure metrics come from
+    ``portfolio_risk_reports``.  Global stability from ``stability_vectors``.
     """
 
     db_manager = get_db_manager()
@@ -319,11 +316,116 @@ async def get_status_overview() -> SystemOverview:
         finally:
             cursor.close()
 
+    # P&L: NLV changes for the primary paper/live portfolio.
+    # Uses positions_snapshots; picks the latest timestamp per day,
+    # then computes day-over-day, month-over-month, and year-over-day diffs.
+    pnl_today = 0.0
+    pnl_mtd = 0.0
+    pnl_ytd = 0.0
+    today = date.today()
+    month_start = today.replace(day=1)
+    year_start = today.replace(month=1, day=1)
+
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                WITH latest_per_day AS (
+                    SELECT DISTINCT ON (as_of_date)
+                        as_of_date,
+                        SUM(market_value) OVER (
+                            PARTITION BY as_of_date, timestamp
+                        ) AS nlv
+                    FROM positions_snapshots
+                    WHERE mode IN ('PAPER', 'LIVE')
+                      AND portfolio_id = 'IBKR_PAPER'
+                    ORDER BY as_of_date, timestamp DESC
+                )
+                SELECT
+                    as_of_date,
+                    nlv
+                FROM latest_per_day
+                WHERE as_of_date >= %s
+                ORDER BY as_of_date
+                """,
+                (year_start,),
+            )
+            nlv_by_date: Dict[date, float] = {
+                row[0]: float(row[1] or 0.0) for row in cursor.fetchall()
+            }
+        finally:
+            cursor.close()
+
+    nlv_today = nlv_by_date.get(today, 0.0)
+    max_drawdown = 0.0
+
+    # Detect capital-flow days (deposits/withdrawals) where NLV jumps
+    # by more than 15% in a single day.  These are not market returns
+    # and must be excluded from P&L and drawdown calculations.
+    _FLOW_THRESHOLD = 0.15
+    sorted_dates = sorted(nlv_by_date)
+    flow_dates: set = set()
+    for i in range(1, len(sorted_dates)):
+        prev_nlv = nlv_by_date[sorted_dates[i - 1]]
+        curr_nlv = nlv_by_date[sorted_dates[i]]
+        if prev_nlv > 0 and abs(curr_nlv - prev_nlv) / prev_nlv > _FLOW_THRESHOLD:
+            flow_dates.add(sorted_dates[i])
+
+    if nlv_today and nlv_by_date:
+        # today vs previous trading day (skip if today is a flow day)
+        prev_dates = [d for d in sorted_dates if d < today]
+        if prev_dates and today not in flow_dates:
+            pnl_today = nlv_today - nlv_by_date[prev_dates[-1]]
+
+        # month-to-date: sum of non-flow daily diffs since month start
+        mtd_dates = [d for d in sorted_dates if d >= month_start]
+        for i, d in enumerate(mtd_dates):
+            if d in flow_dates:
+                continue
+            idx = sorted_dates.index(d)
+            if idx > 0:
+                pnl_mtd += nlv_by_date[d] - nlv_by_date[sorted_dates[idx - 1]]
+
+        # year-to-date: sum of non-flow daily diffs since year start
+        for i, d in enumerate(sorted_dates):
+            if d in flow_dates:
+                continue
+            if i > 0:
+                pnl_ytd += nlv_by_date[d] - nlv_by_date[sorted_dates[i - 1]]
+
+        # Max drawdown: largest peak-to-trough decline, ignoring flow days.
+        # Build a flow-adjusted NLV series by accumulating only market returns.
+        clean_nlvs: list = []
+        for i, d in enumerate(sorted_dates):
+            if i == 0:
+                clean_nlvs.append(nlv_by_date[d])
+            elif d in flow_dates:
+                # Carry forward previous clean NLV (rebase after flow)
+                clean_nlvs.append(clean_nlvs[-1])
+            else:
+                prev_raw = nlv_by_date[sorted_dates[i - 1]]
+                curr_raw = nlv_by_date[d]
+                if prev_raw > 0:
+                    daily_ret = (curr_raw - prev_raw) / prev_raw
+                    clean_nlvs.append(clean_nlvs[-1] * (1.0 + daily_ret))
+                else:
+                    clean_nlvs.append(clean_nlvs[-1])
+
+        if len(clean_nlvs) >= 2:
+            peak = clean_nlvs[0]
+            for v in clean_nlvs:
+                if v > peak:
+                    peak = v
+                dd = (peak - v) / peak
+                if dd > max_drawdown:
+                    max_drawdown = dd
+
     return SystemOverview(
-        pnl_today=0.0,
-        pnl_mtd=0.0,
-        pnl_ytd=0.0,
-        max_drawdown=0.0,
+        pnl_today=pnl_today,
+        pnl_mtd=pnl_mtd,
+        pnl_ytd=pnl_ytd,
+        max_drawdown=max_drawdown,
         net_exposure=net_exposure,
         gross_exposure=gross_exposure,
         leverage=leverage,
@@ -566,7 +668,7 @@ async def get_pipelines_status(
         except HTTPException as exc:
             logger.warning("Skipping pipeline status for market_id=%s: %s", mid, exc.detail)
             continue
-        except Exception as exc:
+        except Exception:
             logger.exception("Skipping pipeline status for market_id=%s due to unexpected error", mid)
             continue
 
@@ -1453,10 +1555,6 @@ async def get_portfolio_status(
         if isinstance(frag_weights, Mapping):
             exposures["by_fragility_class"] = frag_weights
 
-    # P&L aggregation is not yet implemented in the engine; return zeros
-    # for now.
-    pnl = {"today": 0.0, "mtd": 0.0, "ytd": 0.0}
-
     # Compute NLV from positions_snapshots (actual dollar values).
     nlv = 0.0
     total_cash = 0.0
@@ -1514,6 +1612,54 @@ async def get_portfolio_status(
                 nlv = float(rm["net_liquidation"])
             if "total_cash" in rm:
                 total_cash = float(rm["total_cash"])
+
+    # P&L: NLV diffs vs yesterday / month-start / year-start for this portfolio.
+    pnl: Dict[str, float] = {"today": 0.0, "mtd": 0.0, "ytd": 0.0}
+    _today = date.today()
+    _month_start = _today.replace(day=1)
+    _year_start = _today.replace(month=1, day=1)
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                WITH latest_per_day AS (
+                    SELECT DISTINCT ON (as_of_date)
+                        as_of_date,
+                        SUM(market_value) OVER (
+                            PARTITION BY as_of_date, timestamp
+                        ) AS nlv
+                    FROM positions_snapshots
+                    WHERE portfolio_id = %s
+                    ORDER BY as_of_date, timestamp DESC
+                )
+                SELECT as_of_date, nlv
+                FROM latest_per_day
+                WHERE as_of_date >= %s
+                ORDER BY as_of_date
+                """,
+                (port_id, _year_start),
+            )
+            _nlv_by_date: Dict[date, float] = {
+                r[0]: float(r[1] or 0.0) for r in cursor.fetchall()
+            }
+        finally:
+            cursor.close()
+
+    _nlv_today = _nlv_by_date.get(_today, nlv)
+    if _nlv_today and _nlv_by_date:
+        _prev = [d for d in sorted(_nlv_by_date) if d < _today]
+        if _prev:
+            pnl["today"] = _nlv_today - _nlv_by_date[_prev[-1]]
+        _mtd_ref = [d for d in sorted(_nlv_by_date) if d <= _month_start]
+        if _mtd_ref:
+            pnl["mtd"] = _nlv_today - _nlv_by_date[_mtd_ref[-1]]
+        _ytd_ref = [d for d in sorted(_nlv_by_date) if d <= _year_start]
+        if _ytd_ref:
+            pnl["ytd"] = _nlv_today - _nlv_by_date[_ytd_ref[-1]]
+        else:
+            _earliest = sorted(_nlv_by_date)[0]
+            pnl["ytd"] = _nlv_today - _nlv_by_date[_earliest]
 
     logger.info(
         "[api/portfolio] Returning portfolio_id=%s as_of=%s positions=%d nlv=%.2f mode=%s",
@@ -2035,16 +2181,21 @@ async def get_portfolio_equity(
             bench_by_date = {d: v * scale for d, v in bench_by_date.items()}
 
     # 4) Merge into response
-    # Include all portfolio dates, plus any benchmark dates in range
+    # Include all portfolio dates, plus any benchmark dates in range.
+    # Forward-fill benchmark gaps (weekends, holidays, not-yet-ingested days).
     min_d, max_d = all_dates[0], all_dates[-1]
     merged_dates = sorted(set(all_dates) | {d for d in bench_by_date if min_d <= d <= max_d})
 
     out: List[EquityPoint] = []
+    last_bench: float | None = None
     for d in merged_dates:
+        bench_val = bench_by_date.get(d)
+        if bench_val is not None:
+            last_bench = bench_val
         out.append(EquityPoint(
             date=d,
             portfolio=port_by_date.get(d),
-            benchmark=bench_by_date.get(d),
+            benchmark=bench_val if bench_val is not None else last_bench,
         ))
 
     logger.info("[api/portfolio_equity] portfolio_id=%s benchmark=%s points=%d", port_id, bench_id, len(out))
@@ -2260,17 +2411,27 @@ async def get_portfolio_risk_computed(
         ))
 
     # 4) Portfolio-level vol using correlation matrix
-    # Build aligned return matrix
-    common_len = min((len(r) for r in returns_by_inst.values()), default=0)
+    # Only include instruments that have sufficient price history (skip
+    # options and other derivatives without prices_daily data).
+    priced_idx = [i for i, inst in enumerate(instruments) if inst in returns_by_inst]
+    priced_rets = {inst: returns_by_inst[inst] for inst in instruments if inst in returns_by_inst}
+    common_len = min((len(r) for r in priced_rets.values()), default=0)
     port_vol_20 = port_vol_60 = var_95 = es_95 = max_dd = None
 
-    if common_len >= 20 and len(returns_by_inst) == len(instruments):
+    if common_len >= 20 and priced_rets:
+        priced_instruments = [instruments[i] for i in priced_idx]
+        priced_weights = weights[priced_idx]
+        # Renormalize weights to sum to 1 over priced instruments
+        w_sum = priced_weights.sum()
+        if w_sum > 0:
+            priced_weights = priced_weights / w_sum
+
         ret_matrix = np.column_stack([
-            returns_by_inst[inst][-common_len:] for inst in instruments
+            priced_rets[inst][-common_len:] for inst in priced_instruments
         ])
 
         # Portfolio daily returns (weighted)
-        port_daily = ret_matrix @ weights
+        port_daily = ret_matrix @ priced_weights
 
         # 20d and 60d portfolio vol
         port_vol_20 = float(np.std(port_daily[-20:]) * np.sqrt(TRADING_DAYS))
@@ -2724,3 +2885,1186 @@ async def get_market_overview() -> MarketOverview:
         fg_credit_component=fg_crd,
         regime_transitions=transitions,
     )
+
+
+# ============================================================================
+# Documentation
+# ============================================================================
+
+
+_PROMETHEUS_DOCS: Dict[str, Dict[str, str]] = {
+    "overview": {
+        "title": "System Overview",
+        "content": """# System Overview
+
+**Version:** 2.0 · March 2026
+**Status:** Live paper-trading via IBKR · 17 options strategies · 3 market pipelines
+**Mode:** PAPER (IBKR Gateway port 4001)
+
+---
+
+## What is Prometheus v2?
+
+Prometheus v2 is a quantitative trading system that combines multi-asset regime detection, per-entity fragility analysis, and a regime-adaptive options overlay to manage a portfolio of US equities and derivatives.
+
+The system operates on a **daily cadence**, triggered by market close events. Three regional pipelines (US, EU, ASIA) run independently — EU and ASIA generate cross-market intelligence signals while all capital is concentrated in US equities and options.
+
+### Core Philosophy
+
+- **Intelligence without capital commitment** — EU/ASIA pipelines run for signal generation (cross-market contagion, macro stress, breadth) but capital trades only in US_EQ.
+- **Regime-adaptive everything** — The regime label flows into strategy allocation budgets, sector put spread thresholds, options strategy activation, and portfolio risk limits.
+- **Defined-risk derivatives** — All 17 options strategies use spreads with defined max loss. No naked short options. Position lifecycle manager enforces profit targets and expiry rolls.
+- **Offensive + defensive** — Options layer includes both hedging strategies (protective put, collar, VIX tail) and profit-seeking strategies (bear put spread, sector decline, bull call spread, momentum call).
+
+---
+
+## System Architecture
+
+The complete end-to-end system: data ingestion → representation → decision engines → execution → monitoring.
+
+```mermaid
+graph TB
+    subgraph EXT["External Data Sources"]
+        IBKR["IBKR Gateway\\n(paper 4001 · live 7496)"]
+        YAHOO["Market Data\\n(Yahoo Finance)"]
+        FRED["FRED API\\n(STLFSI4, rates, claims)"]
+        NEWS["News & Filings"]
+    end
+
+    subgraph INGEST["Data Ingestion"]
+        ING_PRICE["Price Ingestion\\n(OHLCV, adj close)"]
+        ING_FACTOR["Factor Ingestion\\n(sector, style)"]
+        ING_MACRO["Macro Ingestion\\n(FRED, VIX, breadth)"]
+        ING_BROKER["Broker Sync\\n(positions, fills)"]
+    end
+
+    subgraph STORAGE["PostgreSQL"]
+        subgraph HIST["historical_db"]
+            PRICES["prices_daily\\nreturns_daily\\nvolatility_daily\\nfactors_daily"]
+            TEXT["news_articles\\nfilings\\nmacro_events"]
+            EMB["text_embeddings\\nnumeric_window_embeddings\\njoint_embeddings"]
+        end
+        subgraph RUNTIME["runtime_db"]
+            ENTITIES["markets · issuers\\ninstruments · portfolios"]
+            ENGINE_OUT["regimes · stability_vectors\\nfragility_measures\\nsoft_target_classes\\ninstrument_scores"]
+            SECTOR_TBL["sector_health_daily\\n(score, raw_composite,\\nsignals JSONB)"]
+            UNIV_TBL["universe_members\\n(entity_id, score,\\nreasons JSONB)"]
+            RUNS_TBL["engine_runs\\n(phase state machine)"]
+            EXEC_TBL["orders · fills\\npositions_snapshots\\ntarget_portfolios"]
+            DECISIONS["engine_decisions\\nexecuted_actions\\ndecision_outcomes"]
+        end
+    end
+
+    subgraph REPR["Representation Layer"]
+        TEXT_ENC["Text Encoders\\n(news, profiles, macro)"]
+        NUM_ENC["Numeric Window Encoders\\n(price to embeddings)"]
+        JOINT_ENC["Joint Multi-Entity Encoder\\n(text + numeric fusion)"]
+        PROF_SVC["Profile Service\\n(issuer snapshots)"]
+    end
+
+    subgraph ENGINES["Core Decision Engines"]
+        REGIME["Regime Engine\\nCARRY · NEUTRAL · RISK_OFF · CRISIS"]
+        STAB["Stability & Soft-Target\\nSTABLE · TARGETABLE · WATCH · FRAGILE"]
+        FRAG["Fragility Alpha\\nfragility_score per entity"]
+        SHI["Sector Health Engine\\nSHI score (6 signals)\\ntrend · momentum · volatility\\ndrawdown · breadth · macro_stress"]
+        ASSESS["Assessment Engine\\ninstrument_scores"]
+        UNIV["Universe Engine\\nCORE_EQ members + lambda scores"]
+        PORT["Portfolio & Risk\\ntarget weights, risk reports"]
+        LAMBDA["Lambda Opportunity Density\\ncluster dispersion models"]
+    end
+
+    subgraph EXEC["Execution Layer"]
+        EQUITY_EXEC["Equity Execution\\n(compute deltas to orders)"]
+        subgraph OPTIONS["Options & Derivatives"]
+            ALLOC["Strategy Allocator\\n(regime to category budgets)"]
+            OSM["Options Strategy Manager\\n(17 strategies)"]
+            LIFECYCLE["Position Lifecycle\\n(roll, close, profit-take)"]
+        end
+        subgraph BROKERS["Broker Implementations"]
+            LIVE_B["LiveBroker"]
+            PAPER_B["PaperBroker"]
+            BT_B["BacktestBroker"]
+        end
+    end
+
+    subgraph ORCH["Orchestration"]
+        DAEMON["Market-Aware Daemon\\n(systemd service)"]
+        CAL["TradingCalendar\\n(market states per region)"]
+        DAG["DAG Orchestrator\\n(job graph per market)"]
+    end
+
+    subgraph MON["Monitoring & UI"]
+        API["FastAPI Server\\n(REST endpoints)"]
+        NGINX["nginx reverse proxy\\n(:8443 HTTPS)"]
+        GUI["React GUI\\n(Bloomberg-style C2)"]
+        KRONOS["Kronos Meta-Orchestrator\\n(analytics, LLM chat)"]
+    end
+
+    subgraph BT["Backtesting"]
+        TIME_M["TimeMachine\\n(no-lookahead data)"]
+        MKT_SIM["MarketSimulator\\n(fills, slippage)"]
+        CPP["C++ Backtest Core\\n(prom2_cpp fast path)"]
+    end
+
+    YAHOO --> ING_PRICE
+    FRED --> ING_MACRO
+    NEWS --> TEXT
+    IBKR --> ING_BROKER
+
+    ING_PRICE --> PRICES
+    ING_FACTOR --> PRICES
+    ING_MACRO --> TEXT
+    ING_BROKER --> EXEC_TBL
+
+    PRICES --> NUM_ENC
+    TEXT --> TEXT_ENC
+    ENTITIES --> PROF_SVC
+
+    TEXT_ENC --> JOINT_ENC
+    NUM_ENC --> JOINT_ENC
+    PROF_SVC --> JOINT_ENC
+    JOINT_ENC --> REGIME
+    JOINT_ENC --> STAB
+    JOINT_ENC --> ASSESS
+
+    PRICES --> REGIME
+    PRICES --> SHI
+    FRED --> SHI
+    REGIME --> STAB
+    REGIME --> ASSESS
+    STAB --> FRAG
+    STAB --> ASSESS
+    FRAG --> ASSESS
+    SHI --> PORT
+    SHI --> OPTIONS
+    ASSESS --> UNIV
+    LAMBDA --> UNIV
+    UNIV --> PORT
+
+    REGIME --> ENGINE_OUT
+    STAB --> ENGINE_OUT
+    FRAG --> ENGINE_OUT
+    ASSESS --> ENGINE_OUT
+    SHI --> SECTOR_TBL
+    UNIV --> UNIV_TBL
+    PORT --> EXEC_TBL
+
+    PORT --> EQUITY_EXEC
+    REGIME --> ALLOC
+    ALLOC --> OSM
+    OSM --> LIFECYCLE
+    EQUITY_EXEC --> BROKERS
+    LIFECYCLE --> BROKERS
+    LIVE_B --> IBKR
+    PAPER_B --> IBKR
+
+    BT_B --> TIME_M
+    BT_B --> MKT_SIM
+    TIME_M --> PRICES
+    PRICES --> CPP
+
+    CAL --> DAEMON
+    DAEMON --> DAG
+    DAG --> INGEST
+    DAG --> REPR
+    DAG --> ENGINES
+    DAG --> EXEC
+    DAG --> RUNS_TBL
+
+    ENGINE_OUT --> API
+    SECTOR_TBL --> API
+    EXEC_TBL --> API
+    DECISIONS --> API
+    API --> NGINX
+    NGINX --> GUI
+    API --> KRONOS
+
+    REGIME -.-> DECISIONS
+    STAB -.-> DECISIONS
+    PORT -.-> DECISIONS
+    EQUITY_EXEC -.-> EXEC_TBL
+    OSM -.-> EXEC_TBL
+
+    classDef ext fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    classDef store fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+    classDef engine fill:#742a2a,stroke:#c53030,color:#e2e8f0
+    classDef exec fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
+    classDef orch fill:#44337a,stroke:#6b46c1,color:#e2e8f0
+    classDef mon fill:#553c00,stroke:#d69e2e,color:#e2e8f0
+
+    class IBKR,YAHOO,FRED,NEWS ext
+    class PRICES,TEXT,EMB,ENTITIES,ENGINE_OUT,SECTOR_TBL,UNIV_TBL,RUNS_TBL,EXEC_TBL,DECISIONS store
+    class REGIME,STAB,FRAG,SHI,ASSESS,UNIV,PORT,LAMBDA engine
+    class EQUITY_EXEC,ALLOC,OSM,LIFECYCLE,LIVE_B,PAPER_B,BT_B exec
+    class DAEMON,CAL,DAG orch
+    class API,NGINX,GUI,KRONOS mon
+```
+
+---
+
+## Data Flow Summary
+
+1. **Ingestion** — Yahoo Finance prices, FRED macro data, and IBKR broker state are pulled daily after market close.
+2. **Representation** — Raw data is encoded into numeric window embeddings (price patterns) and text embeddings (news/macro), then fused via a joint encoder.
+3. **Engines** — Six decision engines process the representations: Regime (market state), Stability (per-entity classification), Fragility (stress scores), Sector Health (11 sectors × 6 signals), Assessment (alpha scores), and Universe (member selection).
+4. **Execution** — The portfolio optimizer generates target weights; the equity executor computes deltas; the options layer deploys 17 regime-adaptive derivative strategies.
+5. **Monitoring** — FastAPI serves all engine outputs to a React GUI dashboard. Kronos meta-orchestrator provides analytics and LLM chat interface.
+""",
+    },
+    "pipeline": {
+        "title": "Daily Pipeline & Orchestration",
+        "content": """# Daily Pipeline & Orchestration
+
+The system runs a full pipeline daily for each market region, orchestrated by the Market-Aware Daemon and DAG framework.
+
+---
+
+## Pipeline DAG
+
+Each market (US_EQ, EU_EQ, ASIA_EQ) runs this pipeline daily, triggered by market state transitions detected by the daemon.
+
+```mermaid
+flowchart LR
+    subgraph TRIGGER["Market State Trigger"]
+        CAL["TradingCalendar\\ndetects POST_CLOSE"]
+        DAEMON["Daemon creates\\nEngineRun row"]
+    end
+
+    subgraph PHASE1["Phase 1: Data"]
+        ING_P["ingest_prices"]
+        ING_F["ingest_factors"]
+        COMP_R["compute_returns"]
+        COMP_V["compute_volatility"]
+        BUILD_W["build_numeric_windows"]
+    end
+
+    subgraph PHASE2["Phase 2: Signals"]
+        UPD_PROF["update_profiles"]
+        RUN_SIG["run_signals\\n(regime, STAB, fragility,\\nsector health, assessment)"]
+    end
+
+    subgraph PHASE3["Phase 3: Portfolio"]
+        RUN_UNIV["run_universes\\n(CORE_EQ member selection,\\nlambda score ranking)"]
+        RUN_BOOKS["run_books\\n(portfolio optimization,\\ntarget weights)"]
+    end
+
+    subgraph PHASE4["Phase 4: Execution"]
+        RUN_EXEC["run_execution\\n(equity deltas to IBKR orders)"]
+        RUN_OPT["run_options\\n(17 derivative strategies,\\nregime-adaptive allocation)"]
+    end
+
+    subgraph STATES["Run Phase States"]
+        S1["WAITING_FOR_DATA"]
+        S2["DATA_READY"]
+        S3["SIGNALS_DONE"]
+        S4["UNIVERSES_DONE"]
+        S5["BOOKS_DONE"]
+        S6["EXECUTION_DONE"]
+        S7["OPTIONS_DONE"]
+        S8["COMPLETED"]
+    end
+
+    CAL --> DAEMON
+    DAEMON --> ING_P
+    DAEMON --> ING_F
+
+    ING_P --> COMP_R
+    ING_P --> COMP_V
+    ING_F -.-> COMP_R
+    COMP_R --> BUILD_W
+    COMP_V --> BUILD_W
+
+    BUILD_W --> UPD_PROF
+    UPD_PROF --> RUN_SIG
+    BUILD_W --> RUN_SIG
+
+    RUN_SIG --> RUN_UNIV
+    RUN_UNIV --> RUN_BOOKS
+
+    RUN_BOOKS --> RUN_EXEC
+    RUN_EXEC --> RUN_OPT
+
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
+    S5 --> S6
+    S6 --> S7
+    S7 --> S8
+
+    classDef trigger fill:#44337a,stroke:#6b46c1,color:#e2e8f0
+    classDef data fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+    classDef signal fill:#742a2a,stroke:#c53030,color:#e2e8f0
+    classDef port fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
+    classDef exec fill:#553c00,stroke:#d69e2e,color:#e2e8f0
+    classDef state fill:#1a202c,stroke:#4a5568,color:#a0aec0
+
+    class CAL,DAEMON trigger
+    class ING_P,ING_F,COMP_R,COMP_V,BUILD_W data
+    class UPD_PROF,RUN_SIG signal
+    class RUN_UNIV,RUN_BOOKS port
+    class RUN_EXEC,RUN_OPT exec
+    class S1,S2,S3,S4,S5,S6,S7,S8 state
+```
+
+---
+
+## Market-Aware Daemon
+
+The daemon (`prometheus/orchestration/market_aware_daemon.py`) is the production orchestrator running as a systemd service. It monitors multiple markets in a **follow-the-sun** pattern.
+
+### How It Works
+
+1. **Market State Detection** — The `TradingCalendar` determines the current state of each market: `PRE_MARKET`, `OPEN`, `POST_CLOSE`, `CLOSED`, `HOLIDAY`.
+2. **DAG Construction** — When a market transitions to `POST_CLOSE`, the daemon builds a DAG of jobs for that market and date using `build_market_dag()`.
+3. **Dependency Resolution** — The DAG framework resolves which jobs can run based on: completed dependencies, market state requirements, and retry limits.
+4. **Job Execution** — Jobs run with retry logic (3 attempts, 5-minute delay, exponential backoff) and timeout monitoring (1 hour default).
+5. **State Tracking** — All executions are persisted in the `job_executions` table for monitoring and debugging.
+
+### Design Properties
+
+- **Idempotent** — Jobs can be safely re-run without side effects.
+- **Resilient** — Graceful failure handling with exponential backoff. Per-market DAGs execute independently so one region's failure doesn't block others.
+- **Observable** — All executions tracked in the database with status, timing, and error details.
+- **Non-blocking** — Per-market DAGs execute independently.
+
+---
+
+## DAG Framework
+
+The DAG framework (`prometheus/orchestration/dag.py`) defines the job dependency graph for each market.
+
+### Job Metadata
+
+Each job carries:
+- **job_type** — Logical type (e.g., `ingest_prices`, `compute_returns`, `run_regime`)
+- **market_id** — Which market this job belongs to
+- **required_state** — Market state needed to run (e.g., `POST_CLOSE`)
+- **dependencies** — List of job_ids that must complete first
+- **run_phase** — Maps to the `EngineRun` phase state machine
+- **priority** — CRITICAL (tier 1), STANDARD (tier 2), OPTIONAL (tier 3)
+- **timeout** — Maximum execution time (default 1 hour)
+
+### Pipeline Phases
+
+**Phase 1: Data** — Price ingestion, factor ingestion, returns computation, volatility computation, numeric window building. All jobs require `POST_CLOSE` state.
+
+**Phase 2: Signals** — Profile updates and signal computation (regime, stability, fragility, sector health, assessment). Depends on Phase 1 completion.
+
+**Phase 3: Portfolio** — Universe selection (CORE_EQ members via lambda scoring) and portfolio optimization (target weights). Depends on Phase 2.
+
+**Phase 4: Execution** — Equity order generation (delta computation) and options strategy evaluation (17 strategies with regime-adaptive allocation). Depends on Phase 3.
+
+---
+
+## Engine Run State Machine
+
+Each pipeline execution is tracked as an `EngineRun` row with a phase state machine:
+
+```
+WAITING_FOR_DATA → DATA_READY → SIGNALS_DONE → UNIVERSES_DONE → BOOKS_DONE → EXECUTION_DONE → OPTIONS_DONE → COMPLETED
+```
+
+Any phase can transition to `FAILED` if errors exceed retry limits. The GUI displays the current phase for each market's daily run on the Pipeline Status panel.
+
+---
+
+## Follow-the-Sun Schedule
+
+Markets process in order of close time:
+
+1. **ASIA_EQ** — Closes ~02:00 UTC, pipeline runs ~02:15 UTC
+2. **EU_EQ** — Closes ~16:30 UTC, pipeline runs ~16:45 UTC
+3. **US_EQ** — Closes ~21:00 UTC, pipeline runs ~21:15 UTC
+
+EU and ASIA pipelines generate cross-market contagion signals, macro stress readings, and breadth data that feed into the US pipeline's regime and sector health engines.
+""",
+    },
+    "engines": {
+        "title": "Decision Engines",
+        "content": """# Decision Engines
+
+Six core engines process market data and generate the signals that drive portfolio construction and execution.
+
+---
+
+## Engine Chain
+
+```mermaid
+flowchart LR
+    PRICES["Price Data\\nReturns\\nVolatility"] --> REGIME
+    MACRO["FRED Macro\\nVIX · Rates\\nCredit · Claims"] --> REGIME
+    EMBED["Joint Embeddings\\n(numeric + text)"] --> REGIME
+
+    REGIME["Regime Engine\\nCARRY · NEUTRAL\\nRISK_OFF · CRISIS\\nRECOVERY"] --> STAB
+    REGIME --> ASSESS
+
+    EMBED --> STAB
+    STAB["Stability Engine\\nSTABLE · TARGETABLE\\nWATCH · FRAGILE"] --> FRAG
+    STAB --> ASSESS
+
+    FRAG["Fragility Alpha\\nPer-entity\\nfragility score"] --> ASSESS
+
+    PRICES --> SHI
+    MACRO --> SHI
+    SHI["Sector Health\\n11 sectors × 6 signals\\nSHI score 0-1"]
+
+    ASSESS["Assessment Engine\\nInstrument alpha scores\\nPer-instrument per-horizon"] --> UNIV
+
+    LAMBDA["Lambda Density\\nCluster dispersion\\nOpportunity density"] --> UNIV
+
+    UNIV["Universe Engine\\nCORE_EQ member selection\\nLambda score ranking"] --> PORT
+
+    SHI --> PORT
+    PORT["Portfolio & Risk\\nTarget weights\\nRisk budgets\\nSector limits"]
+
+    classDef input fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+    classDef engine fill:#742a2a,stroke:#c53030,color:#e2e8f0
+    classDef output fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
+
+    class PRICES,MACRO,EMBED,LAMBDA input
+    class REGIME,STAB,FRAG,SHI,ASSESS,UNIV engine
+    class PORT output
+```
+
+---
+
+## Regime Engine
+
+**Module:** `prometheus/regime/engine.py`
+**Output:** `RegimeState` per region per date → persisted to `regimes` table
+
+The Regime Engine classifies the current market environment into one of five states:
+
+- **CARRY / RISK_ON** — Low vol, supportive macro, risk assets outperforming
+- **NEUTRAL** — Mixed signals, no strong directional bias
+- **RECOVERY** — Improving sentiment after stress period
+- **RISK_OFF** — Elevated vol, widening spreads, defensive positioning
+- **CRISIS** — Extreme stress, funding disruption, flight to safety
+
+### How It Works
+
+1. **Joint embeddings** are computed from numeric windows (63 trading days of cross-asset returns, vol, correlations, factor returns) fused with text embeddings (macro news, policy statements).
+2. **Regime prototypes** are discovered offline via clustering (GMM/HDBSCAN) on historical embeddings, then labeled using domain knowledge.
+3. **Online classification** assigns the current embedding to the nearest prototype with a confidence score.
+4. **Transition guards** prevent noisy regime flips: a **5 trading day minimum hold** suppresses transitions, unless the new regime is CRISIS (which always punches through immediately).
+5. **Non-trading days** carry forward the previous regime.
+
+### Downstream Consumers
+
+The regime label flows into: strategy allocator budgets, sector put spread thresholds, options strategy activation maps, portfolio risk limits, and STAB/Assessment engines.
+
+---
+
+## Stability & Soft-Target Engine
+
+**Module:** `prometheus/stability/engine.py`
+**Output:** `StabilityVector` + `SoftTargetClass` per entity → persisted to `stability_vectors`, `soft_target_classes`
+
+Classifies each entity (stock, ETF) into stability tiers:
+
+- **STABLE** — Consistent behavior, low regime sensitivity
+- **TARGETABLE** — Attractive risk/reward, suitable for active positioning
+- **WATCH** — Elevated uncertainty, reduced position sizing
+- **FRAGILE** — High regime sensitivity, avoid or hedge
+
+Uses: regime embedding, entity-specific price patterns, factor exposures, and sector membership.
+
+---
+
+## Fragility Alpha
+
+**Module:** `prometheus/stability/fragility.py`
+**Output:** `fragility_score` per entity (0 = robust, 1 = extremely fragile) → persisted to `fragility_measures`
+
+Computes a per-entity fragility score that captures how vulnerable a stock is to adverse market moves. Inputs include:
+
+- Stability classification from STAB engine
+- Scenario loss estimates under stress conditions
+- Drawdown behavior relative to sector and market
+- Earnings/event sensitivity
+
+Fragility scores drive:
+- **Bear put spread** target selection (FRAG >= 0.50 required)
+- **Futures overlay** hedge sizing (aggregate FRAG triggers)
+- Position sizing adjustments in the portfolio optimizer
+
+---
+
+## Sector Health Index (SHI)
+
+**Module:** `prometheus/sector/health.py`
+**Output:** SHI score ∈ [0, 1] per sector per date + signal breakdown → persisted to `sector_health_daily`
+
+Computes health scores for all **11 GICS sectors** using 6 signals:
+
+### The 6 Signals
+
+1. **Trend** — ETF price / SMA200. Above 1.0 = healthy uptrend.
+2. **Momentum** — Blended 1-month / 3-month / 6-month returns.
+3. **Volatility** — 21-day realized vol percentile within trailing 252 days. High percentile = stressed.
+4. **Drawdown** — Current drawdown from 252-day high. Deep drawdown = unhealthy.
+5. **Breadth** — Fraction of sector constituents with positive 21-day returns.
+6. **Macro Stress** — Sector-specific sensitivity to macro indicators.
+
+### Macro Stress Profiles
+
+Each sector has unique sensitivity weights to 5 macro indicators:
+
+- **Real Estate** — rate_stress 0.90, credit_stress 0.80 (REITs highly rate-sensitive)
+- **Financial Services** — credit_stress 0.90, financial_stress 0.80 (loan losses, counterparty)
+- **Utilities** — rate_stress 0.80 (bond-proxy, high debt)
+- **Consumer Cyclical** — labor_stress 0.70 (consumer spending)
+- **Technology** — financial_stress 0.70 (risk-on/off sensitivity)
+- **Consumer Defensive** — labor_stress 0.30 (low sensitivity, staples)
+- **Energy** — financial_stress 0.40, credit_stress 0.40 (capital-intensive)
+- **Healthcare** — financial_stress 0.30 (defensive)
+- **Industrials** — labor_stress 0.60 (cyclical, capex-driven)
+- **Communication Services** — financial_stress 0.60, rate_stress 0.40
+- **Basic Materials** — financial_stress 0.50
+
+Macro indicators: credit spreads (HY OAS), real yields (DFII10), financial stress (STLFSI2), yield curve (10Y-2Y), initial claims (ICSA).
+
+### Scoring
+
+Signals 1-5 are price-technical; signal 6 is fundamental/macro. All mapped to [-1, +1], then blended with weights: 0.15 each for signals 1-5, 0.25 for macro stress. Raw composite rescaled to [0, 1].
+
+### Sector ETF Map
+
+XLK (Technology) · XLF (Financial Services) · XLV (Healthcare) · XLI (Industrials) · XLY (Consumer Cyclical) · XLP (Consumer Defensive) · XLE (Energy) · XLU (Utilities) · XLRE (Real Estate) · XLC (Communication Services) · XLB (Basic Materials)
+
+### SHI Action Zones
+
+- **SHI > 0.55** — Healthy: maintain or increase exposure
+- **SHI 0.40-0.55** — Caution: reduce sizing, sector put spread hedging activates
+- **SHI 0.25-0.40** — Reduce: significant exposure reduction, defensive hedging active
+- **SHI < 0.25** — Kill: allocator liquidates sector exposure entirely
+
+---
+
+## Assessment Engine
+
+**Module:** `prometheus/assessment/engine.py`
+**Output:** `instrument_scores` per instrument per horizon → persisted to `instrument_scores`
+
+Combines regime context, stability classification, fragility scores, and joint embeddings to produce alpha scores per instrument across multiple time horizons. These scores feed into universe selection and portfolio optimization.
+
+---
+
+## Universe Engine
+
+**Module:** `prometheus/universe/engine.py`
+**Output:** `universe_members` with lambda scores → persisted to `universe_members`
+
+Selects which instruments belong to the tradeable universe (CORE_EQ). Uses:
+- Lambda (λ) opportunity density scores from cluster dispersion models
+- Assessment engine alpha scores
+- Liquidity and market cap filters
+
+The universe is recomputed daily. Members receive a lambda score in the reasons JSONB field, which downstream strategies use for conviction-based sizing.
+
+---
+
+## Portfolio & Risk
+
+**Module:** `prometheus/portfolio/optimizer.py`
+**Output:** `target_portfolios` with optimized weights → persisted to `target_portfolios`
+
+Takes universe members, their scores, SHI sector limits, and risk constraints to produce target portfolio weights via mean-variance optimization with:
+- Sector exposure limits (informed by SHI)
+- Position concentration limits
+- Turnover constraints
+- Transaction cost estimates
+""",
+    },
+    "options": {
+        "title": "Options & Derivatives Layer",
+        "content": """# Options & Derivatives Layer
+
+The regime-adaptive options overlay: 17 strategies across 5 categories, dynamically allocated based on market regime. All strategies use defined-risk structures (spreads) — no naked short options.
+
+---
+
+## Strategy Flow
+
+```mermaid
+graph TB
+    subgraph SIGNALS["Signal Inputs"]
+        REG["Market Regime\\n(RISK_ON · NEUTRAL · RISK_OFF · CRISIS)"]
+        VIX["VIX Level\\n+ VIX3M Contango"]
+        FRAG["Market Fragility\\n(aggregate score)"]
+        SHI["Sector Health Index\\n(11 sectors x 6 signals)"]
+        LAM["Lambda Scores\\n(per-stock conviction)"]
+        STAB["STAB Scores\\n(per-stock stability)"]
+        FRAG_S["Frag Scores\\n(per-stock fragility)"]
+        EQPR["Equity & ETF Prices"]
+    end
+
+    ALLOC["Strategy Allocator\\nRegime to Category Budgets\\nDIRECTIONAL · INCOME · HEDGE\\nVOLATILITY · FUTURES\\nPortfolio Greeks Limits\\ndelta · gamma · theta · vega"]
+
+    REG --> ALLOC
+    VIX --> ALLOC
+    FRAG --> ALLOC
+
+    subgraph CAT_HEDGE["HEDGE (4 strategies)"]
+        S_PP["Protective Put"]
+        S_COLLAR["Collar"]
+        S_SECTOR_PS["Sector Put Spread\\n(regime-adaptive thresholds)"]
+        S_VIX["VIX Tail Hedge"]
+    end
+
+    subgraph CAT_INCOME["INCOME (5 strategies)"]
+        S_CC["Covered Call"]
+        S_SP["Short Put (CSP)"]
+        S_IC["Iron Condor"]
+        S_IB["Iron Butterfly"]
+        S_WHEEL["Wheel"]
+    end
+
+    subgraph CAT_DIR["DIRECTIONAL (5 strategies)"]
+        S_BCS["Bull Call Spread"]
+        S_BPS["Bear Put Spread\\n(offensive bearish)"]
+        S_SD["Sector Decline\\n(offensive sector shorts)"]
+        S_MOM["Momentum Call"]
+        S_LEAPS["LEAPS"]
+    end
+
+    subgraph CAT_VOL["VOLATILITY (2 strategies)"]
+        S_SS["Straddle / Strangle"]
+        S_CAL["Calendar Spread"]
+    end
+
+    subgraph CAT_FUT["FUTURES (1 strategy)"]
+        S_FO["Futures Overlay"]
+        S_FOPT["Futures Options"]
+    end
+
+    ALLOC --> CAT_HEDGE
+    ALLOC --> CAT_INCOME
+    ALLOC --> CAT_DIR
+    ALLOC --> CAT_VOL
+    ALLOC --> CAT_FUT
+
+    SHI --> S_SECTOR_PS
+    SHI --> S_SD
+    LAM --> S_BCS
+    LAM --> S_BPS
+    LAM --> S_SP
+    LAM --> S_LEAPS
+    LAM --> S_WHEEL
+    STAB --> S_BCS
+    STAB --> S_BPS
+    FRAG_S --> S_BPS
+    VIX --> S_CC
+    VIX --> S_VIX
+    EQPR --> CAT_INCOME
+    EQPR --> CAT_DIR
+
+    LCM["Position Lifecycle Manager\\nRoll near expiry (< 14 DTE)\\nProfit target close (60%)\\nStop-loss management\\nRegime-flip exits"]
+
+    CAT_HEDGE --> LCM
+    CAT_INCOME --> LCM
+    CAT_DIR --> LCM
+    CAT_VOL --> LCM
+    CAT_FUT --> LCM
+
+    IBKR["IBKR Gateway\\n(paper / live)"]
+    LCM --> IBKR
+
+    classDef input fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+    classDef alloc fill:#44337a,stroke:#6b46c1,color:#e2e8f0
+    classDef hedge fill:#742a2a,stroke:#c53030,color:#e2e8f0
+    classDef income fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
+    classDef dir fill:#553c00,stroke:#d69e2e,color:#e2e8f0
+    classDef vol fill:#2a4365,stroke:#3182ce,color:#e2e8f0
+    classDef fut fill:#22543d,stroke:#38a169,color:#e2e8f0
+    classDef lifecycle fill:#4a1d96,stroke:#7c3aed,color:#e2e8f0
+
+    class REG,VIX,FRAG,SHI,LAM,STAB,FRAG_S,EQPR input
+    class ALLOC alloc
+    class S_PP,S_COLLAR,S_SECTOR_PS,S_VIX hedge
+    class S_CC,S_SP,S_IC,S_IB,S_WHEEL income
+    class S_BCS,S_BPS,S_SD,S_MOM,S_LEAPS dir
+    class S_SS,S_CAL vol
+    class S_FO,S_FOPT fut
+    class LCM lifecycle
+```
+
+---
+
+## Strategy Allocator
+
+The `StrategyAllocator` (`prometheus/execution/strategy_allocator.py`) decides which strategies run and how much capital each receives.
+
+### Capital Budget Templates (% of 15% NAV derivatives budget)
+
+**RISK_ON:** DIRECTIONAL 35% · INCOME 40% · HEDGE 10% · VOLATILITY 5% · FUTURES 10%
+
+**NEUTRAL:** DIRECTIONAL 5% · INCOME 50% · HEDGE 15% · VOLATILITY 15% · FUTURES 15%
+
+**RECOVERY:** DIRECTIONAL 0% · INCOME 15% · HEDGE 45% · VOLATILITY 15% · FUTURES 25%
+
+**RISK_OFF:** DIRECTIONAL 0% · INCOME 0% · HEDGE 50% · VOLATILITY 0% · FUTURES 50%
+
+**CRISIS:** DIRECTIONAL 0% · INCOME 0% · HEDGE 60% · VOLATILITY 0% · FUTURES 40%
+
+### Portfolio-Level Greeks Limits
+
+- Max |delta| as % of NAV: **20%**
+- Max portfolio gamma: **50,000**
+- Min daily theta: **-$10,000**
+- Max portfolio vega: **100,000**
+
+### Always-On Strategies
+
+`vix_tail_hedge` runs regardless of regime — 0.5% of NAV annualized (~3% annualized) on OTM VIX calls as catastrophe insurance.
+
+---
+
+## Regime → Strategy Activation
+
+**RISK_ON:** bull_call_spread, momentum_call, leaps, covered_call, short_put, wheel, iron_condor, iron_butterfly, vix_tail_hedge, sector_put_spread
+
+**NEUTRAL:** covered_call, short_put, iron_condor, iron_butterfly, calendar_spread, wheel, vix_tail_hedge, sector_put_spread, sector_decline
+
+**RECOVERY:** collar, protective_put, covered_call, short_put, straddle_strangle, vix_tail_hedge, futures_overlay, sector_put_spread
+
+**RISK_OFF:** protective_put, sector_put_spread, vix_tail_hedge, collar, futures_overlay, futures_option, bear_put_spread, sector_decline
+
+**CRISIS:** protective_put, vix_tail_hedge, futures_overlay, futures_option, sector_put_spread, bear_put_spread, sector_decline
+
+---
+
+## All 17 Strategies — Detail
+
+### HEDGE Category
+
+**Protective Put** — Buy SPY puts when MHI < 0.40. OTM 5%, 45-90 DTE, 2% NAV budget. Rolls at 14 DTE. Closes when MHI recovers.
+
+**Collar** — Buy protective put + sell covered call on large equity positions. Put delta 0.25, call delta 0.25. Min position $25K. 45-90 DTE. Rolls at 14 DTE.
+
+**Sector Put Spread** — Defensive hedge on sector ETFs when SHI drops into "reduce" zone (SHI < 0.40, above kill threshold 0.25). 7% wide spreads. Regime-adaptive: threshold widens +0.10 in CRISIS/RISK_OFF for earlier activation. Max 1% NAV per sector.
+
+**VIX Tail Hedge** — Always-on OTM VIX calls. Strike = VIX + 60% (far OTM, cheap tail insurance). 0.5% NAV per roll, 45-90 DTE. Rolls at 14 DTE.
+
+### INCOME Category
+
+**Covered Call** — Sell ~0.20 delta calls on largest equity positions. VIX >= 16 for entry (enough premium). 30-45 DTE, coverage ratio 20%, profit target 80%.
+
+**Short Put (CSP)** — Sell 0.25 delta cash-secured puts on high-conviction names (lambda >= 0.60, STAB >= 0.50). Max 5% buying power per underlying, 10 concurrent positions. Profit target 50%.
+
+**Iron Condor** — Sell OTM put + call spreads on SPY in calm markets (VIX < 22, FRAG < 0.45). ~7% OTM short strikes, $5 wings. 30-45 DTE, profit target 50%.
+
+**Iron Butterfly** — ATM straddle + OTM wings on SPY. Very low vol only (VIX < 16). Higher credit but narrower profit zone. Max 2 positions.
+
+**Wheel** — CSP → assignment → covered call cycle. Lambda >= 0.60, STAB >= 0.55. CSP at 0.28 delta, CC at 0.30 delta. 6% NAV per position, max 5 positions.
+
+### DIRECTIONAL Category
+
+**Bull Call Spread** — Long slightly-ITM call + short OTM call on high-conviction names. Lambda >= 0.65, STAB >= 0.50, RISK_ON only. 7% wide, 3% NAV risk per trade, max 9 positions. Profit target 60%.
+
+**Bear Put Spread** — Long ATM put + short OTM put on fundamentally weak names. Lambda <= 0.35, STAB <= 0.40, FRAG >= 0.50. CRISIS/RISK_OFF only. 7% wide, 2% NAV risk, max 6 positions.
+
+**Sector Decline** — Offensive put spreads on weak sector ETFs. SHI < 0.45, min 3/6 negative signals. Conviction-scaled sizing (more negative signals = larger position). Active in NEUTRAL too for early entry. 1.5% base NAV per trade.
+
+**Momentum Call** — SPY ATM call spreads in confirmed bull markets. RISK_ON + VIX < 20 + positive 63d momentum. Addresses bull-year drag where vol-harvesting underperforms directional rips.
+
+**LEAPS** — Deep ITM calls (0.70-0.80 delta, 6-12 months) as stock replacement. Frees capital while maintaining upside. Lambda >= 0.65, min $50K position value. Rolls at 90 DTE.
+
+### VOLATILITY Category
+
+**Straddle/Strangle** — Buy vol when cheap (VIX <= 18, FRAG >= 0.35). 5% OTM strangle legs preferred. 14-30 DTE, profit target 100%, max loss 50%.
+
+**Calendar Spread** — Front-month short + back-month long at same strike. Profits from vol term structure (min 8% contango). Front 25-35 DTE, back 55-90 DTE.
+
+### FUTURES Category
+
+**Futures Overlay** — ES/NQ futures for portfolio beta management. FRAG >= 0.65 → short ES (max 30% hedge). Lambda aggregate >= 0.70 → long ES (max 15% leverage). Multiplier: $50/point.
+
+**Futures Options** — VX call spreads when FRAG low (expect vol expansion) + ES put spreads as cheap downside protection (MHI < 0.45). Defined-risk FOP trades.
+
+---
+
+## Position Lifecycle Manager
+
+Every open option position is managed by the lifecycle system:
+
+- **Roll near expiry** — Positions with < 14 DTE are rolled to the next monthly expiry (except LEAPS which roll at 90 DTE).
+- **Profit target close** — Most strategies close at 50-80% of max profit. Bull/bear spreads close at 60%.
+- **Stop-loss management** — Iron condors and butterflies close at 14 DTE to avoid gamma risk.
+- **Regime-flip exits** — Directional strategies (bull call, momentum call) close if regime flips away from their activation regime. Bear put spreads close if regime turns bullish.
+""",
+    },
+    "database": {
+        "title": "Database Schema",
+        "content": """# Database Schema
+
+Prometheus v2 uses two PostgreSQL databases on the same local server: **runtime_db** for live engine state and execution, and **historical_db** for market data, embeddings, and text.
+
+---
+
+## Schema Overview
+
+```mermaid
+graph LR
+    subgraph RUNTIME["runtime_db (~30 tables)"]
+        subgraph CORE["Core Entities"]
+            M["markets"]
+            I["issuers"]
+            INS["instruments"]
+            P["portfolios"]
+            S["strategies"]
+        end
+
+        subgraph ENG["Engine Outputs"]
+            REG["regimes\\n(label, confidence,\\nembedding)"]
+            SV["stability_vectors\\n(per-entity components)"]
+            FM["fragility_measures\\n(score, scenario losses)"]
+            STC["soft_target_classes\\n(STABLE/TARGETABLE/\\nWATCH/FRAGILE)"]
+            IS["instrument_scores\\n(alpha per horizon)"]
+            SHD["sector_health_daily\\n(SHI score, raw_composite,\\n6-signal JSONB)"]
+            UM["universe_members\\n(entity_id, score,\\nreasons JSONB)"]
+            TP["target_portfolios\\n(optimized weights)"]
+        end
+
+        subgraph EXECUTION["Execution & Tracking"]
+            ER["engine_runs\\n(phase state machine)"]
+            JE["job_executions\\n(DAG job tracking)"]
+            ORD["orders"]
+            FIL["fills"]
+            PS["positions_snapshots"]
+            ED["engine_decisions"]
+            EA["executed_actions"]
+            DO["decision_outcomes"]
+        end
+
+        subgraph CONFIG["Configuration"]
+            EC["engine_configs\\n(versioned per engine)"]
+            MOD["models\\n(trained artifacts)"]
+        end
+    end
+
+    subgraph HISTORICAL["historical_db (~15 tables)"]
+        subgraph MKTDATA["Market Data"]
+            PD["prices_daily"]
+            RD["returns_daily"]
+            VD["volatility_daily"]
+            FD["factors_daily"]
+            IFD["instrument_factors_daily"]
+            CP["correlation_panels"]
+        end
+
+        subgraph TEXTDATA["Text & Events"]
+            NA["news_articles"]
+            NL["news_links"]
+            FI["filings"]
+            ECL["earnings_calls"]
+            ME["macro_events"]
+        end
+
+        subgraph EMBEDDINGS["Embeddings"]
+            TE["text_embeddings"]
+            NWE["numeric_window_embeddings"]
+            JNE["joint_embeddings"]
+        end
+    end
+
+    classDef core fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
+    classDef engine fill:#742a2a,stroke:#c53030,color:#e2e8f0
+    classDef exec fill:#553c00,stroke:#d69e2e,color:#e2e8f0
+    classDef config fill:#44337a,stroke:#6b46c1,color:#e2e8f0
+    classDef hist fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+
+    class M,I,INS,P,S core
+    class REG,SV,FM,STC,IS,SHD,UM,TP engine
+    class ER,JE,ORD,FIL,PS,ED,EA,DO exec
+    class EC,MOD config
+    class PD,RD,VD,FD,IFD,CP,NA,NL,FI,ECL,ME,TE,NWE,JNE hist
+```
+
+---
+
+## Runtime DB — Key Tables
+
+### Core Entities
+
+- **markets** — Market definitions (US_EQ, EU_EQ, ASIA_EQ) with trading hours, timezone, calendar
+- **issuers** — Companies/entities with classification data (sector, industry, market cap tier)
+- **instruments** — Tradeable securities (stocks, ETFs, options, futures) linked to issuers
+- **portfolios** — Portfolio definitions with strategy assignment
+- **strategies** — Strategy metadata and configuration references
+
+### Engine Outputs
+
+- **regimes** — One row per (region, date). Stores regime label (CARRY/NEUTRAL/RISK_OFF/CRISIS/RECOVERY), confidence score, embedding vector, and metadata JSONB. Transition suppression info recorded in metadata.
+
+- **stability_vectors** — Per-entity stability component scores. Used by STAB engine to classify into soft-target tiers.
+
+- **fragility_measures** — Per-entity fragility score (0-1) plus scenario loss estimates under stress conditions. Drives bear put spread targeting and futures overlay sizing.
+
+- **soft_target_classes** — Per-entity classification: STABLE, TARGETABLE, WATCH, FRAGILE. Derived from stability vectors + regime context.
+
+- **instrument_scores** — Alpha scores per instrument per time horizon. Output of Assessment Engine, consumed by Universe and Portfolio engines.
+
+- **sector_health_daily** — Per-sector per-date: SHI score ∈ [0,1], raw_composite, and a signals JSONB column containing all 6 signal values (trend, momentum, volatility, drawdown, breadth, macro_stress). Powers the GUI sector health panel and options hedging decisions.
+
+- **universe_members** — Which instruments are in the tradeable universe (CORE_EQ) on each date. Includes entity_id, composite score, and reasons JSONB with lambda scores and filter results.
+
+- **target_portfolios** — Optimized portfolio weights per strategy/date. Output of the portfolio optimizer, consumed by equity execution.
+
+### Execution & Tracking
+
+- **engine_runs** — One row per (market, date) pipeline execution. Tracks phase state machine: WAITING_FOR_DATA → DATA_READY → ... → COMPLETED or FAILED.
+
+- **job_executions** — DAG job-level tracking. Each job has: execution_id, job_type, dag_id, status (PENDING/RUNNING/SUCCESS/FAILED/SKIPPED), attempt number, timing, error details.
+
+- **orders** — Trade orders submitted to broker. Linked to strategy and engine run.
+
+- **fills** — Execution fills received from broker. Linked to orders.
+
+- **positions_snapshots** — Point-in-time portfolio holdings. Snapshotted daily after execution.
+
+- **engine_decisions** — Structured decision records from engines (what was decided and why).
+
+- **executed_actions** — Actions taken based on decisions (trades placed, positions adjusted).
+
+- **decision_outcomes** — Post-hoc evaluation of decision quality (was the trade profitable, did the signal work).
+
+### Configuration
+
+- **engine_configs** — Versioned configuration per engine. Supports A/B testing of engine parameters.
+- **models** — Trained model artifacts (embeddings, clustering models) with version tracking.
+
+---
+
+## Historical DB — Key Tables
+
+### Market Data
+
+- **prices_daily** — OHLCV + adjusted close for all instruments. Primary data source for all engines.
+- **returns_daily** — Computed daily returns (simple and log) from prices.
+- **volatility_daily** — Realized volatility at multiple windows (5d, 10d, 21d, 63d).
+- **factors_daily** — Factor returns (value, momentum, carry, quality, size) per date.
+- **instrument_factors_daily** — Per-instrument factor exposures.
+- **correlation_panels** — Rolling correlation matrices (within and cross asset class).
+
+### Text & Events
+
+- **news_articles** — Financial news with source, publication date, relevance scores.
+- **news_links** — Links between news articles and entities/instruments.
+- **filings** — SEC/regulatory filings.
+- **earnings_calls** — Earnings call transcripts and sentiment.
+- **macro_events** — Scheduled macro events (FOMC, CPI, payrolls) with actual/expected values.
+
+### Embeddings
+
+- **text_embeddings** — Dense vector representations of text content.
+- **numeric_window_embeddings** — Price/return pattern embeddings from sliding windows.
+- **joint_embeddings** — Fused text + numeric embeddings via Joint Encoder. Primary input to Regime and STAB engines.
+
+---
+
+## Schema Management
+
+All schema changes are managed via **Alembic migrations** in `migrations/versions/`. Each migration is numbered sequentially (e.g., `0082_sector_health_daily.py`). Migrations are applied automatically on deployment.
+""",
+    },
+    "infrastructure": {
+        "title": "Infrastructure & Operations",
+        "content": """# Infrastructure & Operations
+
+Single-server deployment running Fedora Linux with systemd services, PostgreSQL, and IBKR Gateway.
+
+---
+
+## Service Architecture
+
+```mermaid
+flowchart TB
+    subgraph INTERNET["Internet"]
+        BROWSER["Browser\\n(HTTPS :8443)"]
+        IBKR_GW["IBKR Gateway\\n(TWS API :4001)"]
+        YAHOO_API["Yahoo Finance API"]
+        FRED_API["FRED API"]
+    end
+
+    subgraph SERVER["Prometheus Server (Fedora Linux)"]
+        subgraph SYSTEMD["systemd Services"]
+            NGINX["nginx\\nHTTPS reverse proxy\\n:8443 → :8000\\nServes React static build"]
+            API_SVC["prometheus-api.service\\nFastAPI / Uvicorn\\n:8000\\nREST API + WebSocket"]
+            DAEMON_SVC["prometheus-daemon.service\\nMarket-Aware Daemon\\nDAG orchestration\\nFollow-the-sun scheduling"]
+        end
+
+        subgraph DATA["Data Layer"]
+            PG["PostgreSQL\\nruntime_db + historical_db\\nLocal socket connection"]
+        end
+
+        subgraph STATIC["Static Assets"]
+            REACT["React Build\\n(/opt/prometheus/prometheus_v2/\\nprometheus_web/dist/)\\nVite + Tailwind + Recharts"]
+        end
+    end
+
+    BROWSER --> NGINX
+    NGINX --> API_SVC
+    NGINX --> REACT
+    API_SVC --> PG
+    DAEMON_SVC --> PG
+    DAEMON_SVC --> IBKR_GW
+    DAEMON_SVC --> YAHOO_API
+    DAEMON_SVC --> FRED_API
+
+    classDef internet fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    classDef service fill:#44337a,stroke:#6b46c1,color:#e2e8f0
+    classDef data fill:#1a365d,stroke:#2c5282,color:#e2e8f0
+
+    class BROWSER,IBKR_GW,YAHOO_API,FRED_API internet
+    class NGINX,API_SVC,DAEMON_SVC service
+    class PG,REACT data
+```
+
+---
+
+## systemd Services
+
+### prometheus-api.service
+
+- **Process:** FastAPI application running under Uvicorn
+- **Port:** 8000 (HTTP, proxied by nginx)
+- **Responsibilities:**
+  - REST API for all engine outputs (regime, sectors, pipelines, positions)
+  - WebSocket connections for real-time updates
+  - Docs endpoint serving architecture markdown files
+  - Health check endpoint at `/api/status/health`
+- **Restart policy:** Always restart on failure
+
+### prometheus-daemon.service
+
+- **Process:** Market-aware DAG orchestrator
+- **Responsibilities:**
+  - Monitors market state transitions across US_EQ, EU_EQ, ASIA_EQ
+  - Builds and executes daily pipeline DAGs per market
+  - Manages job retries, timeouts, and state tracking
+  - Triggers data ingestion, engine runs, and execution phases
+- **Restart policy:** Always restart on failure
+
+### nginx
+
+- **Port:** 8443 (HTTPS with self-signed cert)
+- **Configuration:**
+  - Reverse proxy `/api/*` → `localhost:8000`
+  - Serve React static build from dist directory
+  - SPA fallback: all non-API routes → `index.html`
+  - WebSocket upgrade support for live data feeds
+
+---
+
+## Deployment Paths
+
+**Development:** `/home/feanor/coding/prometheus_v2/`
+
+**Production:** `/opt/prometheus/prometheus_v2/`
+
+### Deployment Workflow
+
+1. Develop and test in dev path
+2. Build frontend: `cd prometheus_web && npm run build`
+3. Copy to production: `sudo cp -r prometheus_web/dist/* /opt/.../prometheus_web/dist/`
+4. Copy Python changes: `sudo rsync -a prometheus/ /opt/.../prometheus/`
+5. Restart services: `sudo systemctl restart prometheus-api prometheus-daemon`
+6. Verify: `./start_production.sh` (health-checks all endpoints)
+
+### start_production.sh
+
+The startup script:
+- Checks if services are already running (skips sudo if all up)
+- Starts only stopped services
+- Health-checks API (30s timeout) and HTTPS (10s timeout)
+- Verifies data endpoints (regime, sectors, pipelines)
+- Prints final "Prometheus v2 is live" banner
+
+---
+
+## Modes of Operation
+
+### LIVE
+- **Broker:** LiveBroker → IBKR live gateway (port 7496)
+- **Data:** Real-time market data
+- **Purpose:** Production trading with real capital
+- **Status:** Not yet activated
+
+### PAPER (Current Mode)
+- **Broker:** PaperBroker → IBKR paper gateway (port 4001)
+- **Data:** Real-time market data
+- **Purpose:** Live paper trading for system validation
+- **Status:** Active since March 2026
+
+### BACKTEST_PY
+- **Broker:** BacktestBroker + TimeMachine + MarketSimulator
+- **Data:** Historical data with no-lookahead guarantee
+- **Purpose:** Strategy validation and parameter tuning
+- **Fills:** Simulated with configurable slippage models
+
+### BACKTEST_CPP
+- **Broker:** prom2_cpp C++ backend
+- **Data:** In-memory historical data
+- **Purpose:** Fast research runs and parameter sweeps
+- **Performance:** ~100x faster than Python backtester for numerical-heavy workloads
+
+---
+
+## Monitoring & Observability
+
+### GUI Dashboard (React)
+
+Bloomberg-style command center with panels for:
+- **Regime & Market** — Current regime, regime history, market health indicators, sector health bars
+- **Portfolio** — Holdings, P&L, sector exposure, greeks
+- **Pipeline Status** — Engine run phases per market, job execution status
+- **Options** — Open option positions, strategy allocations, P&L by strategy
+- **Docs** — This architecture documentation with interactive mermaid diagrams
+
+### API Endpoints
+
+All engine outputs available via REST at `/api/status/*`:
+- `/api/status/regime` — Current and historical regime data
+- `/api/status/sectors` — Sector health scores and signal breakdown
+- `/api/status/pipeline` — Engine run status per market
+- `/api/status/positions` — Current portfolio holdings
+- `/api/status/docs/{key}` — Architecture documentation pages
+
+### Logging
+
+Structured logging via `prometheus.core.logging` with:
+- Per-module loggers
+- Log levels: DEBUG, INFO, WARNING, ERROR
+- Rotation and retention policies via systemd journal
+
+---
+
+## External Dependencies
+
+- **IBKR Gateway** — TWS/IB Gateway for order execution and position sync
+- **Yahoo Finance** — Daily OHLCV price data for all instruments
+- **FRED API** — Macro indicators: STLFSI2 (financial stress), DGS2/DGS10 (yields), DFII10 (real yields), ICSA (initial claims), BAMLH0A0HYM2 (HY OAS)
+- **PostgreSQL** — Local database server (two databases)
+- **Node.js/npm** — Frontend build toolchain (Vite, React, Tailwind)
+- **Python 3.12** — Backend runtime
+""",
+    },
+}
+
+
+@router.get("/docs")
+async def list_docs() -> List[Dict[str, str]]:
+    """List available documentation pages."""
+    return [{"key": k, "title": v["title"]} for k, v in _PROMETHEUS_DOCS.items()]
+
+
+@router.get("/docs/{key}")
+async def get_doc(key: str) -> Dict[str, str]:
+    """Return a single documentation page."""
+    doc = _PROMETHEUS_DOCS.get(key)
+    if not doc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Doc '{key}' not found")
+    return doc

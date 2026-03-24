@@ -11,18 +11,18 @@ runner.
 from __future__ import annotations
 
 import json
+import os
 import socket
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+from apathis.core.database import get_db_manager
+from apathis.core.logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from prometheus.books.registry import AllocatorSleeveSpec, BookKind, load_book_registry
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
 from prometheus.monitoring.job_runner import JobRecord, create_job, get_job, submit_job
-
 
 logger = get_logger(__name__)
 
@@ -234,17 +234,88 @@ def _validate_override_keys(overrides: Dict[str, Any], *, allowed: set[str], lab
 
 @router.post("/run_backtest", response_model=JobResponse)
 async def run_backtest(request: BacktestRequest = Body(...)) -> JobResponse:
-    """Submit backtest job for execution.
+    """Submit a sleeve backtest for async execution.
 
-    This endpoint is currently a stub. It creates a job entry so the UI can
-    track intent, but does not execute.
+    Runs the full STAB → Assessment → Universe → Portfolio pipeline over
+    the requested date range using the pilot sleeve defaults. Results are
+    persisted to ``backtest_runs`` / ``backtest_daily_equity``.
+
+    ``strategy_id`` is used as both the sleeve_id and strategy identifier.
+    Pass optional ``config_overrides`` keys ``market_id``, ``initial_cash``,
+    and ``disable_risk`` to customise the run.
     """
 
-    rec = create_job(
+    try:
+        start_date = date.fromisoformat(request.start_date)
+        end_date = date.fromisoformat(request.end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {exc}") from exc
+
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="end_date must be >= start_date")
+
+    ovr = request.config_overrides or {}
+    market_id = str(ovr.get("market_id", "US_EQ"))
+    initial_cash = float(ovr.get("initial_cash", 1_000_000.0))
+    apply_risk = not bool(ovr.get("disable_risk", False))
+
+    def _run() -> Dict[str, Any]:
+        from apathis.core.config import get_config
+        from apathis.core.database import DatabaseManager
+        from apathis.core.time import TradingCalendar, TradingCalendarConfig
+
+        from prometheus.backtest.campaign import _run_backtest_for_sleeve
+        from prometheus.backtest.config import SleeveConfig
+
+        sleeve_id = str(request.strategy_id)
+        base = sleeve_id
+        cfg = SleeveConfig(
+            sleeve_id=base,
+            strategy_id=str(request.strategy_id),
+            market_id=market_id,
+            universe_id=f"{base}_UNIVERSE",
+            portfolio_id=f"{base}_PORTFOLIO",
+            assessment_strategy_id=f"{base}_ASSESS",
+            assessment_horizon_days=21,
+            assessment_backend="basic",
+            assessment_use_joint_context=False,
+            stability_risk_alpha=0.5,
+            stability_risk_horizon_steps=1,
+            regime_risk_alpha=0.0,
+            lambda_score_weight=0.0,
+        )
+
+        config = get_config()
+        db_manager = DatabaseManager(config)
+        calendar = TradingCalendar(TradingCalendarConfig(market=market_id))
+
+        summary = _run_backtest_for_sleeve(
+            db_manager=db_manager,
+            calendar=calendar,
+            market_id=market_id,
+            start_date=start_date,
+            end_date=end_date,
+            cfg=cfg,
+            initial_cash=initial_cash,
+            apply_risk=apply_risk,
+            lambda_provider=None,
+        )
+
+        m = summary.metrics or {}
+        return {
+            "run_id": summary.run_id,
+            "sleeve_id": summary.sleeve_id,
+            "strategy_id": summary.strategy_id,
+            "cumulative_return": float(m.get("cumulative_return", 0.0)),
+            "annualised_sharpe": float(m.get("annualised_sharpe", 0.0)),
+            "max_drawdown": float(m.get("max_drawdown", 0.0)),
+        }
+
+    rec = submit_job(
         prefix="backtest",
         job_type="BACKTEST",
-        status="PENDING",
-        message=f"Backtest {request.strategy_id} from {request.start_date} to {request.end_date}",
+        message=f"Backtest {request.strategy_id} {request.start_date}→{request.end_date} mkt={market_id}",
+        fn=_run,
     )
 
     return JobResponse(job_id=rec.job_id, status=rec.status, message=f"Backtest job submitted: {rec.job_id}")
@@ -588,7 +659,6 @@ async def schedule_dag(request: DAGScheduleRequest = Body(...)) -> JobResponse:
     - ``dag_name="intel"`` — builds and registers an intel DAG
     - ``dag_name="market"`` — builds a market pipeline DAG
     """
-    import asyncio
     from datetime import date as date_cls
 
     if request.dag_name == "intel":
@@ -599,6 +669,7 @@ async def schedule_dag(request: DAGScheduleRequest = Body(...)) -> JobResponse:
 
         def _run_intel_dag() -> Dict[str, Any]:
             from apathis.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
+
             from prometheus.monitoring.report_service import generate_log_report
 
             dag = build_intel_dag(as_of, is_sunday=is_sunday)
@@ -740,12 +811,11 @@ async def ibkr_status() -> IbkrStatusResponse:
     ]
 
     endpoints: List[IbkrEndpointStatus] = []
-    any_reachable = False
 
     for label, h, p in probes:
         reachable, latency, error = _tcp_probe(h, p)
         if reachable:
-            any_reachable = True
+            pass
         endpoints.append(
             IbkrEndpointStatus(
                 label=label,
@@ -757,21 +827,24 @@ async def ibkr_status() -> IbkrStatusResponse:
             )
         )
 
-    # Determine overall status
-    reachable_count = sum(1 for ep in endpoints if ep.reachable)
-    if reachable_count == len(endpoints):
+    # Determine overall status.
+    # Gateway and TWS are mutually exclusive (can't log in to both),
+    # so "connected" means at least one is reachable — not all.
+    gateway_up = any(ep.reachable for ep in endpoints if "Gateway" in ep.label)
+    tws_up = any(ep.reachable for ep in endpoints if "TWS" in ep.label)
+    if gateway_up or tws_up:
         status = "connected"
-    elif reachable_count > 0:
-        status = "degraded"
     else:
         status = "disconnected"
 
+    reachable_count = sum(1 for ep in endpoints if ep.reachable)
     logger.debug("[ibkr_status] %s — %d/%d endpoints reachable", status, reachable_count, len(endpoints))
+    configured_account = os.getenv("IBKR_PAPER_ACCOUNT")
 
     return IbkrStatusResponse(
         status=status,
         mode="PAPER",
-        account="DUN807925",
+        account=configured_account if configured_account else "AUTO",
         endpoints=endpoints,
     )
 
@@ -808,12 +881,22 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
     sources = request.sources
     if "all" in sources:
         sources = ["ibkr", "engines", "nations"]
+    portfolio_id = str(request.portfolio_id or "").strip() or "IBKR_PAPER"
 
-    logger.info("[sync] sync_data endpoint called — sources=%s, portfolio_id=%s", sources, request.portfolio_id)
+    if "ibkr" in sources and not portfolio_id.upper().startswith("IBKR_"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "IBKR sync requires an IBKR_* portfolio_id. "
+                f"Received portfolio_id={portfolio_id!r}."
+            ),
+        )
+
+    logger.info("[sync] sync_data endpoint called — sources=%s, portfolio_id=%s", sources, portfolio_id)
 
     def _sync_job() -> Dict[str, Any]:
         results: Dict[str, Any] = {}
-        logger.info("[sync] Starting sync job — sources=%s, portfolio_id=%s", sources, request.portfolio_id)
+        logger.info("[sync] Starting sync job — sources=%s, portfolio_id=%s", sources, portfolio_id)
 
         if "ibkr" in sources:
             try:
@@ -848,12 +931,15 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                 if positions:
                     logger.info("[sync/ibkr] Persisting %d positions to positions_snapshots...", len(positions))
                     try:
-                        from datetime import date as _date, datetime as _dt, timezone as _tz
+                        from datetime import date as _date
+                        from datetime import datetime as _dt
+                        from datetime import timezone as _tz
+
                         from prometheus.execution.storage import record_positions_snapshot
 
                         record_positions_snapshot(
                             get_db_manager(),
-                            portfolio_id=request.portfolio_id,
+                            portfolio_id=portfolio_id,
                             positions=positions,
                             as_of_date=_date.today(),
                             mode="PAPER",
@@ -871,8 +957,9 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                     logger.info("[sync/ibkr] Persisting account summary to portfolio_risk_reports...")
                     try:
                         from datetime import date as _date
-                        from psycopg2.extras import Json as _Json
+
                         from apathis.core.ids import generate_uuid
+                        from psycopg2.extras import Json as _Json
 
                         net_liq = float(account.get("NetLiquidation", 0))
                         total_cash = float(account.get("TotalCashValue", 0))
@@ -898,7 +985,7 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                                     """,
                                     (
                                         generate_uuid(),
-                                        request.portfolio_id,
+                                        portfolio_id,
                                         _date.today(),
                                         net_liq,
                                         total_cash,
@@ -972,10 +1059,12 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
         # ── Benchmark price sync (SPY, etc.) ─────────────────
         try:
             logger.info("[sync/benchmark] Syncing benchmark prices (SPY.US)...")
-            from datetime import date as _date, timedelta as _td
+            from datetime import date as _date
+            from datetime import timedelta as _td
+
+            from apathis.data.writer import DataWriter as _DataWriter
             from apathis.data_ingestion.eodhd_client import EodhdClient as _EodhdClient
             from apathis.data_ingestion.eodhd_prices import ingest_eodhd_prices_for_instrument
-            from apathis.data.writer import DataWriter as _DataWriter
 
             _end = _date.today()
             _start = _end - _td(days=60)
@@ -1000,10 +1089,13 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
             try:
                 logger.info("[sync/nations] Re-scoring all nations...")
                 from datetime import date as _date
+
                 from apathis.nation.engine import NationScoringEngine
                 from apathis.nation.model_basic import BasicNationScoringModel
                 from apathis.nation.storage import (
-                    NationMacroStorage, NationScoreStorage, PersonProfileStorage,
+                    NationMacroStorage,
+                    NationScoreStorage,
+                    PersonProfileStorage,
                 )
 
                 db = get_db_manager()
@@ -1025,7 +1117,7 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                 scored = []
                 for (nation_code,) in nation_rows:
                     try:
-                        scores = engine.score_and_save(nation_code, _date.today())
+                        engine.score_and_save(nation_code, _date.today())
                         scored.append(nation_code)
                     except Exception:
                         logger.exception("[sync/nations] Failed to score %s", nation_code)

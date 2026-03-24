@@ -7,14 +7,14 @@ This module provides:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query
-from pydantic import BaseModel, Field
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
+from fastapi import APIRouter, Body, HTTPException, Path, Query
+from pydantic import BaseModel, Field
+
 from prometheus.meta.policy import MetaPolicySelection, load_meta_policy_artifact
 
 logger = get_logger(__name__)
@@ -97,6 +97,15 @@ class EngineConfig(BaseModel):
     last_updated: str
 
 
+class ConfigRow(BaseModel):
+    """Single editable config row for the Settings Configuration panel."""
+
+    key: str
+    value: str
+    section: str
+    editable: bool = False
+
+
 class EnginePerformance(BaseModel):
     """Engine performance metrics."""
 
@@ -104,6 +113,30 @@ class EnginePerformance(BaseModel):
     period: str
     metrics: Dict[str, float] = Field(default_factory=dict)
     by_regime: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+
+class EngineParameterItem(BaseModel):
+    """Single engine parameter with current value and rationale."""
+
+    key: str
+    value: Any = None
+    source: str
+    detrimental_reason: str
+
+
+class EngineParameterGroup(BaseModel):
+    """Parameter group for one engine."""
+
+    engine_id: str
+    engine_label: str
+    parameters: List[EngineParameterItem] = Field(default_factory=list)
+
+
+class EngineParametersResponse(BaseModel):
+    """All settings-page engine parameter groups."""
+
+    generated_at: str
+    engines: List[EngineParameterGroup] = Field(default_factory=list)
 
 
 class MetaPolicySelectionModel(BaseModel):
@@ -316,70 +349,437 @@ async def get_country_detail(
 # ============================================================================
 
 
-@meta_router.get("/configs", response_model=List[EngineConfig])
-async def get_configs() -> List[EngineConfig]:
-    """Return current engine configurations."""
-    return [
-        EngineConfig(
-            engine_name="regime",
-            config_version="v2.1.0",
-            parameters={
-                "lookback_days": 60,
-                "confidence_threshold": 0.75,
-                "transition_smoothing": 0.85,
-            },
-            last_updated="2024-11-15T10:00:00Z",
+@meta_router.get("/configs", response_model=List[ConfigRow])
+async def get_configs() -> List[ConfigRow]:
+    """Return current engine configurations as editable config rows.
+
+    Values are fetched from live config sources (YAML/env loaders).
+    The ``section``, ``key``, ``value``, ``editable`` format matches
+    the Settings page ConfigRow interface.
+    """
+    from apathis.core.config import get_config
+
+    from prometheus.execution.policy import load_execution_policy_artifact
+    from prometheus.meta.policy import load_meta_policy_artifact
+    from prometheus.pipeline.tasks import (
+        _load_daily_portfolio_risk_config,
+        _load_daily_universe_lambda_config,
+    )
+
+    region = "US"
+    market_id = "US_EQ"
+
+    daily_universe_cfg = _load_daily_universe_lambda_config(region)
+    daily_portfolio_cfg = _load_daily_portfolio_risk_config(region)
+    exec_policy_artifact = load_execution_policy_artifact()
+    exec_policy = exec_policy_artifact.policy
+    exec_risk = get_config().execution_risk
+    meta_policy_artifact = load_meta_policy_artifact()
+
+    def _risk_val(v: float) -> str:
+        return "unconstrained" if v == 0.0 else str(v)
+
+    rows: List[ConfigRow] = [
+        # Universe Engine
+        ConfigRow(section="Universe", key=f"{region}.lambda_score_weight", value=str(daily_universe_cfg.score_weight), editable=True),
+        ConfigRow(section="Universe", key=f"{region}.lambda_experiment_id", value=str(daily_universe_cfg.experiment_id or ""), editable=False),
+        ConfigRow(section="Universe", key=f"{region}.lambda_predictions_csv", value=str(daily_universe_cfg.predictions_csv or ""), editable=False),
+        # Portfolio Engine
+        ConfigRow(section="Portfolio", key=f"{region}.hazard_profile", value=str(daily_portfolio_cfg.hazard_profile), editable=False),
+        ConfigRow(section="Portfolio", key=f"{region}.meta_budget_enabled", value=str(daily_portfolio_cfg.meta_budget_enabled), editable=True),
+        ConfigRow(section="Portfolio", key=f"{region}.meta_budget_alpha", value=str(daily_portfolio_cfg.meta_budget_alpha), editable=True),
+        ConfigRow(section="Portfolio", key=f"{region}.meta_budget_min", value=str(daily_portfolio_cfg.meta_budget_min), editable=True),
+        # Execution Engine
+        ConfigRow(section="Execution", key="policy.turnover.one_way_limit", value=str(exec_policy.turnover.one_way_limit), editable=True),
+        ConfigRow(section="Execution", key="policy.no_trade_band_bps", value=str(exec_policy.no_trade_band_bps), editable=True),
+        ConfigRow(section="Execution", key="policy.cash_buffer_weight", value=str(exec_policy.cash_buffer_weight), editable=True),
+        # Execution Risk
+        ConfigRow(section="Execution Risk", key="risk.max_order_notional", value=_risk_val(exec_risk.max_order_notional), editable=True),
+        ConfigRow(section="Execution Risk", key="risk.max_position_notional", value=_risk_val(exec_risk.max_position_notional), editable=True),
+        ConfigRow(section="Execution Risk", key="risk.max_leverage", value=_risk_val(exec_risk.max_leverage), editable=True),
+    ]
+
+    policy = meta_policy_artifact.policies.get(market_id)
+    if policy is not None:
+        rows.extend([
+            ConfigRow(section="Meta Policy", key=f"{market_id}.default.book_id", value=str(policy.default.book_id), editable=False),
+            ConfigRow(section="Meta Policy", key=f"{market_id}.default.sleeve_id", value=str(policy.default.sleeve_id or ""), editable=False),
+        ])
+
+    return rows
+
+
+@meta_router.get("/performance")
+async def get_performance(
+    engine_name: str = Query("regime", description="Engine name (unused, kept for backward compat)"),
+    period: str = Query("30d", description="Period (unused, kept for backward compat)"),
+) -> Dict[str, Any]:
+    """Return flat performance metrics from the latest backtest run and live portfolio.
+
+    The Settings page iterates ``Object.entries(response)`` and renders
+    each key as a KPI card, so the response must be a flat dict of
+    scalar values (not nested ``metrics``/``by_regime`` dicts).
+    """
+    from apathis.core.database import get_db_manager
+
+    db = get_db_manager()
+    out: Dict[str, Any] = {}
+
+    # 1) Latest backtest run metrics
+    try:
+        with db.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT metrics_json, strategy_id, start_date, end_date
+                    FROM backtest_runs
+                    WHERE metrics_json IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                )
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+
+        if row is not None:
+            metrics_raw, strat, bt_start, bt_end = row
+            metrics = metrics_raw if isinstance(metrics_raw, dict) else {}
+            out["backtest_sharpe"] = round(float(metrics.get("annualised_sharpe", 0.0)), 3)
+            out["backtest_return"] = round(float(metrics.get("cumulative_return", 0.0)), 4)
+            out["backtest_max_dd"] = round(float(metrics.get("max_drawdown", 0.0)), 4)
+            out["backtest_win_rate"] = round(float(metrics.get("win_rate", 0.0)), 4)
+            out["backtest_period"] = f"{bt_start} → {bt_end}"
+    except Exception:
+        logger.exception("[meta/performance] backtest metrics query failed")
+
+    # 2) Live portfolio Sharpe from NLV series (positions_snapshots)
+    try:
+        with db.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    WITH snaps AS (
+                        SELECT as_of_date, timestamp, SUM(market_value) AS nlv
+                        FROM positions_snapshots
+                        WHERE portfolio_id = 'IBKR_PAPER'
+                        GROUP BY as_of_date, timestamp
+                    ),
+                    latest_per_day AS (
+                        SELECT DISTINCT ON (as_of_date)
+                               as_of_date, nlv
+                        FROM snaps
+                        WHERE nlv > 0
+                        ORDER BY as_of_date, timestamp DESC
+                    )
+                    SELECT as_of_date, nlv
+                    FROM latest_per_day
+                    ORDER BY as_of_date
+                    """,
+                )
+                nlv_rows = cursor.fetchall()
+            finally:
+                cursor.close()
+
+        if len(nlv_rows) >= 2:
+            import math
+
+            nlvs = [float(r[1]) for r in nlv_rows]
+            # Filter out capital-flow days (deposits/withdrawals) where
+            # NLV jumps >15% in a single day — not market returns.
+            flow_threshold = 0.15
+            daily_returns = []
+            for i in range(1, len(nlvs)):
+                if nlvs[i - 1] > 0:
+                    ret = (nlvs[i] - nlvs[i - 1]) / nlvs[i - 1]
+                    if abs(ret) <= flow_threshold:
+                        daily_returns.append(ret)
+
+            if daily_returns:
+                n = len(daily_returns)
+                mean_r = sum(daily_returns) / n
+                var_r = sum((r - mean_r) ** 2 for r in daily_returns) / max(n - 1, 1)
+                vol = math.sqrt(var_r) if var_r > 0 else 0.0
+                ann_vol = vol * math.sqrt(252)
+                ann_sharpe = (mean_r * 252) / ann_vol if ann_vol > 0 else 0.0
+
+                out["live_sharpe"] = round(ann_sharpe, 3)
+                out["live_ann_vol"] = round(ann_vol, 4)
+                out["live_days"] = n
+    except Exception:
+        logger.exception("[meta/performance] live portfolio metrics query failed")
+
+    if not out:
+        out["status"] = "no data — run a backtest or sync IBKR positions"
+
+    return out
+
+
+@meta_router.get("/engine_parameters", response_model=EngineParametersResponse)
+async def get_engine_parameters() -> EngineParametersResponse:
+    """Return current high-impact ("detrimental when mis-set") engine params.
+
+    Values are fetched from live config sources (YAML/env loaders), not
+    hardcoded constants in this endpoint.
+    """
+    import dataclasses
+
+    from apathis.core.config import get_config
+
+    from prometheus.assessment.model_basic import BasicAssessmentModel
+    from prometheus.books.registry import (
+        AllocatorSleeveSpec,
+        HedgeEtfSleeveSpec,
+        LongEquitySleeveSpec,
+        load_book_registry,
+    )
+    from prometheus.execution.policy import load_execution_policy_artifact
+    from prometheus.pipeline.tasks import (
+        _load_daily_portfolio_risk_config,
+        _load_daily_universe_lambda_config,
+    )
+
+    assessment_defaults = {
+        f.name: f.default
+        for f in dataclasses.fields(BasicAssessmentModel)
+        if f.default is not dataclasses.MISSING
+    }
+
+    region = "US"
+    market_id = "US_EQ"
+
+    daily_universe_cfg = _load_daily_universe_lambda_config(region)
+    daily_portfolio_cfg = _load_daily_portfolio_risk_config(region)
+    exec_policy_artifact = load_execution_policy_artifact()
+    exec_policy = exec_policy_artifact.policy
+    exec_risk = get_config().execution_risk
+    meta_policy_artifact = load_meta_policy_artifact()
+    book_registry = load_book_registry()
+
+    policy = meta_policy_artifact.policies.get(market_id)
+
+    meta_default_book_id: str | None = None
+    meta_default_sleeve_id: str | None = None
+    meta_default_max_names: Any = None
+    meta_default_per_name_cap: Any = None
+    meta_default_fragility_threshold: Any = None
+    if policy is not None:
+        meta_default_book_id = policy.default.book_id
+        meta_default_sleeve_id = policy.default.sleeve_id
+        book = book_registry.get(meta_default_book_id) if meta_default_book_id else None
+        if book is not None:
+            resolved_sleeve_id = book.resolve_sleeve_id(meta_default_sleeve_id)
+            sleeve = book.sleeves.get(resolved_sleeve_id) if resolved_sleeve_id else None
+            if isinstance(sleeve, LongEquitySleeveSpec):
+                meta_default_max_names = sleeve.portfolio_max_names
+                meta_default_per_name_cap = sleeve.portfolio_per_instrument_max_weight
+            elif isinstance(sleeve, AllocatorSleeveSpec):
+                meta_default_max_names = sleeve.portfolio_max_names
+                meta_default_per_name_cap = sleeve.portfolio_per_instrument_max_weight
+                meta_default_fragility_threshold = sleeve.fragility_threshold
+            elif isinstance(sleeve, HedgeEtfSleeveSpec):
+                meta_default_fragility_threshold = sleeve.fragility_threshold
+
+    engines: List[EngineParameterGroup] = [
+        EngineParameterGroup(
+            engine_id="REGIME_ENGINE",
+            engine_label="Regime Engine",
+            parameters=[
+                EngineParameterItem(
+                    key=f"{region}.hazard_profile",
+                    value=daily_portfolio_cfg.hazard_profile,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Wrong profile can misclassify risk regimes and flip downstream routing.",
+                ),
+            ],
         ),
-        EngineConfig(
-            engine_name="stability",
-            config_version="v2.0.5",
-            parameters={
-                "liquidity_weight": 0.35,
-                "volatility_weight": 0.35,
-                "contagion_weight": 0.30,
-            },
-            last_updated="2024-11-01T12:00:00Z",
+        EngineParameterGroup(
+            engine_id="ASSESSMENT_ENGINE",
+            engine_label="Assessment Engine",
+            parameters=[
+                EngineParameterItem(
+                    key="momentum_window_days",
+                    value=assessment_defaults.get("momentum_window_days", 126),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="Too short puts model in short-term reversal territory (negative IC); too long is slow to adapt.",
+                ),
+                EngineParameterItem(
+                    key="momentum_ref",
+                    value=assessment_defaults.get("momentum_ref", 0.20),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="Sets normalisation scale; wrong ref compresses or inflates all scores uniformly.",
+                ),
+                EngineParameterItem(
+                    key="fragility_penalty_weight",
+                    value=assessment_defaults.get("fragility_penalty_weight", 0.15),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="Too high clips all scores toward -1 dominating momentum; too low ignores STAB fragility signal.",
+                ),
+                EngineParameterItem(
+                    key="strong_buy_threshold",
+                    value=assessment_defaults.get("strong_buy_threshold", 0.03),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="Sets the STRONG_BUY adjusted-score boundary; misaligned threshold distorts signal-label distribution.",
+                ),
+                EngineParameterItem(
+                    key="sell_threshold",
+                    value=assessment_defaults.get("sell_threshold", 0.01),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="Too tight generates excessive SELL labels on noise; too loose delays de-risking signals.",
+                ),
+                EngineParameterItem(
+                    key="max_workers",
+                    value=assessment_defaults.get("max_workers", 1),
+                    source="BasicAssessmentModel default",
+                    detrimental_reason="1 = single-threaded; too high can starve other pipeline tasks on shared workers.",
+                ),
+            ],
         ),
-        EngineConfig(
-            engine_name="fragility",
-            config_version="v1.8.2",
-            parameters={
-                "alpha_threshold": 0.075,
-                "min_score": 0.65,
-                "lookback_days": 21,
-            },
-            last_updated="2024-10-28T14:00:00Z",
+        EngineParameterGroup(
+            engine_id="UNIVERSE_ENGINE",
+            engine_label="Universe Engine",
+            parameters=[
+                EngineParameterItem(
+                    key=f"{region}.lambda_predictions_csv",
+                    value=daily_universe_cfg.predictions_csv,
+                    source="configs/universe/core_long_eq_daily.yaml",
+                    detrimental_reason="Bad path disables lambda enrichment and can degrade selection quality.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.lambda_experiment_id",
+                    value=daily_universe_cfg.experiment_id,
+                    source="configs/universe/core_long_eq_daily.yaml",
+                    detrimental_reason="Mismatched experiment picks wrong score set for inclusion ranking.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.lambda_score_weight",
+                    value=daily_universe_cfg.score_weight,
+                    source="configs/universe/core_long_eq_daily.yaml",
+                    detrimental_reason="Overweight can force unstable name selection; underweight can mute signal.",
+                ),
+            ],
+        ),
+        EngineParameterGroup(
+            engine_id="PORTFOLIO_ENGINE",
+            engine_label="Portfolio Engine",
+            parameters=[
+                EngineParameterItem(
+                    key=f"{region}.scenario_risk_set_id",
+                    value=daily_portfolio_cfg.scenario_risk_set_id,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Wrong scenario set distorts scenario P&L and risk gating.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.stab_scenario_set_id",
+                    value=daily_portfolio_cfg.stab_scenario_set_id,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Incorrect STAB scenario map can hide state-change risk.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.meta_budget_enabled",
+                    value=daily_portfolio_cfg.meta_budget_enabled,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Disabled budget gating can overexpose risk during unstable periods.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.meta_budget_alpha",
+                    value=daily_portfolio_cfg.meta_budget_alpha,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Too high/low alpha overreacts or underreacts to regime risk.",
+                ),
+                EngineParameterItem(
+                    key=f"{region}.meta_budget_min",
+                    value=daily_portfolio_cfg.meta_budget_min,
+                    source="configs/portfolio/core_long_eq_daily.yaml",
+                    detrimental_reason="Too low can starve exposure; too high can suppress de-risking.",
+                ),
+            ],
+        ),
+        EngineParameterGroup(
+            engine_id="EXECUTION_ENGINE",
+            engine_label="Execution Engine",
+            parameters=[
+                EngineParameterItem(
+                    key="policy.turnover.one_way_limit",
+                    value=exec_policy.turnover.one_way_limit,
+                    source="configs/execution/policy.yaml",
+                    detrimental_reason="Too loose increases churn/slippage; too tight blocks required repositioning.",
+                ),
+                EngineParameterItem(
+                    key="policy.no_trade_band_bps",
+                    value=exec_policy.no_trade_band_bps,
+                    source="configs/execution/policy.yaml",
+                    detrimental_reason="Too low overtrades micro-noise; too high delays meaningful rebalance.",
+                ),
+                EngineParameterItem(
+                    key="policy.cash_buffer_weight",
+                    value=exec_policy.cash_buffer_weight,
+                    source="configs/execution/policy.yaml",
+                    detrimental_reason="Too low risks cash failures; too high leaves persistent under-investment.",
+                ),
+                EngineParameterItem(
+                    key="risk.max_order_notional",
+                    value="unconstrained" if exec_risk.max_order_notional == 0.0 else exec_risk.max_order_notional,
+                    source="env: EXEC_RISK_MAX_ORDER_NOTIONAL",
+                    detrimental_reason="Mis-set cap can block valid orders or allow oversized tickets. 0 = unconstrained.",
+                ),
+                EngineParameterItem(
+                    key="risk.max_position_notional",
+                    value="unconstrained" if exec_risk.max_position_notional == 0.0 else exec_risk.max_position_notional,
+                    source="env: EXEC_RISK_MAX_POSITION_NOTIONAL",
+                    detrimental_reason="Incorrect cap can force concentration drift or reject desired hedges. 0 = unconstrained.",
+                ),
+                EngineParameterItem(
+                    key="risk.max_leverage",
+                    value="unconstrained" if exec_risk.max_leverage == 0.0 else exec_risk.max_leverage,
+                    source="env: EXEC_RISK_MAX_LEVERAGE",
+                    detrimental_reason="Wrong leverage limit can either over-risk or unnecessarily constrain execution. 0 = unconstrained.",
+                ),
+            ],
+        ),
+        EngineParameterGroup(
+            engine_id="META_POLICY_V1",
+            engine_label="Meta Policy Engine",
+            parameters=[
+                EngineParameterItem(
+                    key=f"{market_id}.default.book_id",
+                    value=meta_default_book_id,
+                    source="configs/meta/policy.yaml",
+                    detrimental_reason="Wrong default book routes all situations into an unintended strategy stack.",
+                ),
+                EngineParameterItem(
+                    key=f"{market_id}.default.sleeve_id",
+                    value=meta_default_sleeve_id,
+                    source="configs/meta/policy.yaml",
+                    detrimental_reason="Wrong sleeve can alter concentration and turnover profile materially.",
+                ),
+                EngineParameterItem(
+                    key="default_sleeve.portfolio_max_names",
+                    value=meta_default_max_names,
+                    source="configs/meta/books.yaml",
+                    detrimental_reason="Too many names dilutes signal; too few increases concentration and variance.",
+                ),
+                EngineParameterItem(
+                    key="default_sleeve.portfolio_per_instrument_max_weight",
+                    value=meta_default_per_name_cap,
+                    source="configs/meta/books.yaml",
+                    detrimental_reason="Incorrect cap can create concentration risk or block intended positioning.",
+                ),
+                EngineParameterItem(
+                    key="default_sleeve.fragility_threshold",
+                    value=meta_default_fragility_threshold,
+                    source="configs/meta/books.yaml",
+                    detrimental_reason="Threshold drift can delay or over-trigger defensive hedge allocation.",
+                ),
+            ],
         ),
     ]
 
-
-@meta_router.get("/performance", response_model=EnginePerformance)
-async def get_performance(
-    engine_name: str = Query(..., description="Engine name"),
-    period: str = Query("30d", description="Period (e.g. 30d, 90d, 1y)"),
-) -> EnginePerformance:
-    """Return engine performance metrics."""
-    return EnginePerformance(
-        engine_name=engine_name,
-        period=period,
-        metrics={
-            "accuracy": 0.78,
-            "sharpe": 1.42,
-            "hit_rate": 0.65,
-            "avg_latency_ms": 850,
-        },
-        by_regime={
-            "STABLE_EXPANSION": {
-                "accuracy": 0.82,
-                "sharpe": 1.68,
-                "hit_rate": 0.70,
-            },
-            "GROWTH_WITH_VOLATILITY": {
-                "accuracy": 0.72,
-                "sharpe": 1.12,
-                "hit_rate": 0.58,
-            },
-        },
+    return EngineParametersResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        engines=engines,
     )
 
 

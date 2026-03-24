@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { KpiCard } from "../components/KpiCard";
 import { Panel } from "../components/Panel";
@@ -105,7 +106,29 @@ export default function Settings() {
         title="Settings"
         subtitle="Configuration & system controls"
         onRefresh={() => { configs.refetch(); performance.refetch(); allocators.refetch(); policyDecisions.refetch(); }}
+        actions={(
+          <Link
+            to="/settings/engine-parameters"
+            className="rounded border border-border-dim px-2 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-accent"
+          >
+            Engine Parameters
+          </Link>
+        )}
       />
+
+      <Panel title="Engine Parameters">
+        <div className="flex items-center justify-between gap-3 text-xs text-muted">
+          <span>
+            Review detrimental high-impact parameters split by engine, with current values fetched live from backend config sources.
+          </span>
+          <Link
+            to="/settings/engine-parameters"
+            className="rounded border border-border-dim px-2 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-accent whitespace-nowrap"
+          >
+            Open Page
+          </Link>
+        </div>
+      </Panel>
 
       {/* Performance KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

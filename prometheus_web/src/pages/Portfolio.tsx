@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { KpiCard } from "../components/KpiCard";
 import { Panel } from "../components/Panel";
@@ -58,8 +59,17 @@ const TIP = {
 };
 
 export default function Portfolio() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>((searchParams.get("tab") as Tab) || "overview");
   const { activePortfolioId } = usePortfolioContext();
+
+  // Sync tab with URL params when navigating from other pages
+  useEffect(() => {
+    const urlTab = searchParams.get("tab") as Tab | null;
+    if (urlTab && (urlTab === "overview" || urlTab === "reports")) {
+      setTab(urlTab);
+    }
+  }, [searchParams]);
   const portfolio = usePortfolio(activePortfolioId);
   const pnlHistory = usePositionPnlHistory(activePortfolioId);
   const riskComputed = usePortfolioRiskComputed(activePortfolioId);

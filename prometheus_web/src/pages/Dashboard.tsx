@@ -306,7 +306,7 @@ export default function Dashboard() {
           actions={
             <button
               className="text-[10px] text-accent hover:underline"
-              onClick={() => navigate("/portfolio")}
+              onClick={() => navigate("/portfolio?tab=reports")}
             >
               View All →
             </button>

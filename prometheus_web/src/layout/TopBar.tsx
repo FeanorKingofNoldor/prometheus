@@ -8,6 +8,8 @@ import { usePortfolioContext } from "../context/PortfolioContext";
 interface SyncResult {
   job_id?: string;
   status?: string;
+  message?: string;
+  sources_requested?: string[];
   ibkr?: { status: string; positions?: number; account_keys?: number; error?: string };
   engines?: { status: string; row_counts?: Record<string, number>; error?: string };
 }
@@ -24,6 +26,13 @@ function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+const DEFAULT_SYNC_PORTFOLIO_ID = "IBKR_PAPER";
+const SYNC_SOURCES = ["ibkr", "engines"];
+
+function isIbkrPortfolioId(portfolioId: string): boolean {
+  return portfolioId.startsWith("IBKR_");
+}
+
 export function TopBar() {
   const [now, setNow] = useState(new Date());
   const { data: overview } = useOverview();
@@ -32,6 +41,7 @@ export function TopBar() {
   const { data: ibkrRaw, isLoading: ibkrLoading } = useIbkrStatus();
   const ibkr = ibkrRaw as { status: string; mode: string; account: string; endpoints: { label: string; port: number; reachable: boolean; latency_ms?: number; error?: string }[] } | undefined;
   const [syncDetail, setSyncDetail] = useState<string | null>(null);
+  const [lastSyncTarget, setLastSyncTarget] = useState<string>(DEFAULT_SYNC_PORTFOLIO_ID);
   const { activePortfolioId, setActivePortfolioId, tradingPortfolios, backtestPortfolios, activeMode } = usePortfolioContext();
 
   useEffect(() => {
@@ -45,6 +55,8 @@ export function TopBar() {
       const d = sync.data as SyncResult;
       console.log("[prometheus/sync] Sync response:", d);
       const parts: string[] = [];
+      if (d.job_id) parts.push(`Job: ${d.job_id}`);
+      if (lastSyncTarget) parts.push(`Target: ${lastSyncTarget}`);
       if (d.ibkr) {
         if (d.ibkr.status === "ok") {
           parts.push(`IBKR: ${d.ibkr.positions ?? 0} positions`);
@@ -61,7 +73,7 @@ export function TopBar() {
       const timer = setTimeout(() => setSyncDetail(null), 8000);
       return () => clearTimeout(timer);
     }
-  }, [sync.isSuccess, sync.data]);
+  }, [sync.isSuccess, sync.data, lastSyncTarget]);
 
   useEffect(() => {
     if (sync.isError) {
@@ -105,10 +117,10 @@ export function TopBar() {
           label={activeMode}
           variant={MODE_VARIANT[activeMode] ?? "neutral"}
         />
-        {ov?.regime != null && (
+        {Array.isArray(ov?.regimes) && (ov.regimes as Record<string, unknown>[]).length > 0 && (
           <span className="text-xs text-muted">
             Regime:{" "}
-            <span className="text-zinc-100">{String(ov.regime)}</span>
+            <span className="text-zinc-100">{String((ov.regimes as Record<string, unknown>[])[0]?.regime_label ?? "—")}</span>
           </span>
         )}
       </div>
@@ -127,19 +139,33 @@ export function TopBar() {
               }
             >
               {Number(ov.pnl_today) >= 0 ? "+" : ""}
-              {Number(ov.pnl_today).toFixed(2)}%
+              {fmtUsd(Number(ov.pnl_today))}
             </span>
           </span>
         )}
         <button
           onClick={() => {
-            console.log("[prometheus/sync] Triggering sync...");
-            setSyncDetail(null);
-            sync.mutate(["ibkr", "engines"]);
+            const requestedTarget = activePortfolioId;
+            const syncTarget = isIbkrPortfolioId(requestedTarget)
+              ? requestedTarget
+              : DEFAULT_SYNC_PORTFOLIO_ID;
+
+            console.log("[prometheus/sync] Triggering sync...", {
+              requestedTarget,
+              syncTarget,
+              sources: SYNC_SOURCES,
+            });
+            setLastSyncTarget(syncTarget);
+            if (syncTarget !== requestedTarget) {
+              setSyncDetail(`Syncing ${syncTarget} (active ${requestedTarget} is non-IBKR)`);
+            } else {
+              setSyncDetail(`Syncing ${syncTarget}...`);
+            }
+            sync.mutate({ sources: SYNC_SOURCES, portfolioId: syncTarget });
           }}
           disabled={sync.isPending}
           className="flex items-center gap-1.5 rounded border border-border-dim px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
-          title="Sync data from IBKR & engines"
+          title="Sync data from IBKR & engines (safe target: active IBKR portfolio, else IBKR_PAPER)"
         >
           <RefreshCw size={12} className={sync.isPending ? "animate-spin" : ""} />
           {sync.isPending ? "Syncing..." : "Sync"}
