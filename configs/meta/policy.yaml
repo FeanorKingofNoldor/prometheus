@@ -12,34 +12,39 @@ updated_by: "claude-code"
 
 policies:
   US_EQ:
-    # Situation-aware routing: different books for different market regimes.
+    # Lambda-driven long equity (V12/K25) is the proven alpha engine:
+    #   CAGR +12-17%, Sharpe 0.9-1.0 over 29 years.
+    # The allocator books (0.25 Sharpe) underperform significantly.
     #
-    # RISK_ON / NEUTRAL: full growth — long equity K=25, sector allocator overlay.
-    # RECOVERY: growth with tighter risk — allocator with fragility hedging.
-    # RISK_OFF: defensive allocator — lower concentration, SH.US + VIXY hedging.
-    # CRISIS: full defensive — maximum hedge allocation, VIXY + SH.US.
+    # Regime adaptation is handled by:
+    #   1. Sector allocator OVERLAY on the V12 weights (kill/reduce sick sectors)
+    #   2. Options strategies (crisis_alpha, protective puts, sector puts)
+    #   3. SH.US hedge allocation sized by fragility
+    #
+    # The equity BOOK stays V12/K25 in all situations — the overlay and
+    # options layer handle the risk reduction, not book switching.
 
     default:
-      book_id: US_EQ_ALLOCATOR
-      sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
+      book_id: US_EQ_LONG_V12
+      sleeve_id: US_EQ_LONG_V12_K25
 
     situations:
       RISK_ON:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       NEUTRAL:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
-
-      RECOVERY:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_GROWTH
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       RISK_OFF:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_DEFENSIVE
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       CRISIS:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_DEFENSIVE
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
+
+      RECOVERY:
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
