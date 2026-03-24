@@ -109,16 +109,40 @@ making the hedge more expensive.
 - ETF fund flows (outflows → sector rotation)
 These can trigger hedges 1-2 weeks before the price-based signals confirm.
 
+## Backtest Results (2007-2024)
+
+The SECTOR ALLOCATOR (equity weight adjustment + SH.US hedge) works
+excellently during crashes:
+- GFC: SPY -56.4%, Sector system **+8.6%**
+- COVID: SPY -34.1%, Sector system **+11.3%**
+- 2022: SPY -25.4%, Sector system **+4.2%**
+
+The sector-level equity adjustment (kill sick sectors, reduce weak, hedge
+with SH.US) is the winning component — not the put spreads specifically.
+
+## Updated Findings After Backtesting
+
+**The sector allocator EQUITY adjustment outperforms.** The issue was never
+the sector-specific approach per se — it's that put spreads as the hedge
+instrument have negative expected value in bull markets due to premium
+bleed. SH.US also decays (-3%/year from daily reset), but less than put
+premium costs.
+
+**Key insight:** The sector health scoring system is the VALUE — it
+correctly identifies which sectors to exit. The HEDGE INSTRUMENT choice
+(puts vs SH.US) is secondary. The sector allocator + SH.US combination
+is already the best approach.
+
+## Implemented Fixes
+
+1. Added 5-day fast momentum to SHI (triggers 1-2 weeks earlier in crashes)
+2. Widened put strategy config (activation, sizing, spread width, OTM strikes)
+3. Removed dead zone floor in put activation
+
 ## Recommendation
 
-The sector-specific approach CAN outperform SH.US if:
-
-1. **Remove the dead zone** — hedge whenever SHI < 0.30 (wider window)
-2. **Increase sizing** — 3-5% NAV per sector, not 1%
-3. **Widen spreads or use outright puts** — capture more tail
-4. **Use OTM strikes** — reduce premium cost
-5. **Add leading indicators** — option skew, CDS spreads, fund flows
-
-The current configuration is simultaneously too conservative (narrow window,
-tiny size, tight spread) and too expensive (ATM strike, lagging signals
-buying after IV spike). SH.US wins by being simple and cheap.
+Keep the sector allocator + SH.US as the primary approach. Use sector puts
+as a SUPPLEMENTARY tail hedge (not a replacement for SH.US) — sized at
+3% NAV per sector for targeted exposure on the worst-performing sectors.
+The sector health scoring improvements (fast momentum) will help both
+the equity adjustment AND the put timing.
