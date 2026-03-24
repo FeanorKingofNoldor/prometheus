@@ -136,20 +136,17 @@ class BasicAssessmentModel(AssessmentModel):
         start_date = window_days_list[0]
 
         df = self.data_reader.read_prices([instrument_id], start_date, as_of_date)
-        if df.empty or len(df) < window_days:
+        # Tolerate up to 15% missing days (e.g., 3 gaps in a 21-day window).
+        # Small ingestion gaps should not invalidate the entire score.
+        min_required = max(2, int(window_days * 0.85))
+        if df.empty or len(df) < min_required:
             raise ValueError(
-                f"Insufficient price rows ({len(df)}) for {instrument_id} between {start_date} and {as_of_date}"
+                f"Insufficient price rows ({len(df)}, need {min_required}) for {instrument_id} between {start_date} and {as_of_date}"
             )
 
         df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
-        df_window = df_sorted.tail(window_days)
-        closes = df_window["close"].astype(float).to_numpy()
-
-        if closes.shape[0] != window_days:
-            raise ValueError(
-                "Price history length does not match expected window size: "
-                f"{closes.shape[0]} != {window_days}"
-            )
+        closes = df_sorted["close"].astype(float).to_numpy()
+        actual_days = closes.shape[0]
 
         if closes[0] > 0.0:
             momentum = float((closes[-1] - closes[0]) / closes[0])
