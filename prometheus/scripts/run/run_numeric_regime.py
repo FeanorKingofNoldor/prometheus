@@ -34,27 +34,25 @@ from datetime import date
 from typing import Optional, Sequence
 
 import numpy as np
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
 from apathis.data.reader import DataReader
 from apathis.encoders import (
-    NumericWindowSpec,
-    NumericWindowBuilder,
-    NumericEmbeddingStore,
-    NumericWindowEncoder,
     FlattenNumericEmbeddingModel,
+    NumericEmbeddingStore,
+    NumericWindowBuilder,
+    NumericWindowEncoder,
+    NumericWindowSpec,
     PadToDimNumericEmbeddingModel,
 )
 from apathis.regime import (
-    RegimeEngine,
-    RegimeStorage,
     NumericRegimeModel,
-    RegimePrototype,
+    RegimeEngine,
     RegimeLabel,
+    RegimePrototype,
+    RegimeStorage,
 )
-
 
 logger = get_logger(__name__)
 

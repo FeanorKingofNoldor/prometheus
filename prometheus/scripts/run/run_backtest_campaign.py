@@ -16,24 +16,23 @@ Example
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from typing import List, Optional, Sequence
-
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar
-from prometheus.backtest import SleeveConfig, run_backtest_campaign
-from prometheus.backtest.campaign import _run_backtest_for_sleeve
-from prometheus.books.registry import BookKind, LongEquitySleeveSpec, load_book_registry
 
+from prometheus.backtest import SleeveConfig, run_backtest_campaign
+from prometheus.backtest.campaign import SleeveRunSummary, _run_backtest_for_sleeve
+from prometheus.books.registry import BookKind, LongEquitySleeveSpec, load_book_registry
 
 logger = get_logger(__name__)
 
 
-def _worker(args_tuple: tuple[str, date, date, SleeveConfig, float, bool]) -> "SleeveRunSummary":
+def _worker(args_tuple: tuple[str, date, date, SleeveConfig, float, bool]) -> SleeveRunSummary:
     """Worker function to run a single sleeve in a separate process.
 
     Defined at module top level so it is picklable by multiprocessing.

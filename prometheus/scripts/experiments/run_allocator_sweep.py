@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Sequence, Tuple
 
-from prometheus.books.registry import load_book_registry, AllocatorSleeveSpec
 from apathis.core.logging import get_logger
+
+from prometheus.books.registry import AllocatorSleeveSpec, load_book_registry
 
 try:
     import prom2_cpp  # type: ignore

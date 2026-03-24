@@ -16,12 +16,11 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-from apathis.core.logging import setup_logging, get_logger
+from apathis.core.logging import get_logger, setup_logging
 from apathis.data_ingestion.factors_sector import (
     SectorFactorBackfillConfig,
     backfill_sector_factors,
 )
-
 
 logger = get_logger(__name__)
 

@@ -16,28 +16,27 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
+from apathis.regime.cftc_features import build_tff_weekly_features, forward_fill_weekly_to_daily
 from apathis.regime.data_sources import (
     load_breadth,
+    load_cftc_tff,
     load_finra_margin,
+    load_fred_dfii10,
+    load_fred_dgs2,
+    load_fred_dgs3mo,
+    load_fred_dgs10,
+    load_fred_fedfunds,
+    load_fred_icsa,
     load_fred_oas_hy,
     load_fred_oas_ig,
-    load_pcr_total,
-    load_cftc_tff,
-    load_fred_dgs2,
-    load_fred_dgs10,
-    load_fred_dgs3mo,
-    load_fred_dfii10,
-    load_fred_vixcls,
-    load_fred_fedfunds,
-    load_fred_unrate,
-    load_fred_icsa,
     load_fred_stlfsi2,
+    load_fred_unrate,
+    load_fred_vixcls,
+    load_pcr_total,
 )
-from apathis.regime.cftc_features import build_tff_weekly_features, forward_fill_weekly_to_daily
+from apathis.regime.eval_baseline import run_baseline_walk_forward
 from apathis.regime.event_eval import run_event_eval
 from apathis.regime.event_labels import generate_labels
-from apathis.regime.eval_baseline import run_baseline_walk_forward
 from apathis.regime.features_numeric import FeatureConfig, compute_feature_matrix, join_features_and_labels
 from apathis.regime.reporting import build_rollup_dataframe, summarize_folds
 

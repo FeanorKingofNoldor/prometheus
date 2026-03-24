@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import pandas as pd
-
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

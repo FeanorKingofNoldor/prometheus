@@ -23,11 +23,11 @@ Usage::
 from __future__ import annotations
 
 import math
-import time
 import threading
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+import time
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from apathis.core.logging import get_logger
 
@@ -852,7 +852,7 @@ class ContractDiscoveryService:
 
     def _resolve_con_id(self, symbol: str, sec_type: str) -> Optional[int]:
         """Resolve the conId for an underlying by qualifying a minimal contract."""
-        from prometheus.execution.ib_compat import Stock, Index, Future
+        from prometheus.execution.ib_compat import Index, Stock
 
         if sec_type == "STK":
             contract = Stock(symbol, "SMART", "USD")
@@ -878,7 +878,7 @@ class ContractDiscoveryService:
 
     def _get_underlying_price(self, symbol: str, sec_type: str) -> Optional[float]:
         """Get the current price of an underlying via a snapshot request."""
-        from prometheus.execution.ib_compat import Stock, Index
+        from prometheus.execution.ib_compat import Index, Stock
 
         if sec_type == "STK":
             contract = Stock(symbol, "SMART", "USD")

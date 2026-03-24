@@ -15,12 +15,12 @@ from typing import Protocol
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.risk import apply_risk_constraints
-from prometheus.universe.engine import UniverseMember
 from psycopg2.extras import Json
 
-from .types import RiskReport, TargetPortfolio
+from prometheus.risk import apply_risk_constraints
+from prometheus.universe.engine import UniverseMember
 
+from .types import RiskReport, TargetPortfolio
 
 logger = get_logger(__name__)
 

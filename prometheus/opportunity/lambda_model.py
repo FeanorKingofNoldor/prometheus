@@ -40,14 +40,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List
 
+import joblib
 import numpy as np
 import pandas as pd
-
 from apathis.core.logging import get_logger
+from sklearn.ensemble import HistGradientBoostingRegressor
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,59 @@ NUMERIC_FEATURE_COLS: List[str] = [
     "regime_risk_score",
     "stab_risk_score",
     "stab_p_worsen_any",
+    "sector_health_score",
+]
+
+# Extended features for the GBT model — includes rolling stats, z-scores,
+# cross-cluster context, regime, STAB, and calendar effects.
+GBT_FEATURE_COLS: List[str] = [
+    # Core lambda + deeper lags
+    "lambda_value",
+    "lambda_prev",
+    "lambda_trend",
+    "lambda_lag2",
+    "lambda_lag3",
+    "lambda_lag5",
+    "lambda_accel",
+    "lambda_trend_lag2",
+    "lambda_trend_lag3",
+    "lambda_trend_lag5",
+    # Cluster composition
+    "num_instruments",
+    "dispersion",
+    "avg_vol_window",
+    # Rolling statistics (per cluster)
+    "lambda_roll_mean_5",
+    "lambda_roll_std_5",
+    "lambda_roll_mean_21",
+    "lambda_roll_std_21",
+    # Derived signals
+    "lambda_zscore_21",
+    "lambda_mean_reversion_21",
+    "lambda_rank_pct",
+    # Cross-cluster context (market-level)
+    "market_lambda_mean",
+    "market_lambda_std",
+    "market_lambda_range",
+    # Regime (one-hot + dynamics)
+    "regime_risk_score",
+    "regime_CARRY",
+    "regime_CRISIS",
+    "regime_RISK_OFF",
+    "regime_changed_5d",
+    # STAB risk (cluster-level aggregates)
+    "stab_risk_score",
+    "stab_p_worsen_any",
+    "stab_p_to_targetable",
+    "cluster_pct_high_risk",
+    # Volume / volatility (cluster-level)
+    "avg_realised_vol_63d",
+    "avg_volume_63d",
+    # Assessment
+    "avg_assessment_score",
+    # Calendar
+    "day_of_week",
+    "month",
 ]
 
 
@@ -134,7 +188,139 @@ def prepare_next_lambda(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================================
-# Model Class
+# Enhanced Feature Engineering
+# ============================================================================
+
+
+def build_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add rolling stats, deeper lags, regime encoding, STAB and calendar features.
+
+    Expects columns:
+    - as_of_date, market_id, sector, soft_target_class, lambda_value
+
+    Optional columns used when present:
+    - regime_label, regime_risk_score, stab_risk_score, stab_p_worsen_any,
+      stab_p_to_targetable, cluster_pct_high_risk, avg_realised_vol_63d,
+      avg_volume_63d, avg_assessment_score
+
+    Missing base columns are left as NaN; HistGBT handles them natively.
+
+    Args:
+        df: DataFrame with cluster-level lambda observations.
+
+    Returns:
+        DataFrame with additional feature columns.
+    """
+    out = df.copy()
+    out = out.sort_values(
+        ["market_id", "sector", "soft_target_class", "as_of_date"],
+    )
+
+    group_keys = ["market_id", "sector", "soft_target_class"]
+    grp = out.groupby(group_keys)["lambda_value"]
+
+    # --- Deeper autoregressive lags ---
+    out["lambda_lag2"] = grp.transform(lambda s: s.shift(2))
+    out["lambda_lag3"] = grp.transform(lambda s: s.shift(3))
+    out["lambda_lag5"] = grp.transform(lambda s: s.shift(5))
+
+    # Lambda acceleration (second derivative of trend).
+    if "lambda_trend" in out.columns:
+        out["lambda_accel"] = grp.transform(
+            lambda s: s.diff(),
+        )  # diff of lambda_value; we want diff of trend
+        # Recompute: accel = trend_t - trend_{t-1}
+        trend = out["lambda_value"] - out.groupby(group_keys)["lambda_value"].shift(1)
+        prev_trend = trend.groupby(out.groupby(group_keys).ngroup()).shift(1)
+        out["lambda_accel"] = trend - prev_trend
+    else:
+        # Compute trend inline then acceleration
+        prev = grp.transform(lambda s: s.shift(1))
+        trend = out["lambda_value"] - prev
+        prev_trend = trend.groupby(out.groupby(group_keys).ngroup()).shift(1)
+        out["lambda_accel"] = trend - prev_trend
+
+    # --- Trend lags (momentum persistence at different horizons) ---
+    if "lambda_trend" in out.columns:
+        trend_series = out["lambda_trend"]
+    else:
+        trend_series = out["lambda_value"] - grp.transform(lambda s: s.shift(1))
+    grp_idx = out.groupby(group_keys).ngroup()
+    out["lambda_trend_lag2"] = trend_series.groupby(grp_idx).shift(2)
+    out["lambda_trend_lag3"] = trend_series.groupby(grp_idx).shift(3)
+    out["lambda_trend_lag5"] = trend_series.groupby(grp_idx).shift(5)
+
+    # --- Rolling statistics per cluster ---
+    out["lambda_roll_mean_5"] = grp.transform(
+        lambda s: s.rolling(5, min_periods=2).mean(),
+    )
+    out["lambda_roll_std_5"] = grp.transform(
+        lambda s: s.rolling(5, min_periods=2).std(),
+    )
+    out["lambda_roll_mean_21"] = grp.transform(
+        lambda s: s.rolling(21, min_periods=5).mean(),
+    )
+    out["lambda_roll_std_21"] = grp.transform(
+        lambda s: s.rolling(21, min_periods=5).std(),
+    )
+
+    # Z-score: how far current lambda is from its 21d mean.
+    roll_std_safe = out["lambda_roll_std_21"].replace(0.0, np.nan)
+    out["lambda_zscore_21"] = (
+        (out["lambda_value"] - out["lambda_roll_mean_21"]) / roll_std_safe
+    )
+
+    # Mean reversion signal: positive = below mean (expect increase).
+    out["lambda_mean_reversion_21"] = out["lambda_roll_mean_21"] - out["lambda_value"]
+
+    # --- Cross-cluster rank (percentile within each date) ---
+    out["lambda_rank_pct"] = out.groupby(["market_id", "as_of_date"])[
+        "lambda_value"
+    ].rank(pct=True)
+
+    # --- Cross-cluster context: market-level stats on each date ---
+    market_stats = (
+        out.groupby(["market_id", "as_of_date"])["lambda_value"]
+        .agg(["mean", "std", lambda x: x.max() - x.min()])
+    )
+    market_stats.columns = [
+        "market_lambda_mean", "market_lambda_std", "market_lambda_range",
+    ]
+    market_stats = market_stats.reset_index()
+    out = out.merge(market_stats, on=["market_id", "as_of_date"], how="left")
+
+    # --- Regime one-hot encoding ---
+    if "regime_label" in out.columns:
+        for label in ["CARRY", "CRISIS", "RISK_OFF"]:
+            out[f"regime_{label}"] = (out["regime_label"] == label).astype(float)
+
+        # Regime changed in last 5 days.
+        regime_changed = out.drop_duplicates(
+            subset=["as_of_date", "market_id"],
+        ).set_index("as_of_date")["regime_label"]
+        regime_changed = regime_changed.ne(regime_changed.shift(1))
+        regime_changed_5d = regime_changed.rolling(5, min_periods=1).max()
+        regime_map = regime_changed_5d.to_dict()
+        out["regime_changed_5d"] = out["as_of_date"].map(regime_map).fillna(0.0)
+    else:
+        for label in ["CARRY", "CRISIS", "RISK_OFF"]:
+            out[f"regime_{label}"] = np.nan
+        out["regime_changed_5d"] = np.nan
+
+    # --- Calendar features ---
+    if hasattr(out["as_of_date"].iloc[0], "weekday"):
+        out["day_of_week"] = out["as_of_date"].apply(lambda d: d.weekday())
+        out["month"] = out["as_of_date"].apply(lambda d: d.month)
+    else:
+        dates = pd.to_datetime(out["as_of_date"])
+        out["day_of_week"] = dates.dt.weekday
+        out["month"] = dates.dt.month
+
+    return out
+
+
+# ============================================================================
+# Model Class: Poly2
 # ============================================================================
 
 
@@ -309,9 +495,249 @@ class LambdaPoly2Model:
         return model
 
 
+# ============================================================================
+# Model Class: Gradient Boosted Trees
+# ============================================================================
+
+
+@dataclass
+class LambdaGBTModel:
+    """Gradient Boosted Trees model for lambda_hat prediction.
+
+    Uses sklearn's HistGradientBoostingRegressor which:
+    - Handles NaN natively (no imputation needed)
+    - Fast training via histogram-based splitting
+    - Good regularization out of the box
+
+    Attributes:
+        feature_cols: Feature column names.
+        trained_at: ISO timestamp of last training.
+        train_rows: Number of rows used in training.
+        experiment_id: Logical experiment identifier.
+        model_path: Path to the saved sklearn artifact (joblib).
+    """
+
+    feature_cols: list[str] = field(default_factory=lambda: list(GBT_FEATURE_COLS))
+    trained_at: str = ""
+    train_rows: int = 0
+    experiment_id: str = ""
+
+    # Hyperparameters (conservative for ~15K rows).
+    max_iter: int = 300
+    max_depth: int = 5
+    learning_rate: float = 0.05
+    min_samples_leaf: int = 20
+    l2_regularization: float = 1.0
+    target_mode: str = "change"  # "change" predicts delta; "level" predicts raw lambda_next
+
+    # Internal: the fitted sklearn model (not serialised in JSON).
+    _estimator: HistGradientBoostingRegressor | None = field(
+        default=None, repr=False,
+    )
+
+    @property
+    def is_trained(self) -> bool:
+        return self._estimator is not None
+
+    # ========================================================================
+    # Training
+    # ========================================================================
+
+    def train(self, df_pairs: pd.DataFrame) -> None:
+        """Fit the GBT model on lambda pairs.
+
+        Args:
+            df_pairs: DataFrame with lambda_next (target) and feature
+                columns. Produced by ``prepare_next_lambda()`` +
+                ``build_enhanced_features()``.
+        """
+        if self.target_mode == "residual":
+            # Target = actual change minus momentum (lambda_trend).
+            # Model learns corrections to momentum — mean-reversion, regime shifts, etc.
+            actual_change = (df_pairs["lambda_next"] - df_pairs["lambda_value"]).to_numpy(dtype=float)
+            momentum = df_pairs["lambda_trend"].fillna(0).to_numpy(dtype=float)
+            y = actual_change - momentum
+        elif self.target_mode == "change":
+            y = (df_pairs["lambda_next"] - df_pairs["lambda_value"]).to_numpy(dtype=float)
+        else:
+            y = df_pairs["lambda_next"].to_numpy(dtype=float)
+        if y.size == 0:
+            raise ValueError("Training data is empty")
+
+        X = self._build_X(df_pairs)
+
+        est = HistGradientBoostingRegressor(
+            max_iter=self.max_iter,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=20,
+        )
+        est.fit(X, y)
+
+        self._estimator = est
+        self.train_rows = int(y.size)
+        self.trained_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        logger.info(
+            "LambdaGBTModel.train: fitted on %d rows, %d features, %d iterations",
+            self.train_rows,
+            len(self.feature_cols),
+            est.n_iter_,
+        )
+
+    # ========================================================================
+    # Prediction
+    # ========================================================================
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """Predict lambda_hat for new cluster rows.
+
+        Args:
+            df: DataFrame with feature columns.
+
+        Returns:
+            1D numpy array of predicted lambda_hat.
+        """
+        if not self.is_trained:
+            raise RuntimeError("Model not trained — call train() or load()")
+
+        X = self._build_X(df)
+        raw = self._estimator.predict(X)  # type: ignore[union-attr]
+        if self.target_mode == "residual":
+            base = df["lambda_value"].to_numpy(dtype=float)
+            momentum = (
+                df["lambda_trend"].fillna(0).to_numpy(dtype=float)
+                if "lambda_trend" in df.columns
+                else np.zeros(len(raw))
+            )
+            return base + momentum + raw
+        if self.target_mode == "change":
+            return df["lambda_value"].to_numpy(dtype=float) + raw
+        return raw
+
+    def _build_X(self, df: pd.DataFrame) -> np.ndarray:
+        """Build feature matrix. NaN-friendly (HistGBT handles them)."""
+        n = df.shape[0]
+        cols: list[np.ndarray] = []
+        for col in self.feature_cols:
+            if col in df.columns:
+                vals = df[col].to_numpy(dtype=float)
+            else:
+                vals = np.full(n, np.nan, dtype=float)
+            cols.append(vals)
+        return np.vstack(cols).T
+
+    # ========================================================================
+    # Persistence
+    # ========================================================================
+
+    def save(self, path: str | Path) -> None:
+        """Save model: JSON metadata + joblib artifact.
+
+        Creates two files:
+        - ``path`` (JSON): metadata + hyperparams
+        - ``path.with_suffix('.joblib')``): sklearn estimator
+        """
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+        joblib_path = p.with_suffix(".joblib")
+
+        data = {
+            "model_type": "gbt",
+            "feature_cols": self.feature_cols,
+            "trained_at": self.trained_at,
+            "train_rows": self.train_rows,
+            "experiment_id": self.experiment_id,
+            "max_iter": self.max_iter,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "min_samples_leaf": self.min_samples_leaf,
+            "l2_regularization": self.l2_regularization,
+            "target_mode": self.target_mode,
+            "sklearn_artifact": str(joblib_path.name),
+        }
+
+        with open(p, "w") as f:
+            json.dump(data, f, indent=2)
+
+        if self._estimator is not None:
+            joblib.dump(self._estimator, joblib_path)
+
+        logger.info("LambdaGBTModel.save: wrote model to %s + %s", p, joblib_path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> LambdaGBTModel:
+        """Load model from JSON metadata + joblib artifact."""
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Lambda GBT model file not found: {p}")
+
+        with open(p) as f:
+            data = json.load(f)
+
+        model = cls(
+            feature_cols=list(data.get("feature_cols", GBT_FEATURE_COLS)),
+            trained_at=str(data.get("trained_at", "")),
+            train_rows=int(data.get("train_rows", 0)),
+            experiment_id=str(data.get("experiment_id", "")),
+            max_iter=int(data.get("max_iter", 300)),
+            max_depth=int(data.get("max_depth", 5)),
+            learning_rate=float(data.get("learning_rate", 0.05)),
+            min_samples_leaf=int(data.get("min_samples_leaf", 20)),
+            l2_regularization=float(data.get("l2_regularization", 1.0)),
+            target_mode=str(data.get("target_mode", "level")),
+        )
+
+        # Load sklearn artifact.
+        artifact_name = data.get("sklearn_artifact")
+        if artifact_name:
+            joblib_path = p.parent / artifact_name
+        else:
+            joblib_path = p.with_suffix(".joblib")
+
+        if joblib_path.exists():
+            model._estimator = joblib.load(joblib_path)
+        else:
+            logger.warning(
+                "LambdaGBTModel.load: joblib artifact not found at %s",
+                joblib_path,
+            )
+
+        logger.info(
+            "LambdaGBTModel.load: loaded from %s (trained_at=%s, %d train_rows)",
+            p, model.trained_at, model.train_rows,
+        )
+        return model
+
+
+def load_lambda_model(path: str | Path) -> LambdaPoly2Model | LambdaGBTModel:
+    """Auto-detect and load the correct model type from JSON metadata."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Model file not found: {p}")
+
+    with open(p) as f:
+        data = json.load(f)
+
+    model_type = data.get("model_type", "global_poly2")
+    if model_type == "gbt":
+        return LambdaGBTModel.load(p)
+    return LambdaPoly2Model.load(p)
+
+
 __all__ = [
     "LambdaPoly2Model",
+    "LambdaGBTModel",
     "NUMERIC_FEATURE_COLS",
+    "GBT_FEATURE_COLS",
     "build_feature_matrix",
+    "build_enhanced_features",
     "prepare_next_lambda",
+    "load_lambda_model",
 ]

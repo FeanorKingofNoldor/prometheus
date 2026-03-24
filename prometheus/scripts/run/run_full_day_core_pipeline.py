@@ -25,9 +25,9 @@ from typing import Optional, Sequence
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+
 from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run, update_phase
 from prometheus.pipeline.tasks import advance_run, run_backtest_campaign_and_meta_for_strategy
-
 
 logger = get_logger(__name__)
 

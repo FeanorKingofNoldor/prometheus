@@ -11,12 +11,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import date, timedelta
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, US_EQ
+from apathis.core.time import TradingCalendar
 
 logger = get_logger(__name__)
 

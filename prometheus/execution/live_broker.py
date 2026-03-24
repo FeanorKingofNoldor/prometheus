@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import Dict, List
 
 from apathis.core.logging import get_logger
+
 from prometheus.execution.broker_interface import (
     BrokerInterface,
     Fill,
@@ -38,7 +39,6 @@ from prometheus.execution.broker_interface import (
     Position,
 )
 from prometheus.execution.ibkr_client import IbkrClient
-
 
 logger = get_logger(__name__)
 

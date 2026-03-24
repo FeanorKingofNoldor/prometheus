@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from math import sqrt
@@ -128,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             idx_instrument = header.index("instrument_id")
             idx_issuer = header.index("issuer_id")
             idx_date = header.index("as_of_date")
-            idx_ret1d = header.index("ret_1d")
+            header.index("ret_1d")
         except ValueError as exc:
             raise SystemExit(f"Missing expected columns in CSV header: {exc}") from exc
 

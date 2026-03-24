@@ -24,7 +24,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_LABELS = ("HOLD", "BUY", "STRONG_BUY", "SELL", "STRONG_SELL")
 _NONFINITE = "('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)"
 

@@ -23,7 +23,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_TIERS = ("CORE", "SATELLITE", "EXCLUDED")
 _NONFINITE = "('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)"
 

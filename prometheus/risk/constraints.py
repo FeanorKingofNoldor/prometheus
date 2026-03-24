@@ -48,6 +48,13 @@ _DEFAULT_CONFIGS: Dict[str, StrategyRiskConfig] = {
         strategy_id="US_EQ_HEDGE_ETF",
         max_abs_weight_per_name=1.0,
     ),
+
+    # V12 lambda-driven long-only book: 10% per-name cap matches the
+    # sleeve config (portfolio_per_instrument_max_weight: 0.10).
+    "US_EQ_LONG_V12": StrategyRiskConfig(
+        strategy_id="US_EQ_LONG_V12",
+        max_abs_weight_per_name=0.10,
+    ),
 }
 
 

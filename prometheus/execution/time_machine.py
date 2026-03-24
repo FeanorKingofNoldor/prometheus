@@ -30,14 +30,12 @@ from __future__ import annotations
 # ============================================================================
 # Imports
 # ============================================================================
-
 from datetime import date, timedelta
-from typing import Any, Dict, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping
 
 import pandas as pd
-
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
 from apathis.data.reader import DataReader
 
 # ============================================================================

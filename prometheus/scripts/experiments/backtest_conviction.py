@@ -26,42 +26,40 @@ Usage:
 
 from __future__ import annotations
 
-import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
-
 from apathis.core.logging import get_logger
+from apathis.sector.health import SectorHealthEngine
+from apathis.sector.mapper import SectorMapper
+
 from prometheus.portfolio.conviction import (
     ConvictionConfig,
     ConvictionTracker,
     PositionConviction,
 )
-from prometheus.sector.allocator import (
-    SectorAllocator,
-    SectorAllocatorConfig,
-    StressLevel,
-)
-from apathis.sector.health import SectorHealthEngine
-from apathis.sector.mapper import SectorMapper
 
 # Shared utilities from the sector allocator backtest.
 from prometheus.scripts.experiments.backtest_sector_allocator import (
-    load_prices,
-    prices_to_returns,
-    load_universe_instruments,
-    compute_spy_mhi,
-    apply_turnover_limit,
-    compute_transaction_cost,
-    BacktestResult,
-    TRANSACTION_COST_BPS,
-    MAX_TURNOVER_ONE_WAY,
-    PORTFOLIO_MAX_NAMES,
-    MIN_PRICE_THRESHOLD,
     EVENTS,
+    MAX_TURNOVER_ONE_WAY,
+    MIN_PRICE_THRESHOLD,
+    PORTFOLIO_MAX_NAMES,
+    TRANSACTION_COST_BPS,
+    BacktestResult,
+    apply_turnover_limit,
+    compute_spy_mhi,
+    compute_transaction_cost,
+    load_prices,
+    load_universe_instruments,
+    prices_to_returns,
+)
+from prometheus.sector.allocator import (
+    SectorAllocator,
+    SectorAllocatorConfig,
 )
 
 logger = get_logger(__name__)
@@ -437,7 +435,7 @@ def print_results(
         print(f"  Avg Daily Conviction: {overall:.1f}")
 
     if stats.exits_by_reason:
-        print(f"\n  Exit Reasons:")
+        print("\n  Exit Reasons:")
         for reason, count in sorted(
             stats.exits_by_reason.items(), key=lambda x: -x[1],
         ):
@@ -446,7 +444,7 @@ def print_results(
 
     if stats.holding_periods:
         hp = stats.holding_periods
-        print(f"\n  Holding Period Distribution (all exits):")
+        print("\n  Holding Period Distribution (all exits):")
         print(f"    Min:    {min(hp):4d} days")
         print(f"    p10:    {int(np.percentile(hp, 10)):4d} days")
         print(f"    p25:    {int(np.percentile(hp, 25)):4d} days")
@@ -467,7 +465,7 @@ def print_results(
         ]
         total_exits = len(stats.exit_records)
 
-        print(f"\n  Holding Period Buckets:")
+        print("\n  Holding Period Buckets:")
         print(f"    {'Bucket':<16s} {'Count':>6s} {'%':>6s}  "
               f"{'Decay':>6s} {'HStop':>6s}  {'AvgScore':>8s}")
         for label, lo, hi in buckets:
@@ -499,7 +497,7 @@ def print_results(
             print(f"    Avg conviction @exit: {avg_sc:+.1f}")
 
         # ── Exits by stress regime ───────────────────────────────────
-        print(f"\n  Exits by Stress Regime:")
+        print("\n  Exits by Stress Regime:")
         for level in ["NORMAL", "SECTOR_STRESS", "BROAD_STRESS", "SYSTEMIC_CRISIS"]:
             recs = [r for r in stats.exit_records if r.stress_level == level]
             if not recs:

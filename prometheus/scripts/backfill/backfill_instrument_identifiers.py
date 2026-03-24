@@ -19,11 +19,10 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
 from apathis.core.time import US_EQ
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

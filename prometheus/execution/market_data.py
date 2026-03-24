@@ -16,14 +16,14 @@ IBKR limits:
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
 from apathis.core.logging import get_logger
 
@@ -303,7 +303,6 @@ class IbkrMarketDataService(MarketDataService):
         subscription: TickSubscription,
         callback: Optional[TickCallback] = None,
     ) -> int:
-        from prometheus.execution.ib_compat import Stock, Index, Contract
 
         if self._active_lines >= self._max_streaming_lines:
             raise RuntimeError(
@@ -445,7 +444,6 @@ class IbkrMarketDataService(MarketDataService):
         currency: str = "USD",
         end_date: str = "",
     ) -> List[BarData]:
-        from prometheus.execution.ib_compat import Stock, Index, Contract
 
         self._wait_for_hist_rate_limit()
 
@@ -654,7 +652,7 @@ class IbkrMarketDataService(MarketDataService):
     @staticmethod
     def _build_contract(sub: TickSubscription) -> Any:
         """Build an ib_insync Contract from a TickSubscription."""
-        from prometheus.execution.ib_compat import Stock, Index, Contract
+        from prometheus.execution.ib_compat import Contract, Index, Stock
 
         if sub.sec_type == "IND":
             return Index(sub.symbol, sub.exchange, sub.currency)
@@ -679,7 +677,7 @@ class IbkrMarketDataService(MarketDataService):
         currency: str,
     ) -> Any:
         """Build a contract from individual parameters."""
-        from prometheus.execution.ib_compat import Stock, Index, Contract
+        from prometheus.execution.ib_compat import Contract, Index, Stock
 
         if sec_type == "IND":
             return Index(symbol, exchange, currency)

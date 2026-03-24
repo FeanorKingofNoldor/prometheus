@@ -20,7 +20,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_ACTION_TYPES = ("OK", "CAPPED", "REJECTED", "EXECUTION_REJECT")
 
 

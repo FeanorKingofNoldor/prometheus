@@ -18,13 +18,14 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED = (
     "WAITING_FOR_DATA",
     "DATA_READY",
     "SIGNALS_DONE",
     "UNIVERSES_DONE",
     "BOOKS_DONE",
+    "OPTIONS_DONE",
+    "EXECUTION_DONE",
     "COMPLETED",
     "FAILED",
 )
@@ -43,10 +44,10 @@ def _summarise(db, which: str) -> dict[str, Any]:
             COUNT(*) AS total,
             SUM(CASE WHEN btrim(run_id) = '' THEN 1 ELSE 0 END) AS empty_run_id,
             SUM(CASE WHEN btrim(region) = '' THEN 1 ELSE 0 END) AS empty_region,
-            SUM(CASE WHEN phase NOT IN ('WAITING_FOR_DATA','DATA_READY','SIGNALS_DONE','UNIVERSES_DONE','BOOKS_DONE','COMPLETED','FAILED') THEN 1 ELSE 0 END) AS invalid_phase,
+            SUM(CASE WHEN phase NOT IN ('WAITING_FOR_DATA','DATA_READY','SIGNALS_DONE','UNIVERSES_DONE','BOOKS_DONE','OPTIONS_DONE','EXECUTION_DONE','COMPLETED','FAILED') THEN 1 ELSE 0 END) AS invalid_phase,
             SUM(CASE WHEN phase_started_at IS NULL THEN 1 ELSE 0 END) AS missing_phase_started_at,
-            SUM(CASE WHEN phase IN ('COMPLETED','FAILED') AND phase_completed_at IS NULL THEN 1 ELSE 0 END) AS terminal_missing_completed_at,
-            SUM(CASE WHEN phase NOT IN ('COMPLETED','FAILED') AND phase_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS nonterminal_has_completed_at,
+            SUM(CASE WHEN phase IN ('EXECUTION_DONE','COMPLETED','FAILED') AND phase_completed_at IS NULL THEN 1 ELSE 0 END) AS terminal_missing_completed_at,
+            SUM(CASE WHEN phase NOT IN ('EXECUTION_DONE','COMPLETED','FAILED') AND phase_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS nonterminal_has_completed_at,
             SUM(CASE WHEN live_safe IS NULL THEN 1 ELSE 0 END) AS null_live_safe,
             SUM(CASE WHEN config_json IS NULL THEN 1 ELSE 0 END) AS null_config_json,
             SUM(CASE WHEN config_json IS NOT NULL AND jsonb_typeof(config_json) <> 'object' THEN 1 ELSE 0 END) AS bad_config_json_type

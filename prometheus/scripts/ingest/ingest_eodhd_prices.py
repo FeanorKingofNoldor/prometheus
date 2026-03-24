@@ -36,7 +36,6 @@ from apathis.data_ingestion.eodhd_prices import (
     ingest_eodhd_prices_for_instruments,
 )
 
-
 logger = get_logger(__name__)
 
 

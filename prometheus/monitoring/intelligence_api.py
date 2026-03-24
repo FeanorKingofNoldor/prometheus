@@ -17,14 +17,15 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from apathis.core.database import get_db_manager
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
-from apathis.core.database import get_db_manager
+from prometheus.decisions.lambda_scorecard import LambdaScorecard
+from prometheus.decisions.scorecard import PredictionScorecard
+from prometheus.meta.applicator import ProposalApplicator
 from prometheus.meta.diagnostics import DiagnosticsEngine
 from prometheus.meta.proposal_generator import ProposalGenerator
-from prometheus.meta.applicator import ProposalApplicator
-
 
 intelligence_router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
 
@@ -103,6 +104,77 @@ class ReversionRequest(BaseModel):
 
     reason: str = Field(..., description="Reason for reversion")
     user_id: str = Field(..., description="User performing reversion")
+
+
+class SectorBreakdownResponse(BaseModel):
+    """Prediction accuracy for one sector."""
+
+    sector: str
+    hit_rate: float
+    avg_error: float
+    count: int
+    avg_predicted: float
+    avg_realized: float
+
+
+class ScorecardMissResponse(BaseModel):
+    """Single prediction miss/hit row."""
+
+    decision_id: str
+    as_of_date: str
+    instrument_id: str
+    predicted_score: float
+    realized_return: float
+    hit: bool
+    sector: str
+    error: float
+
+
+class ScorecardResponse(BaseModel):
+    """Prediction scorecard summary."""
+
+    horizon_days: int
+    total_predictions: int
+    hit_rate: float
+    spearman_rho: float
+    avg_predicted_score: float
+    avg_realized_return: float
+    sector_breakdown: List[SectorBreakdownResponse]
+    top_misses: List[ScorecardMissResponse]
+    top_hits: List[ScorecardMissResponse]
+    date_range_start: str
+    date_range_end: str
+
+
+class LambdaClusterAccuracyResponse(BaseModel):
+    """Lambda prediction accuracy for one cluster."""
+
+    cluster_key: str
+    sector: str
+    soft_target_class: str
+    mae: float
+    rmse: float
+    direction_accuracy: float
+    count: int
+    avg_predicted: float
+    avg_actual: float
+
+
+class LambdaScorecardResponse(BaseModel):
+    """Lambda prediction scorecard summary."""
+
+    market_id: str
+    total_predictions: int
+    mae: float
+    rmse: float
+    r_squared: float
+    direction_accuracy: float
+    avg_predicted: float
+    avg_actual: float
+    cluster_breakdown: List[LambdaClusterAccuracyResponse]
+    date_range_start: str
+    date_range_end: str
+    data_source: str
 
 
 # ============================================================================
@@ -508,6 +580,129 @@ async def revert_change(
 # ============================================================================
 # Health Check
 # ============================================================================
+
+
+# ============================================================================
+# Prediction Scorecard Endpoints
+# ============================================================================
+
+
+@intelligence_router.get(
+    "/scorecard",
+    response_model=ScorecardResponse,
+    summary="Prediction scorecard",
+)
+async def get_scorecard(
+    horizon_days: int = Query(21, description="Forward return horizon in days"),
+    max_decisions: int = Query(200, description="Max ASSESSMENT decisions to evaluate"),
+) -> ScorecardResponse:
+    """Build a prediction accuracy scorecard.
+
+    Compares assessment instrument scores against realized forward returns
+    to measure hit rate, rank correlation, and sector-level accuracy.
+    """
+    db_manager = get_db_manager()
+    scorecard = PredictionScorecard(db_manager=db_manager)
+
+    try:
+        report = scorecard.build_scorecard(
+            horizon_days=horizon_days,
+            max_decisions=max_decisions,
+        )
+
+        def _miss_resp(r):
+            return ScorecardMissResponse(
+                decision_id=r.decision_id,
+                as_of_date=r.as_of_date.isoformat(),
+                instrument_id=r.instrument_id,
+                predicted_score=r.predicted_score,
+                realized_return=r.realized_return,
+                hit=r.hit,
+                sector=r.sector,
+                error=r.error,
+            )
+
+        return ScorecardResponse(
+            horizon_days=report.horizon_days,
+            total_predictions=report.total_predictions,
+            hit_rate=report.hit_rate,
+            spearman_rho=report.spearman_rho,
+            avg_predicted_score=report.avg_predicted_score,
+            avg_realized_return=report.avg_realized_return,
+            sector_breakdown=[
+                SectorBreakdownResponse(
+                    sector=s.sector,
+                    hit_rate=s.hit_rate,
+                    avg_error=s.avg_error,
+                    count=s.count,
+                    avg_predicted=s.avg_predicted,
+                    avg_realized=s.avg_realized,
+                )
+                for s in report.sector_breakdown
+            ],
+            top_misses=[_miss_resp(r) for r in report.top_misses],
+            top_hits=[_miss_resp(r) for r in report.top_hits],
+            date_range_start=report.date_range[0].isoformat(),
+            date_range_end=report.date_range[1].isoformat(),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scorecard failed: {str(e)}")
+
+
+@intelligence_router.get(
+    "/lambda-scorecard",
+    response_model=LambdaScorecardResponse,
+    summary="Lambda prediction scorecard",
+)
+async def get_lambda_scorecard(
+    market_id: str = Query("US_EQ", description="Market ID"),
+    max_dates: int = Query(200, description="Max dates to evaluate"),
+) -> LambdaScorecardResponse:
+    """Build a lambda (opportunity density) prediction scorecard.
+
+    Compares predicted lambda_hat against realised next-day lambda per cluster
+    to measure MAE, RMSE, R², and direction accuracy.
+    """
+    db_manager = get_db_manager()
+    scorecard = LambdaScorecard(db_manager=db_manager)
+
+    try:
+        report = scorecard.build_scorecard(
+            market_id=market_id,
+            max_dates=max_dates,
+        )
+
+        return LambdaScorecardResponse(
+            market_id=report.market_id,
+            total_predictions=report.total_predictions,
+            mae=report.mae,
+            rmse=report.rmse,
+            r_squared=report.r_squared,
+            direction_accuracy=report.direction_accuracy,
+            avg_predicted=report.avg_predicted,
+            avg_actual=report.avg_actual,
+            cluster_breakdown=[
+                LambdaClusterAccuracyResponse(
+                    cluster_key=c.cluster_key,
+                    sector=c.sector,
+                    soft_target_class=c.soft_target_class,
+                    mae=c.mae,
+                    rmse=c.rmse,
+                    direction_accuracy=c.direction_accuracy,
+                    count=c.count,
+                    avg_predicted=c.avg_predicted,
+                    avg_actual=c.avg_actual,
+                )
+                for c in report.cluster_breakdown
+            ],
+            date_range_start=report.date_range[0].isoformat(),
+            date_range_end=report.date_range[1].isoformat(),
+            data_source=report.data_source,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Lambda scorecard failed: {str(e)}",
+        )
 
 
 @intelligence_router.get("/health")

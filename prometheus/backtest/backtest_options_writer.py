@@ -30,15 +30,13 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
-
-from psycopg2.extras import Json
+from datetime import date
+from typing import Any, Dict, List, Optional
 
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

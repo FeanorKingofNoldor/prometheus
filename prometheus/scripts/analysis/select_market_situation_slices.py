@@ -27,17 +27,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar, TradingCalendarConfig
 from apathis.fragility.storage import FragilityStorage
-from prometheus.meta.market_situation import MarketSituation, MarketSituationConfig, classify_market_situation
 from apathis.regime.model_proxy import MarketProxyRegimeModelConfig
 from apathis.regime.overlay_cache import ensure_overlay_csv
 from apathis.regime.types import RegimeLabel
 
+from prometheus.meta.market_situation import MarketSituation, MarketSituationConfig, classify_market_situation
 
 logger = get_logger(__name__)
 

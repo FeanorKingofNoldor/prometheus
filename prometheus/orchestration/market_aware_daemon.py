@@ -24,19 +24,19 @@ from __future__ import annotations
 import argparse
 import random
 import signal
-import sys
 import time
-import traceback
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from apathis.core.market_state import MarketState, get_market_state, get_next_state_transition
+from apathis.core.market_state import MarketState, get_market_state
+from apathis.core.time import TradingCalendar, TradingCalendarConfig
+from apathis.data_ingestion.daily_orchestrator import is_data_ready_for_market, run_daily_ingestion
+from psycopg2.extras import Json
+
 from prometheus.orchestration.dag import (
     DAG,
     JobMetadata,
@@ -45,13 +45,12 @@ from prometheus.orchestration.dag import (
     build_kronos_dag,
     build_market_dag,
 )
+from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run, update_phase
 from prometheus.pipeline.tasks import (
+    run_books_for_run,
     run_signals_for_run,
     run_universes_for_run,
-    run_books_for_run,
 )
-from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run, update_phase
-from apathis.data_ingestion.daily_orchestrator import run_daily_ingestion, is_data_ready_for_market
 
 logger = get_logger(__name__)
 
@@ -410,13 +409,29 @@ def execute_job(
 
         # Execute based on job type
         if job.job_type == "ingest_prices":
+            # If the same-date run is already terminal (e.g. OPTIONS_DONE from
+            # an earlier ad-hoc run), reset it so this post-close cycle can
+            # execute the pipeline instead of silently no-oping downstream.
+            if run.phase in (
+                RunPhase.EXECUTION_DONE,
+                RunPhase.OPTIONS_DONE,
+                RunPhase.COMPLETED,
+                RunPhase.FAILED,
+            ):
+                from prometheus.pipeline.state import force_reset_run_to_waiting
+
+                run = force_reset_run_to_waiting(
+                    db_manager,
+                    run.run_id,
+                    reason=f"stale terminal phase={run.phase.value} before ingest_prices",
+                )
             # Run complete daily ingestion workflow
             result = run_daily_ingestion(
                 db_manager,
                 job.market_id,
                 execution.as_of_date,
             )
-            
+
             if result.status.value == "COMPLETE":
                 # Check if data is ready for processing
                 if is_data_ready_for_market(db_manager, job.market_id, execution.as_of_date):
@@ -471,7 +486,7 @@ def execute_job(
 
         elif job.job_type == "run_execution":
             # Execute target weights against IBKR.
-            from prometheus.pipeline.tasks import run_execution_for_run, ExecutionConfig
+            from prometheus.pipeline.tasks import ExecutionConfig, run_execution_for_run
 
             if run.phase == RunPhase.BOOKS_DONE:
                 # Discover the correct live portfolio for this region.
@@ -503,6 +518,14 @@ def execute_job(
                 if result.get("errors"):
                     return False, "; ".join(result["errors"])
                 update_phase(db_manager, run.run_id, RunPhase.OPTIONS_DONE)
+            return True, None
+
+        elif job.job_type == "finalize":
+            # Mark the run COMPLETED.  Handles all terminal predecessor phases:
+            # OPTIONS_DONE (normal), EXECUTION_DONE (options skipped/failed),
+            # or BOOKS_DONE (execution also skipped — unusual but safe).
+            if run.phase in (RunPhase.OPTIONS_DONE, RunPhase.EXECUTION_DONE, RunPhase.BOOKS_DONE):
+                update_phase(db_manager, run.run_id, RunPhase.COMPLETED)
             return True, None
 
         else:
@@ -571,6 +594,7 @@ def _execute_kronos_job(
     try:
         if job.job_type == "kronos_outcome_eval":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.evaluator import OutcomeEvaluator
 
             db = get_db_manager()
@@ -585,6 +609,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_scorecard":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.scorecard import PredictionScorecard
 
             db = get_db_manager()
@@ -609,6 +634,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_lambda_scorecard":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.lambda_scorecard import LambdaScorecard
 
             db = get_db_manager()
@@ -631,6 +657,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_diagnostics":
             from apathis.core.database import get_db_manager
+
             from prometheus.meta.diagnostics import DiagnosticsEngine
 
             db = get_db_manager()
@@ -657,6 +684,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_proposals":
             from apathis.core.database import get_db_manager
+
             from prometheus.meta.diagnostics import DiagnosticsEngine
             from prometheus.meta.proposal_generator import ProposalGenerator
 
@@ -686,6 +714,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_live_perf":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
             db = get_db_manager()
@@ -714,6 +743,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_regime_eval":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
             db = get_db_manager()
@@ -734,6 +764,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_fragility_check":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
             db = get_db_manager()
@@ -753,6 +784,7 @@ def _execute_kronos_job(
 
         elif job.job_type == "kronos_hedge_eval":
             from apathis.core.database import get_db_manager
+
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
             db = get_db_manager()
@@ -869,6 +901,10 @@ class MarketAwareDaemon:
         # Track retry backoff: {execution_id: retry_after_timestamp}
         self.retry_backoff: Dict[str, datetime] = {}
 
+        # Cache TradingCalendar per market — loaded once, reused every cycle.
+        # Avoids a DB round-trip (full holiday list) on every 60-second poll.
+        self._calendars: Dict[str, TradingCalendar] = {}
+
     def _setup_signal_handlers(self) -> None:
         """Setup graceful shutdown handlers."""
 
@@ -899,12 +935,17 @@ class MarketAwareDaemon:
             )
 
     def _get_completed_jobs(self, dag_id: str) -> Set[str]:
-        """Get set of successfully completed job IDs for a DAG."""
+        """Get set of job IDs that are done (SUCCESS or SKIPPED) for a DAG.
+
+        SKIPPED jobs are included so their dependents can still run — a job
+        permanently skipped after exhausting retries must not block downstream
+        work (e.g. finalize should run even when run_options fails repeatedly).
+        """
         executions = get_dag_executions(self.db_manager, dag_id)
         return {
             exec.job_id
             for exec in executions
-            if exec.status == JobStatus.SUCCESS
+            if exec.status in {JobStatus.SUCCESS, JobStatus.SKIPPED}
         }
 
     def _get_running_job_ids(self) -> Set[str]:
@@ -985,12 +1026,33 @@ class MarketAwareDaemon:
             # Create or reuse execution record
             if latest_exec and latest_exec.status == JobStatus.PENDING:
                 execution = latest_exec
-            elif latest_exec and should_retry_job(job, latest_exec):
-                # Increment attempt and retry
+            elif latest_exec and latest_exec.status == JobStatus.FAILED:
+                if not should_retry_job(job, latest_exec):
+                    # Retries exhausted — permanently skip so dependents unblock.
+                    logger.warning(
+                        "_process_market: job_id=%s retries exhausted (attempt %d/%d), marking SKIPPED",
+                        job.job_id,
+                        latest_exec.attempt_number,
+                        job.max_retries,
+                    )
+                    update_job_execution_status(
+                        self.db_manager,
+                        latest_exec.execution_id,
+                        JobStatus.SKIPPED,
+                        error_message=(
+                            f"Retries exhausted after {latest_exec.attempt_number} attempts: "
+                            f"{latest_exec.error_message}"
+                        ),
+                    )
+                    continue
+                # Retry: increment attempt counter on the existing record
                 increment_job_execution_attempt(self.db_manager, latest_exec.execution_id)
                 execution = get_latest_job_execution(self.db_manager, job.job_id, dag_id)
+            elif latest_exec and latest_exec.status == JobStatus.SKIPPED:
+                # Already permanently skipped — do nothing this cycle
+                continue
             else:
-                # Create new execution
+                # No prior execution (or prior was SUCCESS) — start fresh
                 execution = create_job_execution(self.db_manager, job, dag_id, as_of_date)
 
             # Mark as running
@@ -1064,7 +1126,11 @@ class MarketAwareDaemon:
             if market_id in ("INTEL", "KRONOS"):
                 current_state = MarketState.POST_CLOSE
             else:
-                current_state = get_market_state(market_id, now)
+                if market_id not in self._calendars:
+                    self._calendars[market_id] = TradingCalendar(
+                        TradingCalendarConfig(market=market_id)
+                    )
+                current_state = get_market_state(market_id, now, calendar=self._calendars[market_id])
 
             self._process_market(market_id, dag, dag_id, current_state, as_of_date, now)
 
@@ -1087,6 +1153,23 @@ class MarketAwareDaemon:
             try:
                 cycle_count += 1
                 logger.debug("MarketAwareDaemon: cycle %d starting", cycle_count)
+
+                # Detect calendar date rollover (midnight crossings).
+                # Only auto-rolls when no explicit as_of_date was configured.
+                if self.config.as_of_date is None:
+                    today = date.today()
+                    if today != as_of_date:
+                        logger.info(
+                            "MarketAwareDaemon: date rolled over %s -> %s, reinitialising DAGs",
+                            as_of_date,
+                            today,
+                        )
+                        as_of_date = today
+                        self.active_dags.clear()
+                        self.running_jobs.clear()
+                        self.retry_backoff.clear()
+                        self._calendars.clear()
+                        self._initialize_dags(as_of_date)
 
                 self._run_cycle(as_of_date)
 

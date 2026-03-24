@@ -18,12 +18,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
@@ -32,7 +30,6 @@ from apathis.sector.health import SECTOR_ETF_MAP
 
 from .storage import ScenarioPathRow, ScenarioStorage
 from .types import RealityConfig, ScenarioRequest, ScenarioSetRef, SyntheticReality
-
 
 logger = get_logger(__name__)
 
@@ -273,8 +270,8 @@ class SyntheticScenarioEngine:
         is achieved.
         """
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         if max_workers <= 0:
             max_workers = os.cpu_count() or 1

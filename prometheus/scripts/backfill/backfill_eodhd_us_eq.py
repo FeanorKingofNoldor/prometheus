@@ -25,7 +25,7 @@ import argparse
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
-from apathis.core.database import get_db_manager, DatabaseManager
+from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.writer import DataWriter
 from apathis.data_ingestion.eodhd_client import EodhdClient
@@ -33,7 +33,6 @@ from apathis.data_ingestion.eodhd_prices import (
     EodhdIngestionResult,
     ingest_eodhd_prices_for_instruments,
 )
-
 
 logger = get_logger(__name__)
 
@@ -74,7 +73,7 @@ def _load_us_eq_instruments(
     elif status == "BOTH":
         status_sql = "status IN ('ACTIVE','DELISTED')"
 
-    base_sql = f"""
+    base_sql = rf"""
         SELECT instrument_id, symbol, currency
         FROM instruments
         WHERE market_id = 'US_EQ'

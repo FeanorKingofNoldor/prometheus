@@ -19,7 +19,6 @@ from typing import Dict, Tuple
 
 import pandas as pd
 
-
 ClusterKey = Tuple[date, str, str, str]
 
 

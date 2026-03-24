@@ -18,7 +18,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_LABELS = ("CRISIS", "RISK_OFF", "CARRY", "NEUTRAL")
 
 

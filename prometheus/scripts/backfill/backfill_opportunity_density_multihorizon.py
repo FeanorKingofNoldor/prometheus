@@ -54,11 +54,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
 from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
 from apathis.data.reader import DataReader
 

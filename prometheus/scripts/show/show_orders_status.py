@@ -25,7 +25,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_SIDES = ("BUY", "SELL")
 _ALLOWED_ORDER_TYPES = ("MARKET", "LIMIT", "STOP", "STOP_LIMIT")
 _ALLOWED_STATUSES = ("PENDING", "SUBMITTED", "FILLED", "CANCELLED", "REJECTED")

@@ -10,12 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from prometheus.meta.types import BacktestRunRecord, DecisionOutcome, EngineDecision
+from psycopg2.extras import Json
 
+from prometheus.meta.types import BacktestRunRecord, DecisionOutcome, EngineDecision
 
 logger = get_logger(__name__)
 

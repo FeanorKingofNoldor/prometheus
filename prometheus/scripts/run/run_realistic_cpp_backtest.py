@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import time
 from datetime import date
@@ -28,7 +27,6 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

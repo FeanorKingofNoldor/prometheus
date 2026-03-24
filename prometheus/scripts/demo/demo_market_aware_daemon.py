@@ -30,12 +30,13 @@ from datetime import date, datetime
 
 from apathis.core.database import get_db_manager
 from apathis.core.market_state import get_all_market_states, get_next_state_transition
+
+from prometheus.orchestration.dag import build_market_dag
 from prometheus.orchestration.market_aware_daemon import (
     MarketAwareDaemon,
     MarketAwareDaemonConfig,
     get_dag_executions,
 )
-from prometheus.orchestration.dag import build_market_dag
 
 
 def print_market_overview():
@@ -86,7 +87,7 @@ def run_demo(markets: list[str], poll_interval: int, as_of_date: date | None, cy
     print("\n" + "=" * 80)
     print("MARKET-AWARE DAEMON DEMO")
     print("=" * 80)
-    print(f"\nConfiguration:")
+    print("\nConfiguration:")
     print(f"  Markets: {', '.join(markets)}")
     print(f"  Poll Interval: {poll_interval}s")
     print(f"  As-of Date: {as_of_date or 'today'}")

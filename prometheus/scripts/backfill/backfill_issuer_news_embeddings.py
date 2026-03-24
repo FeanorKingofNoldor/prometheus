@@ -26,16 +26,14 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from numpy.typing import NDArray
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.encoders.text import TextDoc, TextEmbeddingStore
-
+from numpy.typing import NDArray
 
 logger = get_logger(__name__)
 

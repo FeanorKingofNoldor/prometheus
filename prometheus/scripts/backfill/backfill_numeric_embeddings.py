@@ -23,23 +23,21 @@ Examples
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
 from apathis.data.reader import DataReader
 from apathis.encoders import (
-    NumericWindowSpec,
-    NumericWindowBuilder,
-    NumericEmbeddingStore,
-    NumericWindowEncoder,
     FlattenNumericEmbeddingModel,
+    NumericEmbeddingStore,
+    NumericWindowBuilder,
+    NumericWindowEncoder,
+    NumericWindowSpec,
 )
 from apathis.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
-
 
 logger = get_logger(__name__)
 

@@ -94,13 +94,13 @@ def _summarise(db, which: str) -> dict[str, Any]:
             "trade_date": td.isoformat() if isinstance(td, date) else None,
             "open": float(o) if o is not None else None,
             "high": float(h) if h is not None else None,
-            "low": float(l) if l is not None else None,
+            "low": float(low_price) if low_price is not None else None,
             "close": float(c) if c is not None else None,
             "adjusted_close": float(ac) if ac is not None else None,
             "volume": float(v) if v is not None else None,
             "currency": str(cur),
         }
-        for iid, td, o, h, l, c, ac, v, cur in preview_rows
+        for iid, td, o, h, low_price, c, ac, v, cur in preview_rows
     ]
 
     checks_passed = (

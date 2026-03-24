@@ -19,19 +19,17 @@ Usage::
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date
+from typing import Any, Dict, List, Optional
 
+from apathis.core.logging import get_logger
+
+from prometheus.backtest.iv_surface import IVSurfaceEngine, VolTermStructure
 from prometheus.backtest.option_pricer import (
     BSGreeks,
     bs_greeks,
-    bs_price,
-    fill_price,
 )
-from prometheus.backtest.iv_surface import IVSurfaceEngine, VolTermStructure
-from apathis.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -111,12 +109,20 @@ class SyntheticOptionPosition:
         """Total cost basis."""
         return self.entry_price * self.multiplier * self.quantity
 
-    def to_strategy_dict(self) -> Dict[str, Any]:
+    def to_strategy_dict(self, as_of_date: Optional[date] = None) -> Dict[str, Any]:
         """Convert to the dict format expected by strategy evaluate().
+
+        Parameters
+        ----------
+        as_of_date : date, optional
+            Reference date for DTE calculation.  When omitted, falls back to
+            entry_date so that the call remains backward-compatible, though
+            callers should always pass the current backtest date.
 
         Matches the format from OptionPositionEntry.to_dict() in
         options_portfolio.py.
         """
+        _ref = as_of_date or self.entry_date or date.today()
         return {
             "instrument_id": f"{self.symbol}_{self.expiry}_{self.right}{self.strike:.0f}",
             "symbol": self.symbol,
@@ -129,7 +135,11 @@ class SyntheticOptionPosition:
             "current_price": self.current_price,
             "strategy": self.strategy,
             "sector": self.metadata.get("sector", ""),
-            "dte": (self.expiry_date - (self.entry_date or date(2000, 1, 1))).days,
+            # Bug fix: was (expiry_date - entry_date), which never changes and
+            # causes stale DTE values in stop-loss / barrier checks.
+            "dte": (self.expiry_date - _ref).days,
+            # Expose full metadata so lifecycle barrier-stop can read wing_strike.
+            "metadata": dict(self.metadata),
         }
 
 
@@ -190,6 +200,11 @@ class SyntheticOptionsBook:
         self._next_id: int = 0
         self._capital = initial_capital
 
+        # Per-strategy realized P&L accumulator (never reset)
+        self._realized_pnl_by_strategy: Dict[str, float] = {}
+        # Close events pending collection by the engine (cleared by pop_close_events)
+        self._close_events: List[Dict[str, Any]] = []
+
         # Daily tracking
         self._daily_realized: float = 0.0
         self._daily_expired: int = 0
@@ -210,6 +225,22 @@ class SyntheticOptionsBook:
     @property
     def total_unrealized_pnl(self) -> float:
         return sum(p.unrealized_pnl for p in self._positions.values())
+
+    @property
+    def realized_pnl_by_strategy(self) -> Dict[str, float]:
+        """Cumulative realized P&L per strategy (never reset)."""
+        return dict(self._realized_pnl_by_strategy)
+
+    def pop_close_events(self) -> List[Dict[str, Any]]:
+        """Return and clear accumulated close events since last call.
+
+        Each event dict contains: position_id, strategy, symbol, right,
+        expiry, strike, quantity, multiplier, close_price, entry_price,
+        realized_pnl, action.
+        """
+        events = self._close_events
+        self._close_events = []
+        return events
 
     @property
     def total_market_value(self) -> float:
@@ -268,8 +299,14 @@ class SyntheticOptionsBook:
         self,
         position_id: str,
         close_price: float,
+        action: str = "CLOSE",
     ) -> float:
         """Close a position and realize P&L.
+
+        Parameters
+        ----------
+        action : str
+            "CLOSE", "EXPIRE", or "ROLL" — recorded in the close event.
 
         Returns
         -------
@@ -285,9 +322,28 @@ class SyntheticOptionsBook:
         self._daily_realized += realized
         self._daily_closed += 1
 
+        strat = pos.strategy or "unknown"
+        self._realized_pnl_by_strategy[strat] = (
+            self._realized_pnl_by_strategy.get(strat, 0.0) + realized
+        )
+        self._close_events.append({
+            "position_id": position_id,
+            "strategy": strat,
+            "symbol": pos.symbol,
+            "right": pos.right,
+            "expiry": pos.expiry,
+            "strike": pos.strike,
+            "quantity": pos.quantity,
+            "multiplier": pos.multiplier,
+            "close_price": close_price,
+            "entry_price": pos.entry_price,
+            "realized_pnl": realized,
+            "action": action,
+        })
+
         logger.debug(
-            "Closed %s: %s %s %.1f x%d → P&L $%.2f",
-            position_id, pos.symbol, pos.right, pos.strike, pos.quantity, realized,
+            "Closed %s: %s %s %.1f x%d → P&L $%.2f (%s)",
+            position_id, pos.symbol, pos.right, pos.strike, pos.quantity, realized, action,
         )
         return realized
 
@@ -386,35 +442,45 @@ class SyntheticOptionsBook:
             # Price and greeks
             greeks = bs_greeks(S, pos.strike, T, risk_free_rate, iv, pos.right)
 
-            # P&L attribution (1st and 2nd order Taylor expansion)
-            if pos.prev_underlying_price > 0 and pos.prev_price > 0:
-                dS = S - pos.prev_underlying_price
-                d_iv = iv - pos.prev_iv
-                prev_greeks = pos.current_greeks
-
-                # Delta P&L: Δ × dS × multiplier × quantity
-                delta_pnl = prev_greeks.delta * dS * pos.multiplier * pos.quantity
-                # Gamma P&L: 0.5 × Γ × dS² × multiplier × quantity
-                gamma_pnl = 0.5 * prev_greeks.gamma * dS * dS * pos.multiplier * pos.quantity
-                # Theta P&L: θ × 1 day (theta is per-day already)
-                theta_pnl = prev_greeks.theta * pos.multiplier * pos.quantity
-                # Vega P&L: ν × d_iv (vega is per 1% = 0.01)
-                vega_pnl = prev_greeks.vega * (d_iv / 0.01) * pos.multiplier * pos.quantity
-
-                total_pos_pnl = (greeks.price - pos.prev_price) * pos.multiplier * pos.quantity
-                residual = total_pos_pnl - delta_pnl - gamma_pnl - theta_pnl - vega_pnl
-
-                attr.delta_pnl += delta_pnl
-                attr.gamma_pnl += gamma_pnl
-                attr.theta_pnl += theta_pnl
-                attr.vega_pnl += vega_pnl
-                attr.residual_pnl += residual
+            # Total P&L: today's price increment relative to yesterday's mark.
+            # We always compute this as long as we have a previous price, so
+            # the running sum in pnl_attr.total_pnl correctly telescopes to
+            # (close_price - entry_price) over the full life of the position.
+            # Note: prev_price is set to greeks.price at the END of each day,
+            # so it always equals yesterday's BS mark.
+            if pos.prev_price > 0:
+                total_pos_pnl = (
+                    (greeks.price - pos.prev_price) * pos.multiplier * pos.quantity
+                )
                 attr.total_pnl += total_pos_pnl
 
-            # Update position state
-            pos.prev_price = pos.current_price
+                # Greek decomposition (requires prev_underlying_price from day before).
+                if pos.prev_underlying_price > 0:
+                    dS = S - pos.prev_underlying_price
+                    d_iv = iv - pos.prev_iv
+                    prev_greeks = pos.current_greeks
+
+                    delta_pnl = prev_greeks.delta * dS * pos.multiplier * pos.quantity
+                    gamma_pnl = 0.5 * prev_greeks.gamma * dS * dS * pos.multiplier * pos.quantity
+                    theta_pnl = prev_greeks.theta * pos.multiplier * pos.quantity
+                    vega_pnl = prev_greeks.vega * (d_iv / 0.01) * pos.multiplier * pos.quantity
+
+                    residual = total_pos_pnl - delta_pnl - gamma_pnl - theta_pnl - vega_pnl
+
+                    attr.delta_pnl += delta_pnl
+                    attr.gamma_pnl += gamma_pnl
+                    attr.theta_pnl += theta_pnl
+                    attr.vega_pnl += vega_pnl
+                    attr.residual_pnl += residual
+
+            # Update position state.
+            # IMPORTANT: set prev_price = greeks.price (the NEW mark), not
+            # pos.current_price (the old mark).  Using old current as prev
+            # causes a 2-day lag: day-2 MTM would compute (day2 - entry) instead
+            # of (day2 - day1), inflating cumulative P&L for volatile positions.
+            pos.prev_price = greeks.price
             pos.prev_underlying_price = S
-            pos.prev_iv = pos.current_iv
+            pos.prev_iv = iv
 
             pos.current_price = greeks.price
             pos.current_greeks = greeks
@@ -444,7 +510,7 @@ class SyntheticOptionsBook:
             if pos.expiry_date <= as_of_date
         ]
 
-        total_pnl = 0.0
+        total_incremental_pnl = 0.0
         for pid in to_expire:
             pos = self._positions[pid]
             S = underlying_prices.get(pos.symbol, 0.0)
@@ -455,7 +521,17 @@ class SyntheticOptionsBook:
             else:
                 intrinsic = max(pos.strike - S, 0.0)
 
-            total_pnl += self.close_position(pid, intrinsic)
+            # Incremental P&L: from last mark-to-market price → intrinsic.
+            # We return this (not the full entry→intrinsic) to avoid double-counting
+            # the daily MTM changes that have already been accumulated into
+            # cumulative_options_pnl on every prior day this position was open.
+            total_incremental_pnl += (
+                (intrinsic - pos.current_price) * pos.multiplier * pos.quantity
+            )
+
+            # Full attribution tracking (entry→intrinsic) stays correct for
+            # realized P&L reporting and _strategy_realized_pnl.
+            self.close_position(pid, intrinsic, action="EXPIRE")
             self._daily_expired += 1
 
             if intrinsic > 0:
@@ -466,10 +542,11 @@ class SyntheticOptionsBook:
 
         if to_expire:
             logger.info(
-                "Expired %d positions (P&L: $%.2f)", len(to_expire), total_pnl,
+                "Expired %d positions (incremental P&L: $%.2f)",
+                len(to_expire), total_incremental_pnl,
             )
 
-        return total_pnl
+        return total_incremental_pnl
 
     # ── Greeks aggregation ───────────────────────────────────────────
 
@@ -511,11 +588,21 @@ class SyntheticOptionsBook:
 
     # ── Strategy interface ───────────────────────────────────────────
 
-    def to_existing_options_list(self) -> List[Dict[str, Any]]:
+    def to_existing_options_list(
+        self, as_of_date: Optional[date] = None
+    ) -> List[Dict[str, Any]]:
         """Convert all positions to the list-of-dicts format
         expected by strategy evaluate() as ``existing_options``.
+
+        Parameters
+        ----------
+        as_of_date : date, optional
+            Passed through to ``to_strategy_dict`` for correct DTE calculation.
         """
-        return [pos.to_strategy_dict() for pos in self._positions.values()]
+        return [
+            pos.to_strategy_dict(as_of_date=as_of_date)
+            for pos in self._positions.values()
+        ]
 
     def get_positions_for_symbol(
         self,

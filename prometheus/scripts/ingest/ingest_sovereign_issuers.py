@@ -20,10 +20,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import yaml
-from psycopg2.extras import Json
-
 from apathis.core.database import get_db_manager
-
+from psycopg2.extras import Json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "geo" / "nations.yaml"

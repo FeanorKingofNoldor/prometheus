@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 
@@ -193,7 +192,7 @@ def step_a(st: StateA, regime: Optional[str], frag: Optional[float]) -> str:
         st.state = "CRISIS"
         st.days_in_state = 0
         st.crisis_exit_counter = 0
-    
+
     st.days_in_state += 1
 
     if st.state == "CRISIS":

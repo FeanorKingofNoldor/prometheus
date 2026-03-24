@@ -92,16 +92,19 @@ class AllocationDirective:
 # Strategies not listed for a situation are disabled.
 REGIME_STRATEGY_MAP: Dict[str, Set[str]] = {
     "RISK_ON": {
-        "bull_call_spread", "momentum_call", "leaps", "covered_call", "short_put",
+        "bull_call_spread", "momentum_call", "leaps", "covered_call",
         "wheel", "iron_condor", "iron_butterfly", "vix_tail_hedge",
+        # short_put removed: VIX-as-IV-proxy understates single-stock IV → consistently -EV
     },
     "NEUTRAL": {
-        "covered_call", "short_put", "iron_condor", "iron_butterfly",
+        "covered_call", "iron_condor", "iron_butterfly",
         "calendar_spread", "wheel", "vix_tail_hedge",
+        # short_put removed (same reason)
     },
     "RECOVERY": {
-        "collar", "protective_put", "covered_call", "short_put",
+        "collar", "protective_put", "covered_call",
         "straddle_strangle", "vix_tail_hedge", "futures_overlay",
+        # short_put removed (same reason)
     },
     "RISK_OFF": {
         "protective_put", "sector_put_spread", "vix_tail_hedge",
@@ -160,7 +163,7 @@ REGIME_CAPITAL_TEMPLATES: Dict[str, Dict[str, float]] = {
 class StrategyAllocatorConfig:
     """Configuration for the strategy allocator."""
     # Total derivatives capital as fraction of NAV
-    total_derivatives_budget_pct: float = 0.15  # 15% of NAV
+    total_derivatives_budget_pct: float = 0.30  # 30% of NAV (v36 tuned)
 
     # Portfolio-level greeks limits
     max_portfolio_delta_pct: float = 0.20    # Max |delta| as % of NAV

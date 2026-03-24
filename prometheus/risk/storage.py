@@ -9,13 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.risk.engine import RiskActionType
+from psycopg2.extras import Json
 
+from prometheus.risk.engine import RiskActionType
 
 logger = get_logger(__name__)
 

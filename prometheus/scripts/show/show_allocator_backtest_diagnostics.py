@@ -34,7 +34,6 @@ from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.reader import DataReader
 
-
 logger = get_logger(__name__)
 
 

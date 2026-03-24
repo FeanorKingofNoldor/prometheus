@@ -15,38 +15,39 @@ Key features:
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from apathis.core.logging import get_logger
+
+from prometheus.execution.broker_interface import Fill, Order, OrderSide, OrderStatus, OrderType, Position
+from prometheus.execution.connection_manager import DualConnectionManager
 from prometheus.execution.ib_compat import (
     IB,
     Contract,
-    Fill as IbFill,
     LimitOrder,
     MarketOrder,
-    Order as IbOrder,
     StopLimitOrder,
     StopOrder,
     Trade,
 )
-
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from prometheus.execution.broker_interface import Fill, Order, OrderSide, OrderStatus, OrderType, Position
-from prometheus.execution.connection_manager import DualConnectionManager
+from prometheus.execution.ib_compat import (
+    Fill as IbFill,
+)
+from prometheus.execution.ib_compat import (
+    Order as IbOrder,
+)
 from prometheus.execution.ibkr_client import IbkrClient, IbkrConnectionConfig
 from prometheus.execution.instrument_mapper import InstrumentMapper
-
 
 logger = get_logger(__name__)
 
 
 class IbkrClientImpl(IbkrClient):
     """Concrete IBKR client implementation using ib_async.
-    
+
     This implementation:
     - Manages connection to IBKR Gateway/TWS
     - Supports dual-endpoint failover via :class:`DualConnectionManager`
@@ -70,19 +71,19 @@ class IbkrClientImpl(IbkrClient):
         self._conn_mgr = connection_manager
         self._ib = IB()  # only used when no connection_manager
         self._connected = False
-        
+
         # Instrument mapper for contract translation
         self._mapper = mapper or InstrumentMapper()
-        
+
         # Local caches
         self._fills: List[Fill] = []
         self._positions: Dict[str, Position] = {}
         self._account_state: Dict = {}
-        
+
         # Order tracking
         self._trades_by_ref: Dict[str, Trade] = {}  # Prometheus order_id (orderRef) -> IB Trade
         self._order_statuses: Dict[str, OrderStatus] = {}
-        
+
         # Health monitoring
         self._last_heartbeat: Optional[datetime] = None
         self._heartbeat_interval_sec = 60  # Check connection every 60 seconds
@@ -91,7 +92,7 @@ class IbkrClientImpl(IbkrClient):
         self._reconnect_delay_sec = 10
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_running = False
-        
+
         # Setup event handlers (only for the local IB; manager path
         # re-wires after connect via _wire_events).
         if self._conn_mgr is None:
@@ -164,7 +165,7 @@ class IbkrClientImpl(IbkrClient):
         if self._connected and self._ib.isConnected():
             logger.debug("IbkrClient already connected")
             return
-        
+
         try:
             logger.info(
                 "Connecting to IBKR at %s:%d (client_id=%d, account=%s)",
@@ -173,7 +174,7 @@ class IbkrClientImpl(IbkrClient):
                 self._config.client_id,
                 self._config.account_id or "default",
             )
-            
+
             self._ib.connect(
                 host=self._config.host,
                 port=self._config.port,
@@ -181,19 +182,19 @@ class IbkrClientImpl(IbkrClient):
                 readonly=self._config.readonly,
                 timeout=self._config.connect_timeout_sec,
             )
-            
+
             self._connected = True
             logger.info("Successfully connected to IBKR")
-            
+
             # Load instruments for contract mapping
             self._mapper.load_instruments()
-            
+
             # Initial sync
             self.sync()
-            
+
             # Start heartbeat monitoring
             self._start_heartbeat()
-            
+
         except Exception as e:
             logger.error("Failed to connect to IBKR: %s", e, exc_info=True)
             self._connected = False
@@ -246,7 +247,7 @@ class IbkrClientImpl(IbkrClient):
         # Translate Prometheus order to IBKR contract and order
         contract = self._create_contract(order.instrument_id)
         ib_order = self._create_ib_order(order)
-        
+
         logger.info(
             "Submitting order: %s %s %s x %.2f @ %s",
             order.order_id,
@@ -255,7 +256,7 @@ class IbkrClientImpl(IbkrClient):
             order.quantity,
             order.order_type.value,
         )
-        
+
         try:
             # Place order
             trade = self._ib.placeOrder(contract, ib_order)
@@ -278,7 +279,7 @@ class IbkrClientImpl(IbkrClient):
             )
 
             return order.order_id
-            
+
         except Exception as e:
             logger.error("Failed to submit order %s: %s", order.order_id, e, exc_info=True)
             raise
@@ -398,12 +399,12 @@ class IbkrClientImpl(IbkrClient):
         if not self.is_connected():
             logger.warning("Cannot sync: not connected to IBKR")
             return
-        
+
         logger.debug("Syncing positions and account state from IBKR")
-        
+
         # Sync positions
         self._sync_positions()
-        
+
         # Sync account values
         self._sync_account_values()
 
@@ -438,12 +439,12 @@ class IbkrClientImpl(IbkrClient):
 
     def _create_contract(self, instrument_id: str) -> Contract:
         """Create IBKR contract from Prometheus instrument_id.
-        
+
         Uses InstrumentMapper to translate instrument_id to IBKR contract.
         """
         # Use mapper to get contract
         contract = self._mapper.get_contract(instrument_id)
-        
+
         # Qualify contract to ensure it's valid
         try:
             contracts = self._ib.qualifyContracts(contract)
@@ -506,6 +507,66 @@ class IbkrClientImpl(IbkrClient):
 
         return ib_order
 
+    @staticmethod
+    def _normalize_account_id(account_id: object) -> str:
+        """Normalize account identifiers for robust comparisons."""
+        if account_id is None:
+            return ""
+        return str(account_id).strip().upper()
+
+    def _select_sync_account(self, available_accounts: List[object], *, source: str) -> str:
+        """Select account scope for IBKR sync payloads."""
+        configured = self._normalize_account_id(self._config.account_id)
+        normalized_available = sorted(
+            {
+                norm
+                for norm in (self._normalize_account_id(acc) for acc in available_accounts)
+                if norm
+            }
+        )
+
+        if configured:
+            if configured in normalized_available or not normalized_available:
+                return configured
+
+            fallback = normalized_available[0]
+            logger.warning(
+                "Configured IBKR account_id %s not present in %s accounts %s; "
+                "falling back to %s for sync.",
+                self._config.account_id,
+                source,
+                normalized_available,
+                fallback,
+            )
+            return fallback
+
+        if len(normalized_available) > 1:
+            fallback = normalized_available[0]
+            logger.warning(
+                "No IBKR account_id configured and multiple %s accounts discovered %s; "
+                "using %s for sync.",
+                source,
+                normalized_available,
+                fallback,
+            )
+            return fallback
+
+        if normalized_available:
+            return normalized_available[0]
+
+        return ""
+
+    def _filter_items_by_account(self, items: List[Any], account_id: str, *, account_attr: str) -> List[Any]:
+        """Filter records by normalized account id when one is selected."""
+        if not account_id:
+            return list(items)
+
+        return [
+            item
+            for item in items
+            if self._normalize_account_id(getattr(item, account_attr, None)) == account_id
+        ]
+
     def _sync_positions(self) -> None:
         """Sync positions from IBKR.
 
@@ -516,14 +577,20 @@ class IbkrClientImpl(IbkrClient):
         try:
             # ``portfolio()`` returns a list of PortfolioItem objects with
             # position size, market value and P&L information.
-            portfolio_items = self._ib.portfolio()
+            portfolio_items_all = list(self._ib.portfolio())
+            effective_account = self._select_sync_account(
+                [getattr(item, "account", None) for item in portfolio_items_all],
+                source="portfolio",
+            )
+            portfolio_items = self._filter_items_by_account(
+                portfolio_items_all,
+                effective_account,
+                account_attr="account",
+            )
 
             self._positions.clear()
 
             for item in portfolio_items:
-                # Respect configured account_id if provided
-                if self._config.account_id and item.account != self._config.account_id:
-                    continue
 
                 instrument_id = self._contract_to_instrument_id(item.contract)
 
@@ -537,16 +604,59 @@ class IbkrClientImpl(IbkrClient):
 
                 self._positions[instrument_id] = position
 
+            if effective_account:
+                logger.debug(
+                    "Synced %d IBKR positions for account=%s (raw_items=%d)",
+                    len(self._positions),
+                    effective_account,
+                    len(portfolio_items_all),
+                )
+            else:
+                logger.debug(
+                    "Synced %d IBKR positions (raw_items=%d, no account scoping)",
+                    len(self._positions),
+                    len(portfolio_items_all),
+                )
+
         except Exception as e:
             logger.error("Failed to sync positions: %s", e, exc_info=True)
 
     def _sync_account_values(self) -> None:
         """Sync account values from IBKR."""
         try:
-            account_values = self._ib.accountValues(account=self._config.account_id)
-            
+            configured_account = self._normalize_account_id(self._config.account_id)
+            if configured_account:
+                account_values = list(self._ib.accountValues(account=self._config.account_id))
+            else:
+                account_values = list(self._ib.accountValues())
+
+            if configured_account and not account_values:
+                all_values = list(self._ib.accountValues())
+                effective_account = self._select_sync_account(
+                    [getattr(av, "account", None) for av in all_values],
+                    source="accountValues",
+                )
+                filtered = self._filter_items_by_account(
+                    all_values,
+                    effective_account,
+                    account_attr="account",
+                )
+                account_values = filtered if filtered else all_values
+            else:
+                effective_account = self._select_sync_account(
+                    [getattr(av, "account", None) for av in account_values],
+                    source="accountValues",
+                )
+                filtered = self._filter_items_by_account(
+                    account_values,
+                    effective_account,
+                    account_attr="account",
+                )
+                if filtered:
+                    account_values = filtered
+
             self._account_state.clear()
-            
+
             # Extract key account metrics
             for av in account_values:
                 # Use tag as key, convert value to float if possible
@@ -555,17 +665,28 @@ class IbkrClientImpl(IbkrClient):
                     value = float(av.value)
                 except ValueError:
                     value = av.value
-                
+
                 self._account_state[key] = value
-            
+
             # Compute equity if not directly available
             if "NetLiquidation" in self._account_state:
                 self._account_state["equity"] = self._account_state["NetLiquidation"]
-            
+
             # Add cash
             if "TotalCashValue" in self._account_state:
                 self._account_state["cash"] = self._account_state["TotalCashValue"]
-                
+            if effective_account:
+                logger.debug(
+                    "Synced %d IBKR account keys for account=%s",
+                    len(self._account_state),
+                    effective_account,
+                )
+            else:
+                logger.debug(
+                    "Synced %d IBKR account keys (no account scoping)",
+                    len(self._account_state),
+                )
+
         except Exception as e:
             logger.error("Failed to sync account values: %s", e, exc_info=True)
 
@@ -606,16 +727,24 @@ class IbkrClientImpl(IbkrClient):
     ) -> None:
         """Handle execution (fill) events."""
         execution = fill.execution
-        
+
         # Extract order_id from order ref
         order_id = trade.order.orderRef if trade.order else None
         if not order_id:
             logger.warning("Received fill without order_id ref")
             order_id = f"unknown_{execution.execId}"
-        
+
         # Determine side
         side = OrderSide.BUY if execution.side == "BOT" else OrderSide.SELL
-        
+
+        # Normalize execution timestamp (ib_insync may provide datetime or str).
+        ts_raw = execution.time
+        if isinstance(ts_raw, datetime):
+            ts = ts_raw if ts_raw.tzinfo is not None else ts_raw.replace(tzinfo=timezone.utc)
+        else:
+            ts = datetime.fromisoformat(str(ts_raw))
+            ts = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
         # Create Prometheus Fill object
         prometheus_fill = Fill(
             fill_id=execution.execId,
@@ -624,7 +753,7 @@ class IbkrClientImpl(IbkrClient):
             side=side,
             quantity=float(execution.shares),
             price=float(execution.price),
-            timestamp=datetime.fromisoformat(execution.time).replace(tzinfo=timezone.utc),
+            timestamp=ts,
             commission=float(fill.commissionReport.commission) if fill.commissionReport else 0.0,
             metadata={
                 "exchange": execution.exchange,
@@ -632,9 +761,9 @@ class IbkrClientImpl(IbkrClient):
                 "order_id_ibkr": str(execution.orderId),
             },
         )
-        
+
         self._fills.append(prometheus_fill)
-        
+
         logger.info(
             "Fill received: %s %s %s x %.2f @ %.2f (commission=%.2f)",
             prometheus_fill.fill_id,
@@ -670,7 +799,7 @@ class IbkrClientImpl(IbkrClient):
         """Handle disconnection event."""
         logger.warning("IBKR connection lost")
         self._connected = False
-        
+
         # When using a connection manager, failover is handled by the
         # manager's monitor thread — do NOT attempt reconnection here.
         if self._conn_mgr is not None:
@@ -687,45 +816,45 @@ class IbkrClientImpl(IbkrClient):
     # ------------------------------------------------------------------
     # Connection health monitoring
     # ------------------------------------------------------------------
-    
+
     def _start_heartbeat(self) -> None:
         """Start heartbeat monitoring thread."""
         if self._heartbeat_running:
             return
-        
+
         self._heartbeat_running = True
         self._last_heartbeat = datetime.now(timezone.utc)
-        
+
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
             daemon=True,
             name="IbkrClientHeartbeat",
         )
         self._heartbeat_thread.start()
-        
+
         logger.info("Heartbeat monitoring started")
-    
+
     def _stop_heartbeat(self) -> None:
         """Stop heartbeat monitoring thread."""
         if not self._heartbeat_running:
             return
-        
+
         self._heartbeat_running = False
-        
+
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=5)
-        
+
         logger.info("Heartbeat monitoring stopped")
-    
+
     def _heartbeat_loop(self) -> None:
         """Heartbeat monitoring loop running in background thread."""
         while self._heartbeat_running:
             try:
                 time.sleep(self._heartbeat_interval_sec)
-                
+
                 if not self._heartbeat_running:
                     break
-                
+
                 # Check connection health
                 if self._ib.isConnected():
                     self._last_heartbeat = datetime.now(timezone.utc)
@@ -734,23 +863,23 @@ class IbkrClientImpl(IbkrClient):
                     logger.warning("Heartbeat: connection lost, attempting reconnect")
                     if self._reconnect_attempts < self._max_reconnect_attempts:
                         self._attempt_reconnect()
-                
+
             except Exception as e:
                 logger.error("Error in heartbeat loop: %s", e, exc_info=True)
-    
+
     def _attempt_reconnect(self) -> None:
         """Attempt to reconnect to IBKR."""
         self._reconnect_attempts += 1
-        
+
         logger.info(
             "Attempting reconnection %d/%d in %d seconds",
             self._reconnect_attempts,
             self._max_reconnect_attempts,
             self._reconnect_delay_sec,
         )
-        
+
         time.sleep(self._reconnect_delay_sec)
-        
+
         try:
             self.connect()
             logger.info("Reconnection successful")
@@ -760,19 +889,19 @@ class IbkrClientImpl(IbkrClient):
                 self._reconnect_attempts,
                 e,
             )
-            
+
             if self._reconnect_attempts >= self._max_reconnect_attempts:
                 logger.error(
                     "Max reconnection attempts (%d) reached. Manual intervention required.",
                     self._max_reconnect_attempts,
                 )
-    
+
     def get_connection_health(self) -> Dict:
         """Get connection health status.
-        
+
         When using a :class:`DualConnectionManager`, delegates to the
         manager for richer failover information.
-        
+
         Returns:
             Dictionary with connection health information.
         """

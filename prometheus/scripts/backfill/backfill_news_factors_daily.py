@@ -44,7 +44,6 @@ from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 

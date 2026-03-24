@@ -36,22 +36,21 @@ and portfolio_id values so that runs do not overwrite each other's state.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar
-from prometheus.backtest import SleeveConfig, run_backtest_campaign
-from prometheus.backtest.campaign import _run_backtest_for_sleeve, SleeveRunSummary
-from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
 from apathis.fragility.storage import FragilityStorage
 
+from prometheus.backtest import SleeveConfig, run_backtest_campaign
+from prometheus.backtest.campaign import SleeveRunSummary, _run_backtest_for_sleeve
+from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
 
 logger = get_logger(__name__)
 
@@ -467,7 +466,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         measures = storage.get_history("MARKET", args.market_id, args.start, args.end)
         allowed_dates = {m.as_of_date for m in measures if float(m.fragility_score) > args.fragility_threshold}
         if allowed_dates:
-            import pandas as pd, tempfile
+            import tempfile
+
+            import pandas as pd
             df = pd.read_csv(lambda_csv)
             df["as_of_date"] = pd.to_datetime(df["as_of_date"]).dt.date
             df = df[df["as_of_date"].isin(allowed_dates)]

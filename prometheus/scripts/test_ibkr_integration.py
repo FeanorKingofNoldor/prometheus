@@ -19,18 +19,15 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import date
-
-from prometheus.execution.ib_compat import IB, IB_BACKEND
 
 from apathis.core.logging import get_logger
+
+from prometheus.execution.ib_compat import IB, IB_BACKEND
 from prometheus.execution.instrument_mapper import InstrumentMapper
 from prometheus.execution.market_data import (
     IbkrMarketDataService,
     ScannerSubscription,
     TickSubscription,
-    build_signal_feed_subscriptions,
-    SECTOR_ETF_SYMBOLS,
 )
 
 logger = get_logger(__name__)
@@ -158,7 +155,7 @@ def test_tick_snapshot(mds: IbkrMarketDataService) -> None:
 
     snap = mds.get_snapshot("SPY")
     if snap:
-        print(f"  SPY Snapshot:")
+        print("  SPY Snapshot:")
         print(f"    Last:  ${snap.last:.2f}")
         print(f"    Bid:   ${snap.bid:.2f}")
         print(f"    Ask:   ${snap.ask:.2f}")

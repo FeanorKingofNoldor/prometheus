@@ -23,10 +23,8 @@ from typing import Iterable
 
 import pandas as pd
 import requests
-
-from apathis.data_ingestion.eodhd_client import EodhdClient
 from apathis.core.logging import get_logger
-
+from apathis.data_ingestion.eodhd_client import EodhdClient
 
 logger = get_logger(__name__)
 

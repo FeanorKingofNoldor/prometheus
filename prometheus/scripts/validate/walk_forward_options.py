@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from apathis.core.logging import get_logger
 
@@ -81,12 +81,13 @@ def _run_single(
     end: date,
 ) -> Dict[str, float]:
     """Run one options backtest config on a date window.  Returns summary dict."""
+    from apathis.core.database import get_db_manager
+    from apathis.data.reader import DataReader
+
     from prometheus.backtest.options_backtest import (
         OptionsBacktestConfig,
         OptionsBacktestEngine,
     )
-    from apathis.core.database import get_db_manager
-    from apathis.data.reader import DataReader
     from prometheus.scripts.grid_search.param_grid_search import _build_strategy_overrides
 
     bt_cfg = OptionsBacktestConfig(

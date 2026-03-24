@@ -11,11 +11,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from apathis.core.database import get_db_manager
 from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, Field
-
-from apathis.core.database import get_db_manager
-
 
 router = APIRouter(prefix="/api", tags=["visualization"])
 

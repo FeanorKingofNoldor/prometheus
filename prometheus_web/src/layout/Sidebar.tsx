@@ -6,8 +6,10 @@ import {
   FlaskConical,
   LineChart,
   ScrollText,
+  BookOpen,
   Settings,
   MessageSquare,
+  Brain,
 } from "lucide-react";
 
 const links = [
@@ -16,7 +18,9 @@ const links = [
   { to: "/execution", icon: ArrowRightLeft, label: "Execution" },
   { to: "/backtests", icon: FlaskConical, label: "Backtests" },
   { to: "/options", icon: LineChart, label: "Options" },
+  { to: "/intelligence", icon: Brain, label: "Intelligence" },
   { to: "/logs", icon: ScrollText, label: "Logs & Reports" },
+  { to: "/docs", icon: BookOpen, label: "Documentation" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/kronos", icon: MessageSquare, label: "Kronos" },
 ];

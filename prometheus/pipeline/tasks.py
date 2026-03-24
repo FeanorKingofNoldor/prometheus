@@ -16,51 +16,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import yaml
-from psycopg2.extras import Json
-
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager, get_db_manager
+from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
 from apathis.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
+from apathis.core.time import TradingCalendar
 from apathis.data.reader import DataReader
-from apathis.profiles import (
-    ProfileService,
-    ProfileStorage,
-    ProfileFeatureBuilder,
-    RoutedProfileFeatureBuilder,
-    SovereignProfileFeatureBuilder,
-    BasicProfileEmbedder,
-)
-from apathis.stability import (
-    StabilityEngine,
-    StabilityStorage,
-    BasicPriceStabilityModel,
-    StabilityStateChangeForecaster,
-)
-from apathis.regime import RegimeEngine, RegimeStorage, MarketProxyRegimeModel
-from apathis.regime.state_change import RegimeStateChangeForecaster
-from prometheus.universe import (
-    UniverseEngine,
-    UniverseMember,
-    UniverseStorage,
-    BasicUniverseModel,
-)
-from prometheus.universe.config import UniverseConfig
-from prometheus.assessment import AssessmentEngine
-from prometheus.portfolio import (
-    PortfolioConfig,
-    PortfolioEngine,
-    PortfolioStorage,
-    TargetPortfolio,
-    BasicLongOnlyPortfolioModel,
-)
-from prometheus.assessment.model_basic import BasicAssessmentModel
-from prometheus.assessment.storage import InstrumentScoreStorage
 from apathis.fragility import (
     BasicFragilityAlphaModel,
     FragilityAlphaEngine,
@@ -68,10 +32,31 @@ from apathis.fragility import (
 )
 from apathis.fragility.model_market import MarketFragilityModel
 from apathis.fragility.overlay import compute_fragility_overlay, overlay_config_from_sleeve_spec
-from prometheus.pipeline.state import EngineRun, RunPhase, update_phase
-from prometheus.meta import MetaStorage, MetaOrchestrator, EngineDecision
-from prometheus.meta.market_situation import MarketSituationService
-from prometheus.meta.policy import load_meta_policy_artifact
+from apathis.profiles import (
+    BasicProfileEmbedder,
+    ProfileFeatureBuilder,
+    ProfileService,
+    ProfileStorage,
+    RoutedProfileFeatureBuilder,
+    SovereignProfileFeatureBuilder,
+)
+from apathis.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
+from apathis.regime.state_change import RegimeStateChangeForecaster
+from apathis.sector.health import SectorHealthResult, compute_sector_health
+from apathis.sector.mapper import SectorMapper
+from apathis.stability import (
+    BasicPriceStabilityModel,
+    StabilityEngine,
+    StabilityStateChangeForecaster,
+    StabilityStorage,
+)
+from psycopg2.extras import Json
+
+from prometheus.assessment import AssessmentEngine
+from prometheus.assessment.model_basic import BasicAssessmentModel
+from prometheus.assessment.storage import InstrumentScoreStorage
+from prometheus.backtest import SleeveRunSummary, run_backtest_campaign
+from prometheus.backtest.catalog import build_core_long_sleeves
 from prometheus.books import (
     AllocatorSleeveSpec,
     BookKind,
@@ -81,20 +66,33 @@ from prometheus.books import (
     load_book_registry,
 )
 from prometheus.decisions import DecisionTracker
-from prometheus.backtest import SleeveRunSummary, run_backtest_campaign
-from prometheus.backtest.catalog import build_core_long_sleeves
+from prometheus.meta import EngineDecision, MetaOrchestrator, MetaStorage
+from prometheus.meta.market_situation import MarketSituationService
+from prometheus.meta.policy import load_meta_policy_artifact
 from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
-from prometheus.risk import apply_risk_constraints
-from apathis.sector.health import compute_sector_health, SectorHealthResult
-from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig, AllocationDecision
-from apathis.sector.mapper import SectorMapper
-from prometheus.scripts.backfill.backfill_portfolio_stab_scenario_metrics import (
-    backfill_portfolio_stab_scenario_metrics_for_range,
+from prometheus.pipeline.state import EngineRun, RunPhase, update_phase
+from prometheus.portfolio import (
+    BasicLongOnlyPortfolioModel,
+    PortfolioConfig,
+    PortfolioEngine,
+    PortfolioStorage,
+    TargetPortfolio,
 )
+from prometheus.risk import apply_risk_constraints
 from prometheus.scripts.backfill.backfill_backtest_stab_scenario_metrics import (
     summarise_backtest_stab_scenario_metrics,
 )
-
+from prometheus.scripts.backfill.backfill_portfolio_stab_scenario_metrics import (
+    backfill_portfolio_stab_scenario_metrics_for_range,
+)
+from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig
+from prometheus.universe import (
+    BasicUniverseModel,
+    UniverseEngine,
+    UniverseMember,
+    UniverseStorage,
+)
+from prometheus.universe.config import UniverseConfig
 
 logger = get_logger(__name__)
 
@@ -420,7 +418,7 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
             for market_id in markets:
                 fragility_storage = FragilityStorage(db_manager=db_manager)
                 market_fragility_model = MarketFragilityModel(db_manager=db_manager)
-                
+
                 # Check if already computed for this date/market
                 existing = fragility_storage.get_latest_measure(
                     "MARKET",
@@ -666,12 +664,12 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
             as_of_date=run.as_of_date,
             horizon_days=21,
         )
-        
+
         # Record assessment decision
         try:
             tracker = DecisionTracker(db_manager=db_manager)
             instrument_scores = {inst_id: score.score for inst_id, score in scores.items()}
-            
+
             decision_id = tracker.record_assessment_decision(
                 strategy_id=strategy_id,
                 market_id=market_id,
@@ -1026,11 +1024,11 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
     universe_engine = UniverseEngine(model=universe_model, storage=universe_storage)
 
     universe_id = f"CORE_EQ_{run.region.upper()}"
-    
+
     # Get candidate instruments before filtering
     candidate_instruments = _get_region_instruments(db_manager, run.region)
     candidate_ids = {row[0] for row in candidate_instruments}
-    
+
     universe_engine.build_and_save(run.as_of_date, universe_id)
 
     # Record universe decision with excluded instruments and reasons
@@ -1044,7 +1042,7 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
         )
         included_ids = [m.entity_id for m in members]
         excluded_ids = sorted(candidate_ids - set(included_ids))
-        
+
         # Get assessment scores to understand exclusion reasons.
         # instrument_scores is append-only per (strategy, instrument, date), so
         # we take the latest row per instrument_id.
@@ -1084,7 +1082,7 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
                         excluded_scores[str(inst_id)] = float(score)
                 finally:
                     cursor.close()
-        
+
         # Build exclusion reasons based on config and scores
         exclusion_reasons: Dict[str, Any] = {
             "total_candidates": len(candidate_ids),
@@ -1095,7 +1093,7 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
             "stability_risk_alpha": universe_config.stability_risk_alpha,
             "excluded_with_scores": excluded_scores,
         }
-        
+
         markets_str = ", ".join(markets) if markets else "N/A"
         decision_id = tracker.record_universe_decision(
             strategy_id=strategy_id,
@@ -2073,7 +2071,6 @@ def run_books_for_run(
     # Sector Allocator overlay: adjust weights based on sector health
     # ------------------------------------------------------------------
 
-    sector_alloc_meta: dict[str, object] = {}
     try:
         sector_scores = _load_sector_health_for_date(db_manager, run.as_of_date)
         if sector_scores:
@@ -2112,16 +2109,6 @@ def run_books_for_run(
             # Re-persist the adjusted target.
             portfolio_storage.save_target_portfolio(strategy_id=book_id, target=target)
 
-            sector_alloc_meta = {
-                "sector_stress_level": alloc_decision.stress_level.value,
-                "sector_sick": alloc_decision.sick_sectors,
-                "sector_weak": alloc_decision.weak_sectors,
-                "sector_healthy": alloc_decision.healthy_sectors,
-                "sector_equity_multiplier": alloc_decision.equity_multiplier,
-                "sector_hedge_allocation": alloc_decision.hedge_allocation,
-                "sector_weight_killed": alloc_decision.weight_killed,
-                "sector_weight_reduced": alloc_decision.weight_reduced,
-            }
 
             logger.info(
                 "run_books_for_run: sector allocator applied for %s on %s: "
@@ -2149,7 +2136,7 @@ def run_books_for_run(
     # Record portfolio decision
     try:
         tracker = DecisionTracker(db_manager=db_manager)
-        
+
         # Build risk metrics from target attributes
         risk_metrics = {}
         if hasattr(target, "risk_metrics") and target.risk_metrics:
@@ -2160,7 +2147,7 @@ def run_books_for_run(
             risk_metrics["expected_vol"] = target.expected_vol
         if hasattr(target, "expected_sharpe"):
             risk_metrics["expected_sharpe"] = target.expected_sharpe
-        
+
         # Build constraints metadata
         constraints_applied = {
             "risk_aversion_lambda": portfolio_config.risk_aversion_lambda,
@@ -2176,7 +2163,7 @@ def run_books_for_run(
             constraints_applied["status"] = target.constraints_status
         if hasattr(target, "factor_exposures") and target.factor_exposures:
             constraints_applied["factor_exposures"] = target.factor_exposures
-        
+
         decision_id = tracker.record_portfolio_decision(
             strategy_id=book_id,
             market_id=markets[0] if markets else "UNKNOWN",
@@ -2267,7 +2254,8 @@ def run_execution_for_run(
     4. Plans orders (delta between current and target).
     5. Submits orders (unless dry_run mode).
     6. Waits for fills with a per-order timeout.
-    7. Records execution results (orders, fills) to executed_actions.
+    7. Persists orders, fills, and order statuses in runtime storage and
+       maps fills to executed_actions.
     8. Reconciles post-execution positions vs. targets.
 
     The function is safe by default:
@@ -2296,7 +2284,7 @@ def run_execution_for_run(
     target_weights = _load_target_weights(db_manager, portfolio_id, run.as_of_date)
     if not target_weights:
         # Try to auto-discover any live portfolio for this region/date.
-        region_prefix = run.region.upper()
+        run.region.upper()
         sql_discover = """
             SELECT portfolio_id FROM target_portfolios
             WHERE as_of_date = %s
@@ -2335,12 +2323,22 @@ def run_execution_for_run(
     # 2. Connect to IBKR and get current positions + account state
     # ------------------------------------------------------------------
 
-    from prometheus.execution.broker_interface import Position as BrokerPosition, OrderType
-    from prometheus.execution.order_planner import plan_orders
+    from prometheus.execution.broker_interface import OrderType
+    from prometheus.execution.broker_interface import Position as BrokerPosition
     from prometheus.execution.executed_actions import (
-        record_executed_actions_for_fills,
         ExecutedActionContext,
+        record_executed_actions_for_fills,
     )
+    from prometheus.execution.order_planner import plan_orders
+    from prometheus.execution.storage import (
+        record_fills,
+        record_orders,
+        record_positions_snapshot,
+        update_order_statuses,
+    )
+
+    client = None
+    broker = None
 
     if mode == "dry_run":
         # Synthesise empty positions for dry-run (no broker connection).
@@ -2350,12 +2348,12 @@ def run_execution_for_run(
             db_manager, list(target_weights.keys()), run.as_of_date,
         )
     else:
+        from prometheus.execution.ibkr_client_impl import IbkrClientImpl
         from prometheus.execution.ibkr_config import (
+            IbkrGatewayType,
             IbkrMode,
             create_connection_config,
-            IbkrGatewayType,
         )
-        from prometheus.execution.ibkr_client_impl import IbkrClientImpl
         from prometheus.execution.live_broker import LiveBroker
 
         ibkr_mode = IbkrMode.PAPER if mode == "paper" else IbkrMode.LIVE
@@ -2405,6 +2403,14 @@ def run_execution_for_run(
                 pass
             return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
+    def _safe_disconnect() -> None:
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # 3. Convert target weights → target share quantities
     # ------------------------------------------------------------------
@@ -2451,6 +2457,7 @@ def run_execution_for_run(
             len(orders),
             execution_config.max_orders,
         )
+        _safe_disconnect()
         return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
     # Safety check: max single-order value.
@@ -2464,10 +2471,12 @@ def run_execution_for_run(
                 notional,
                 execution_config.max_single_order_value,
             )
+            _safe_disconnect()
             return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
     if not orders:
         logger.info("run_execution_for_run: no orders needed — portfolio is on target")
+        _safe_disconnect()
         return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
     # ------------------------------------------------------------------
@@ -2483,16 +2492,23 @@ def run_execution_for_run(
                 order.quantity,
                 order.order_type.value,
             )
+        _safe_disconnect()
         return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
     # Live / paper execution
     import time as _time
+    from datetime import datetime, timezone
+
     from prometheus.execution.broker_interface import OrderStatus
+    mode_up = mode.upper()
+    submission_started_at = datetime.now(timezone.utc)
+    submitted_orders = []
 
     submitted_ids: List[str] = []
     for order in orders:
         try:
             broker.submit_order(order)
+            submitted_orders.append(order)
             submitted_ids.append(order.order_id)
             logger.info(
                 "run_execution_for_run: submitted %s %s qty=%.0f",
@@ -2505,55 +2521,130 @@ def run_execution_for_run(
                 "run_execution_for_run: failed to submit order for %s",
                 order.instrument_id,
             )
+    if not submitted_orders:
+        logger.error("run_execution_for_run: all order submissions failed; skipping persistence/reconciliation")
+        _safe_disconnect()
+        return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
+    try:
+        record_orders(
+            db_manager=db_manager,
+            portfolio_id=portfolio_id,
+            orders=submitted_orders,
+            mode=mode_up,
+            decision_id=None,
+            as_of_date=run.as_of_date,
+        )
+    except Exception:
+        logger.exception(
+            "run_execution_for_run: failed to record submitted orders for run_id=%s",
+            run.run_id,
+        )
+
+    # Poll for statuses with timeout.
     # Poll for fills with timeout.
     deadline = _time.monotonic() + execution_config.fill_timeout_sec
     pending = set(submitted_ids)
+    terminal_statuses = {
+        OrderStatus.FILLED,
+        OrderStatus.CANCELLED,
+        OrderStatus.REJECTED,
+    }
+    order_statuses: Dict[str, OrderStatus] = {}
     while pending and _time.monotonic() < deadline:
         _time.sleep(2.0)
         for oid in list(pending):
             try:
                 status = broker.get_order_status(oid)
-                if status in (
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELLED,
-                    OrderStatus.REJECTED,
-                ):
+                order_statuses[oid] = status
+                if status in terminal_statuses:
                     pending.discard(oid)
             except Exception:
                 pass
+    # Final refresh (including still-pending IDs).
+    for oid in submitted_ids:
+        try:
+            order_statuses[oid] = broker.get_order_status(oid)
+        except Exception:
+            pass
 
     if pending:
         logger.warning(
             "run_execution_for_run: %d orders still pending after timeout",
             len(pending),
         )
+    if order_statuses:
+        try:
+            update_order_statuses(db_manager=db_manager, statuses=order_statuses)
+        except Exception:
+            logger.exception(
+                "run_execution_for_run: failed to persist order status updates for run_id=%s",
+                run.run_id,
+            )
 
     # ------------------------------------------------------------------
-    # 7. Record fills to executed_actions
+    # 7. Record fills to fills/executed_actions for this submission batch
     # ------------------------------------------------------------------
 
     try:
+        fills = broker.get_fills(since=submission_started_at)
+    except TypeError:
+        # Backward compatibility for broker implementations that ignore `since`.
         fills = broker.get_fills()
-        record_executed_actions_for_fills(
-            db_manager,
-            fills=fills,
-            context=ExecutedActionContext(
-                run_id=run.run_id,
-                portfolio_id=portfolio_id,
-                mode=mode.upper(),
-            ),
-        )
-        logger.info(
-            "run_execution_for_run: recorded %d fills for run_id=%s",
-            len(fills),
-            run.run_id,
-        )
     except Exception:  # pragma: no cover - defensive
         logger.exception(
-            "run_execution_for_run: failed to record fills for run_id=%s",
+            "run_execution_for_run: failed to fetch fills for run_id=%s",
             run.run_id,
         )
+        fills = []
+
+    submitted_ids_set = set(submitted_ids)
+    seen_fill_ids: set[str] = set()
+    batch_fills = []
+    for fill in fills:
+        if fill.order_id not in submitted_ids_set:
+            continue
+        if fill.fill_id in seen_fill_ids:
+            continue
+        seen_fill_ids.add(fill.fill_id)
+        batch_fills.append(fill)
+
+    if batch_fills:
+        try:
+            record_fills(
+                db_manager=db_manager,
+                fills=batch_fills,
+                mode=mode_up,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "run_execution_for_run: failed to persist fills for run_id=%s",
+                run.run_id,
+            )
+
+        try:
+            record_executed_actions_for_fills(
+                db_manager,
+                fills=batch_fills,
+                context=ExecutedActionContext(
+                    run_id=run.run_id,
+                    portfolio_id=portfolio_id,
+                    mode=mode_up,
+                ),
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "run_execution_for_run: failed to persist executed_actions for run_id=%s",
+                run.run_id,
+            )
+
+        logger.info(
+            "run_execution_for_run: processed %d fills for run_id=%s",
+            len(batch_fills),
+            run.run_id,
+        )
+    else:
+        logger.info("run_execution_for_run: no new fills for submitted orders in this execution window")
 
     # ------------------------------------------------------------------
     # 8. Reconcile: log any discrepancies between IBKR and targets
@@ -2581,17 +2672,26 @@ def run_execution_for_run(
                 "run_execution_for_run: %d position mismatches detected",
                 mismatches,
             )
+
+        try:
+            record_positions_snapshot(
+                db_manager=db_manager,
+                portfolio_id=portfolio_id,
+                positions=post_positions,
+                as_of_date=run.as_of_date,
+                mode=mode_up,
+            )
+        except Exception:
+            logger.exception(
+                "run_execution_for_run: failed to record positions snapshot for run_id=%s",
+                run.run_id,
+            )
     except Exception:  # pragma: no cover - defensive
         logger.exception(
             "run_execution_for_run: reconciliation failed for run_id=%s",
             run.run_id,
         )
-
-    # Disconnect
-    try:
-        client.disconnect()
-    except Exception:
-        pass
+    _safe_disconnect()
 
     return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
@@ -2666,7 +2766,7 @@ def build_options_signals(
     """
     from datetime import timedelta
 
-    reader = DataReader(db_manager=db_manager)
+    DataReader(db_manager=db_manager)
     markets = MARKETS_BY_REGION.get(run.region.upper())
     market_id = markets[0] if markets else run.region.upper()
 
@@ -2870,10 +2970,12 @@ def run_options_for_run(
     account_equity = options_config.account_equity_override
     if mode != "dry_run":
         try:
-            from prometheus.execution.ibkr_config import (
-                IbkrMode, create_connection_config, IbkrGatewayType,
-            )
             from prometheus.execution.ibkr_client_impl import IbkrClientImpl
+            from prometheus.execution.ibkr_config import (
+                IbkrGatewayType,
+                IbkrMode,
+                create_connection_config,
+            )
             from prometheus.execution.live_broker import LiveBroker
 
             ibkr_mode = IbkrMode.PAPER if mode == "paper" else IbkrMode.LIVE
@@ -2975,15 +3077,27 @@ def run_options_for_run(
     # ------------------------------------------------------------------
 
     from prometheus.execution.options_strategy import (
-        VixTailHedgeStrategy, IronCondorStrategy, IronButterflyStrategy,
-        ShortPutStrategy, FuturesOverlayStrategy, FuturesOptionStrategy,
-        BullCallSpreadStrategy, MomentumCallStrategy, LEAPSStrategy,
-        WheelStrategy,
-        VixTailHedgeConfig, IronCondorConfig, IronButterflyConfig,
-        ShortPutConfig, FuturesOverlayConfig, FuturesOptionConfig,
-        BullCallSpreadConfig, MomentumCallConfig, LEAPSConfig,
-        WheelConfig,
+        BullCallSpreadConfig,
+        BullCallSpreadStrategy,
+        FuturesOptionConfig,
+        FuturesOptionStrategy,
+        FuturesOverlayConfig,
+        FuturesOverlayStrategy,
+        IronButterflyConfig,
+        IronButterflyStrategy,
+        IronCondorConfig,
+        IronCondorStrategy,
+        LEAPSConfig,
+        LEAPSStrategy,
+        MomentumCallConfig,
+        MomentumCallStrategy,
+        ShortPutConfig,
+        ShortPutStrategy,
         TradeAction,
+        VixTailHedgeConfig,
+        VixTailHedgeStrategy,
+        WheelConfig,
+        WheelStrategy,
     )
 
     overrides = _load_strategy_overrides(options_config.strategy_overrides_path)
@@ -3162,7 +3276,7 @@ def run_options_for_run(
 
         tracker.record_options_decision(
             strategy_id=f"{run.region.upper()}_OPTIONS",
-            market_id=markets[0] if markets else "US_EQ",
+            market_id=str(run.region) if run.region else "US_EQ",
             as_of_date=run.as_of_date,
             orders=orders_for_log,
             signals_snapshot=signals_snap,

@@ -32,7 +32,6 @@ from apathis.data_ingestion.eodhd_sp500_instruments import (
     upsert_sp500_instruments,
 )
 
-
 logger = get_logger(__name__)
 
 

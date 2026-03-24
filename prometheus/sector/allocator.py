@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from apathis.core.logging import get_logger
 from apathis.sector.health import SectorHealthResult

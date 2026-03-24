@@ -21,18 +21,16 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-import sys
 from datetime import date
 from typing import Optional
 
 import requests
-from dotenv import load_dotenv
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.types import PriceBar
 from apathis.data.writer import DataWriter
 from apathis.data_ingestion.fred_client import FredClient
+from dotenv import load_dotenv
 
 logger = get_logger(__name__)
 

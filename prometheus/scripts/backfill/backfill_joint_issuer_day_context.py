@@ -47,8 +47,6 @@ from datetime import date
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from numpy.typing import NDArray
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
@@ -58,7 +56,7 @@ from apathis.encoders import (
     JointExample,
 )
 from apathis.encoders.models_joint_simple import SimpleAverageJointModel
-
+from numpy.typing import NDArray
 
 logger = get_logger(__name__)
 

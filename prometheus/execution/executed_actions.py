@@ -16,13 +16,12 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Mapping, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.execution.broker_interface import Fill
+from psycopg2.extras import Json
 
+from prometheus.execution.broker_interface import Fill
 
 logger = get_logger(__name__)
 

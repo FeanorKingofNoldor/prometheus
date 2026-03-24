@@ -38,8 +38,8 @@ from datetime import date
 from typing import Any, Dict, Optional, Set
 
 from apathis.core.logging import get_logger
-from prometheus.sector.allocator import StressLevel
 
+from prometheus.sector.allocator import StressLevel
 
 logger = get_logger(__name__)
 

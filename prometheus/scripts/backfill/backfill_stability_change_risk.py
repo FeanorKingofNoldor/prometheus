@@ -41,14 +41,12 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+from apathis.stability.state_change import _SOFT_TARGET_ORDER, _build_transition_matrix
 from apathis.stability.storage import StabilityStorage
 from apathis.stability.types import SoftTargetClass, SoftTargetState
-from apathis.stability.state_change import _SOFT_TARGET_ORDER, _build_transition_matrix
-
 
 logger = get_logger(__name__)
 

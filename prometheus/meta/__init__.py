@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prometheus.meta.types import EngineDecision, DecisionOutcome, BacktestRunRecord, SleeveEvaluation
 from prometheus.meta.storage import MetaStorage
+from prometheus.meta.types import BacktestRunRecord, DecisionOutcome, EngineDecision, SleeveEvaluation
 
 if TYPE_CHECKING:  # pragma: no cover
     # Imported lazily at runtime to avoid circular imports (meta -> backtest -> decisions -> meta).

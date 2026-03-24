@@ -23,7 +23,6 @@ from typing import Optional, Sequence
 from apathis.core.config import get_config
 from apathis.core.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 
@@ -43,7 +42,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         ),
     )
 
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
     config = get_config()
     risk = config.execution_risk

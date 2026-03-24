@@ -16,7 +16,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED = ("PENDING", "IN_PROGRESS", "COMPLETE", "FAILED")
 
 

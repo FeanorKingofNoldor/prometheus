@@ -200,7 +200,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     # -- Summary --
     print(f"\n{'='*60}")
-    print(f"Regime Replay Complete")
+    print("Regime Replay Complete")
     print(f"{'='*60}")
     print(f"Region:              {args.region}")
     print(f"Date range:          {args.start} -> {args.end}")
@@ -245,7 +245,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 cursor.close()
 
         print()
-        print(f"DB state after replay:")
+        print("DB state after replay:")
         print(f"  Regime records:  {db_regimes}")
         print(f"  Transitions:     {db_transitions}")
     print(f"{'='*60}")

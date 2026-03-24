@@ -18,13 +18,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import numpy as np
-
 from apathis.core.logging import get_logger
+
 from prometheus.backtest.config import SleeveConfig
 from prometheus.meta.market_situation import MarketSituation
 from prometheus.meta.storage import MetaStorage
-from prometheus.meta.types import BacktestRunRecord, SleeveEvaluation
-
+from prometheus.meta.types import SleeveEvaluation
 
 logger = get_logger(__name__)
 

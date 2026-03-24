@@ -52,13 +52,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from psycopg2.extras import Json, execute_values
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-
+from psycopg2.extras import Json, execute_values
 
 logger = get_logger(__name__)
 

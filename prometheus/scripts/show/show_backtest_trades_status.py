@@ -21,7 +21,6 @@ from typing import Any, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 
-
 _ALLOWED_DIRECTIONS = ("BUY", "SELL", "LONG", "SHORT")
 _NONFINITE = "('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)"
 

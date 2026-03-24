@@ -25,15 +25,15 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 import numpy as np
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig, StressLevel
-from apathis.sector.health import SectorHealthEngine, SectorHealthResult
+from apathis.sector.health import SectorHealthEngine
 from apathis.sector.mapper import SectorMapper
+
+from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig
 
 logger = get_logger(__name__)
 
@@ -440,7 +440,7 @@ def main() -> None:
     logger.info("Loaded prices for %d instruments", len(all_closes))
 
     spy_closes = all_closes.get("SPY.US", {})
-    sh_closes = all_closes.get("SH.US", {})
+    all_closes.get("SH.US", {})
 
     # Compute returns.
     all_returns = prices_to_returns(all_closes)
@@ -524,7 +524,7 @@ def main() -> None:
             print(f"  Total Turnover:    {bt.total_turnover:,.1f}x NAV")
 
     # Stress level distribution for sector system.
-    print(f"\nSector System Stress Distribution")
+    print("\nSector System Stress Distribution")
     stress_counts = Counter(sector_system.stress_levels)
     total_days = len(sector_system.stress_levels)
     for level in ["NORMAL", "SECTOR_STRESS", "BROAD_STRESS", "SYSTEMIC_CRISIS"]:
@@ -532,7 +532,7 @@ def main() -> None:
         print(f"  {level:20s}: {count:5d} days ({count/total_days:.1%})")
 
     # Event analysis.
-    print(f"\nEvent Analysis")
+    print("\nEvent Analysis")
     for event_name, (ev_start, ev_end) in EVENTS.items():
         event_levels = []
         event_kills: Dict[str, int] = Counter()

@@ -16,10 +16,8 @@ Usage::
 from __future__ import annotations
 
 import csv
-import itertools
 import json
 import time
-from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -171,7 +169,7 @@ def main() -> None:
 
     print(f"\n{'='*80}")
     print(f"  Equity Engine Grid Search: {len(grid)} configs")
-    print(f"  Locked: BLENDED_UNIVERSE_AND_SIZE + conviction + SA")
+    print("  Locked: BLENDED_UNIVERSE_AND_SIZE + conviction + SA")
     print(f"  Instruments: {len(instrument_ids)}")
     print(f"{'='*80}\n")
 
@@ -191,7 +189,7 @@ def main() -> None:
     results_sorted = sorted(results, key=lambda r: r.get("cagr", 0), reverse=True)
 
     print(f"\n{'='*80}")
-    print(f"  RESULTS (sorted by CAGR)")
+    print("  RESULTS (sorted by CAGR)")
     print(f"{'='*80}")
     print(f"{'Rank':<5s} {'Label':<22s} {'CAGR':>8s} {'Sharpe':>8s} {'MaxDD':>8s} {'Vol':>8s}")
     print("-" * 65)

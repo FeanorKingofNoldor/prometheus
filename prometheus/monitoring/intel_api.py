@@ -12,9 +12,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Path, Query
-
 from apathis.core.logging import get_logger
+from fastapi import APIRouter, HTTPException, Path, Query
 
 logger = get_logger(__name__)
 

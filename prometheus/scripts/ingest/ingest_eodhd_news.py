@@ -29,7 +29,6 @@ from apathis.data_ingestion.news_eodhd import (
     ingest_eodhd_news_for_market,
 )
 
-
 logger = get_logger(__name__)
 
 

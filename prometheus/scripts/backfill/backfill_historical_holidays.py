@@ -8,13 +8,13 @@ This is needed for backtesting because EODHD only provides future holidays.
 Usage:
     # Backfill US equities
     python -m prometheus.scripts.backfill_historical_holidays --market-id US_EQ
-    
+
     # Backfill with custom date range
     python -m prometheus.scripts.backfill_historical_holidays \\
         --market-id US_EQ \\
         --start-year 2000 \\
         --end-year 2024
-    
+
     # Backfill all markets
     python -m prometheus.scripts.backfill_historical_holidays --all-markets
 """
@@ -28,9 +28,9 @@ from typing import Sequence
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data_ingestion.historical_holidays import (
-    backfill_historical_holidays,
     HAS_PANDAS_MARKET_CALENDARS,
     MARKET_TO_CALENDAR,
+    backfill_historical_holidays,
 )
 
 logger = get_logger(__name__)
@@ -43,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    
+
     parser.add_argument(
         "--market-id",
         type=str,
@@ -66,9 +66,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=2025,
         help="End year (default: 2025)",
     )
-    
+
     args = parser.parse_args(argv)
-    
+
     # Check if pandas_market_calendars is available
     if not HAS_PANDAS_MARKET_CALENDARS:
         print(
@@ -77,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    
+
     # Determine markets to backfill
     if args.all_markets:
         markets = list(MARKET_TO_CALENDAR.keys())
@@ -92,11 +92,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         markets = [args.market_id]
     else:
         parser.error("Must specify either --market-id or --all-markets")
-    
+
     # Backfill
     db_manager = get_db_manager()
     total_count = 0
-    
+
     for market_id in markets:
         logger.info(
             "Backfilling historical holidays for %s (%d-%d)",
@@ -104,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.start_year,
             args.end_year,
         )
-        
+
         try:
             count = backfill_historical_holidays(
                 db_manager,
@@ -118,7 +118,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger.exception("Failed to backfill %s: %s", market_id, exc)
             print(f"❌ {market_id}: FAILED - {exc}", file=sys.stderr)
             continue
-    
+
     print(f"\n🎉 Total: Backfilled {total_count} holidays across {len(markets)} market(s)")
     print(f"\nHistorical holidays are now available for {args.start_year}-{args.end_year}")
     print("Your TradingCalendar will automatically use these for backtesting.")

@@ -24,8 +24,8 @@ from typing import Optional, Sequence
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.pipeline.state import RunPhase
 
+from prometheus.pipeline.state import RunPhase
 
 logger = get_logger(__name__)
 

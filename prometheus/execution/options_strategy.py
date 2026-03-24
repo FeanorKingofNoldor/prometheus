@@ -31,11 +31,12 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from apathis.core.logging import get_logger
+
 from prometheus.execution.broker_interface import (
     BrokerInterface,
     Order,
@@ -1274,7 +1275,7 @@ class FuturesOverlayStrategy(OptionStrategy):
             if front is not None:
                 return front.last_trade_date
         # Heuristic: next quarterly expiry (3rd Friday of Mar/Jun/Sep/Dec)
-        from prometheus.execution.futures_manager import FuturesManager, PRODUCTS
+        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
         product = PRODUCTS.get(self._config.product)
         if product is None:
             return None
@@ -1516,7 +1517,7 @@ class FuturesOptionStrategy(OptionStrategy):
             if front is not None:
                 return front.last_trade_date
         # Heuristic
-        from prometheus.execution.futures_manager import FuturesManager, PRODUCTS
+        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
         product = PRODUCTS.get("VX")
         if product is None:
             return None
@@ -1528,7 +1529,7 @@ class FuturesOptionStrategy(OptionStrategy):
             front = self._discovery.get_front_month_future("ES", "CME")
             if front is not None:
                 return front.last_trade_date
-        from prometheus.execution.futures_manager import FuturesManager, PRODUCTS
+        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
         product = PRODUCTS.get("ES")
         if product is None:
             return None
@@ -2968,7 +2969,7 @@ class WheelStrategy(OptionStrategy):
             return []
 
         nav = signals.get("nav", 0.0)
-        buying_power = signals.get("buying_power", nav)
+        signals.get("buying_power", nav)
         lambda_scores: Dict[str, float] = signals.get("lambda_scores", {})
         stab_scores: Dict[str, float] = signals.get("stab_scores", {})
         equity_prices: Dict[str, float] = signals.get("equity_prices", {})

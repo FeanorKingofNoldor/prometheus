@@ -33,10 +33,11 @@ from datetime import date
 from statistics import mean
 from typing import Any, Optional, Sequence
 
-from prometheus.books.registry import BookKind, load_book_registry
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.reader import DataReader
+
+from prometheus.books.registry import BookKind, load_book_registry
 from prometheus.meta.market_situation import MarketSituationService
 
 logger = get_logger(__name__)

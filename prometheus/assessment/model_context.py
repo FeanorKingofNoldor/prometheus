@@ -17,11 +17,10 @@ from datetime import date
 from typing import Any, Dict, Sequence, Tuple
 
 import numpy as np
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from prometheus.assessment.api import AssessmentModel, InstrumentScore
 
+from prometheus.assessment.api import AssessmentModel, InstrumentScore
 
 logger = get_logger(__name__)
 

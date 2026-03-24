@@ -34,25 +34,22 @@ Typical usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import multiprocessing
-import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager, get_db_manager
+from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.reader import DataReader
+
 from prometheus.synthetic import (
     RealityConfig,
     ScenarioStorage,

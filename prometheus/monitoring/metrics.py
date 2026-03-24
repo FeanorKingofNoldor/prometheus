@@ -15,10 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Dict, Iterable, Mapping, MutableMapping, Optional
+from typing import Iterable, Mapping, MutableMapping, Optional
 
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

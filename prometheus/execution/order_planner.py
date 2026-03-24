@@ -20,7 +20,6 @@ from apathis.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Order, OrderSide, OrderType, Position
 
-
 logger = get_logger(__name__)
 
 

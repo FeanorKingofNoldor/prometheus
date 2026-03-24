@@ -46,7 +46,6 @@ except Exception:  # pragma: no cover - optional dependency
 
 from apathis.core.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 

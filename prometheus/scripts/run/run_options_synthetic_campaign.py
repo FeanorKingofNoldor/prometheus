@@ -23,17 +23,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
-import os
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-
 from apathis.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -433,26 +429,26 @@ def main(argv=None):
             idx = int(len(s) * p / 100.0)
             return s[min(idx, len(s) - 1)]
 
-        print(f"\n  Combined CAGR (equity + options):")
+        print("\n  Combined CAGR (equity + options):")
         print(f"    Mean:   {np.mean(cagrs)*100:>7.2f}%")
         print(f"    Median: {np.median(cagrs)*100:>7.2f}%")
         print(f"    Std:    {np.std(cagrs)*100:>7.2f}%")
         print(f"    P5:     {_pct(cagrs, 5)*100:>7.2f}%")
         print(f"    P95:    {_pct(cagrs, 95)*100:>7.2f}%")
 
-        print(f"\n  Sharpe Ratio:")
+        print("\n  Sharpe Ratio:")
         print(f"    Mean:   {np.mean(sharpes):>7.3f}")
         print(f"    Median: {np.median(sharpes):>7.3f}")
         print(f"    Std:    {np.std(sharpes):>7.3f}")
         print(f"    P5:     {_pct(sharpes, 5):>7.3f}")
         print(f"    P95:    {_pct(sharpes, 95):>7.3f}")
 
-        print(f"\n  Max Drawdown:")
+        print("\n  Max Drawdown:")
         print(f"    Mean:   {np.mean(drawdowns)*100:>7.2f}%")
         print(f"    Median: {np.median(drawdowns)*100:>7.2f}%")
         print(f"    Worst:  {min(drawdowns)*100:>7.2f}%")
 
-        print(f"\n  Options P&L:")
+        print("\n  Options P&L:")
         print(f"    Mean:   ${np.mean(opt_pnls):>12,.0f}")
         print(f"    Median: ${np.median(opt_pnls):>12,.0f}")
         print(f"    Std:    ${np.std(opt_pnls):>12,.0f}")
@@ -462,7 +458,7 @@ def main(argv=None):
         # Per-strategy breakdown
         strat_keys = [k for k in ok[0] if k.startswith("pnl_")]
         if strat_keys:
-            print(f"\n  Per-Strategy Options P&L (median across realities):")
+            print("\n  Per-Strategy Options P&L (median across realities):")
             for sk in sorted(strat_keys, key=lambda k: np.median([r.get(k, 0) for r in ok]), reverse=True):
                 vals = [r.get(sk, 0) for r in ok]
                 name = sk.replace("pnl_", "")

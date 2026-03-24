@@ -27,7 +27,6 @@ from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger

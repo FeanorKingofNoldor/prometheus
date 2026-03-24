@@ -187,6 +187,21 @@ books:
           RISK_OFF: 0.40
           RECOVERY: 0.30
 
+  US_EQ_LONG_V12:
+    # Lambda-driven long-only book based on v12 backtest findings.
+    # K=25 names, 10% max weight, concentration power 2.5.
+    kind: LONG_EQUITY
+    region: US
+    market_id: US_EQ
+    default_sleeve_id: US_EQ_LONG_V12_K25
+    sleeves:
+      US_EQ_LONG_V12_K25:
+        portfolio_max_names: 25
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
+        score_concentration_power: 2.5
+        apply_fragility_overlay: false
+
   CASH:
     kind: CASH
     region: US

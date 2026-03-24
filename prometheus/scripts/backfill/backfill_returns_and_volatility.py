@@ -40,7 +40,6 @@ from apathis.data_ingestion.derived.returns_volatility import (
     compute_returns_and_volatility_for_instruments,
 )
 
-
 logger = get_logger(__name__)
 
 
@@ -61,7 +60,7 @@ def _discover_instruments_from_prices(db_manager: DatabaseManager) -> List[str]:
     temporary/test instruments that happen to have prices.
     """
 
-    sql = """
+    sql = r"""
         SELECT DISTINCT instrument_id
         FROM prices_daily
         WHERE instrument_id NOT LIKE 'SYNTH\_%'

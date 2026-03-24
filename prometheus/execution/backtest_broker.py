@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Dict, List
 
 from apathis.core.logging import get_logger
+
 from prometheus.execution.broker_interface import (
     BrokerInterface,
     Fill,
@@ -23,7 +24,6 @@ from prometheus.execution.broker_interface import (
 )
 from prometheus.execution.market_simulator import MarketSimulator
 from prometheus.execution.time_machine import TimeMachine
-
 
 logger = get_logger(__name__)
 

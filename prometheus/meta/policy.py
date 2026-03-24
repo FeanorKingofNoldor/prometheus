@@ -34,7 +34,6 @@ import yaml
 
 from prometheus.meta.market_situation import MarketSituation
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY_PATH = PROJECT_ROOT / "configs" / "meta" / "policy.yaml"
 

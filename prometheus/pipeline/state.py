@@ -13,12 +13,10 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 
@@ -380,3 +378,75 @@ def list_active_runs(db_manager: DatabaseManager) -> list[EngineRun]:
             cursor.close()
 
     return [_row_to_engine_run(row) for row in rows]
+
+
+def force_reset_run_to_waiting(
+    db_manager: DatabaseManager,
+    run_id: str,
+    *,
+    reason: str = "forced reset to WAITING_FOR_DATA",
+) -> EngineRun:
+    """Force-reset an existing run back to WAITING_FOR_DATA.
+
+    This bypasses normal forward-only transition validation and is intended
+    for operational recovery when a same-date run is stuck in a terminal
+    phase (e.g. OPTIONS_DONE) before the intended post-close cycle starts.
+
+    Args:
+        db_manager: Runtime database manager.
+        run_id: Target run identifier.
+        reason: Optional reason recorded in ``error`` payload.
+
+    Returns:
+        The updated EngineRun.
+    """
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE engine_runs
+                SET phase = %s,
+                    error = %s,
+                    updated_at = NOW(),
+                    phase_started_at = NOW(),
+                    phase_completed_at = NULL
+                WHERE run_id = %s
+                """,
+                (
+                    RunPhase.WAITING_FOR_DATA.value,
+                    Json({"reset_reason": reason}),
+                    run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise EngineRunStateError(f"Engine run {run_id!r} not found for force reset")
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT run_id,
+                       as_of_date,
+                       region,
+                       phase,
+                       error,
+                       created_at,
+                       updated_at,
+                       phase_started_at,
+                       phase_completed_at
+                FROM engine_runs
+                WHERE run_id = %s
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:  # pragma: no cover - defensive
+                raise EngineRunStateError(f"Engine run {run_id!r} disappeared after force reset")
+            logger.warning(
+                "Force-reset engine run %s to WAITING_FOR_DATA (%s)",
+                run_id,
+                reason,
+            )
+            return _row_to_engine_run(row)
+        finally:
+            cursor.close()

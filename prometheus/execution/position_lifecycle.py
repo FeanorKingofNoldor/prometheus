@@ -28,6 +28,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from apathis.core.logging import get_logger
+
 from prometheus.execution.broker_interface import OrderType
 from prometheus.execution.options_strategy import (
     OptionTradeDirective,
@@ -79,7 +80,7 @@ STRATEGY_PROFIT_TARGETS: Dict[str, float] = {
     "bull_call_spread": 0.60,
     "leaps": 0.0,                 # Hold LEAPS, don't profit-take
     "iron_condor": 0.50,
-    "iron_butterfly": 0.40,
+    "iron_butterfly": 0.50,  # matches IronButterflyConfig.profit_target (v36)
     "collar": 0.0,                # Don't profit-take hedges
     "calendar_spread": 0.50,
     "straddle_strangle": 1.00,
@@ -166,6 +167,7 @@ class PositionLifecycleManager:
         directives.extend(self.check_stop_losses(positions))
         directives.extend(self.check_assignment_risk(positions, signals, as_of))
         directives.extend(self.check_gamma_risk(positions, as_of))
+        directives.extend(self.check_barrier_stops(positions, signals))
 
         if directives:
             logger.info(
@@ -409,6 +411,87 @@ class PositionLifecycleManager:
                        f"at {dte} DTE",
                 metadata={"lifecycle": "gamma_risk", "dte": dte},
             ))
+
+        return directives
+
+    # ── Wing-barrier stop ────────────────────────────────────────────
+
+    def check_barrier_stops(
+        self,
+        positions: List[Dict[str, Any]],
+        signals: Dict[str, Any],
+    ) -> List[OptionTradeDirective]:
+        """Close iron-butterfly / iron-condor short legs when the underlying
+        reaches the long-wing strike.
+
+        The ATM short legs of a butterfly (or the OTM short legs of a condor)
+        are delta-hedged by the long wings, but once the underlying blows
+        through the wing the spread has no more protection — max loss is
+        effectively locked in.  Closing at the barrier avoids the assignment
+        risk and further P&L deterioration.
+
+        ``wing_strike`` must be stored in ``pos['metadata']`` when the
+        position is opened (done by IronButterflyStrategy and
+        IronCondorStrategy after the Bug-1 fix).
+        """
+        directives: List[OptionTradeDirective] = []
+
+        spy_price  = signals.get("spy_price", 0.0)
+        eq_prices  = signals.get("equity_prices") or {}
+
+        for pos in positions:
+            strategy = pos.get("strategy", "")
+            if strategy not in ("iron_butterfly", "iron_condor"):
+                continue
+
+            qty = pos.get("quantity", 0)
+            if qty >= 0:
+                continue  # Only short legs carry the risk
+
+            wing_strike = pos.get("metadata", {}).get("wing_strike", 0.0)
+            if not wing_strike:
+                continue
+
+            right   = pos.get("right", "")
+            symbol  = pos.get("symbol", "")
+            underlying = spy_price if symbol == "SPY" else eq_prices.get(symbol, 0.0)
+            if underlying <= 0:
+                continue
+
+            # Put wing: price breaks below the long-put strike
+            # Call wing: price breaks above the long-call strike
+            breached = (
+                (right == "P" and underlying <= wing_strike)
+                or (right == "C" and underlying >= wing_strike)
+            )
+            if not breached:
+                continue
+
+            directives.append(OptionTradeDirective(
+                strategy=strategy,
+                action=TradeAction.CLOSE,
+                symbol=symbol,
+                right=right,
+                expiry=pos.get("expiry", ""),
+                strike=pos.get("strike", 0.0),
+                quantity=-qty,  # Buy-to-close
+                order_type=OrderType.LIMIT,
+                reason=(
+                    f"Wing barrier breached: {symbol} {right} {pos.get('strike', 0):.1f} "
+                    f"– underlying {underlying:.2f} through wing {wing_strike:.1f}"
+                ),
+                metadata={
+                    "lifecycle": "barrier_stop",
+                    "wing_strike": wing_strike,
+                    "underlying": underlying,
+                },
+            ))
+            logger.info(
+                "Barrier stop: closing %s %s %s%.1f "
+                "(underlying=%.2f, wing=%.1f)",
+                strategy, symbol, right, pos.get("strike", 0),
+                underlying, wing_strike,
+            )
 
         return directives
 

@@ -20,14 +20,14 @@ Usage
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.execution.broker_interface import Order, OrderSide, OrderType, Position
+
+from prometheus.execution.broker_interface import Position
 from prometheus.execution.instrument_mapper import InstrumentMapper
 
 logger = get_logger(__name__)
@@ -163,8 +163,6 @@ class CrisisOrderManager:
         """Stage a single conditional sell order."""
         from prometheus.execution.ib_compat import (
             MarketOrder,
-            Order as IbOrder,
-            OrderCondition,
             PriceCondition,
         )
 

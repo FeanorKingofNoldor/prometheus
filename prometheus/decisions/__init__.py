@@ -16,12 +16,12 @@ tables (Layer 3) but provides higher-level interfaces than direct SQL access.
 
 from __future__ import annotations
 
-# Re-export types from meta module for convenience
-from prometheus.meta.types import DecisionOutcome, EngineDecision
-
 # Import services
 from prometheus.decisions.evaluator import OutcomeEvaluator
 from prometheus.decisions.tracker import DecisionTracker
+
+# Re-export types from meta module for convenience
+from prometheus.meta.types import DecisionOutcome, EngineDecision
 
 __all__ = [
     "DecisionOutcome",

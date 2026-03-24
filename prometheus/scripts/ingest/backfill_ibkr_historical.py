@@ -26,22 +26,25 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.types import PriceBar
 from apathis.data.writer import DataWriter
+
 from prometheus.execution.market_data import (
+    SECTOR_ETF_SYMBOLS,
     BarData,
     IbkrMarketDataService,
-    SECTOR_ETF_SYMBOLS,
 )
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from prometheus.execution.ib_compat import IB
 
 
 @dataclass
@@ -161,7 +164,7 @@ def _query_head_timestamp(
 
     Returns None if the query fails (we'll just walk back until 0 bars).
     """
-    from prometheus.execution.ib_compat import Stock, Index, Contract
+    from prometheus.execution.ib_compat import Contract, Index, Stock
 
     if job.sec_type == "IND":
         contract = Index(job.symbol, job.exchange, job.currency)

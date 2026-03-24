@@ -36,7 +36,6 @@ from apathis.data_ingestion.derived.returns_volatility import (
     compute_returns_and_volatility_for_instruments,
 )
 
-
 logger = get_logger(__name__)
 
 

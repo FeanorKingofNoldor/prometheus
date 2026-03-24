@@ -7,9 +7,9 @@ optionally logs risk actions into the ``risk_actions`` table.
 
 from __future__ import annotations
 
+from prometheus.risk.api import apply_risk_constraints
 from prometheus.risk.constraints import StrategyRiskConfig, get_strategy_risk_config
 from prometheus.risk.engine import RiskActionType
-from prometheus.risk.api import apply_risk_constraints
 
 __all__ = [
     "StrategyRiskConfig",

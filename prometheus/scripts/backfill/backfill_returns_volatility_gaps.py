@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
 from typing import Optional, Sequence
 
 from apathis.core.database import get_db_manager
@@ -49,7 +48,7 @@ def find_instruments_with_missing_returns(db_manager: object) -> list[str]:
     Returns:
         List of instrument_ids that need returns/volatility backfill.
     """
-    sql = """
+    sql = r"""
         SELECT DISTINCT p.instrument_id
         FROM prices_daily p
         WHERE p.instrument_id NOT LIKE 'SYNTH\_%'
@@ -150,7 +149,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(f"   ⚠️  Failed: {instrument_id} - {exc}", file=sys.stderr)
 
     # Report results
-    print(f"\n✅ Backfill complete!")
+    print("\n✅ Backfill complete!")
     print(f"   Instruments processed: {success + failures}")
     print(f"   Success: {success}")
     print(f"   Failures: {failures}")

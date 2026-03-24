@@ -24,22 +24,22 @@ from enum import Enum
 from typing import Optional
 
 from apathis.core.logging import get_logger
-from prometheus.execution.ibkr_client import IbkrConnectionConfig
 
+from prometheus.execution.ibkr_client import IbkrConnectionConfig
 
 logger = get_logger(__name__)
 
 
 class IbkrMode(str, Enum):
     """IBKR trading mode."""
-    
+
     LIVE = "LIVE"
     PAPER = "PAPER"
 
 
 class IbkrGatewayType(str, Enum):
     """IBKR Gateway type."""
-    
+
     GATEWAY = "GATEWAY"  # IB Gateway (recommended)
     TWS = "TWS"          # Trader Workstation
 
@@ -47,13 +47,13 @@ class IbkrGatewayType(str, Enum):
 @dataclass(frozen=True)
 class IbkrCredentials:
     """IBKR credentials.
-    
+
     Attributes:
         username: IBKR username
         password: IBKR password (optional, loaded from env)
         account: Account number
     """
-    
+
     username: str
     password: Optional[str]
     account: str
@@ -74,22 +74,22 @@ IBKR_PORTS = {
 
 def load_credentials(mode: IbkrMode) -> IbkrCredentials:
     """Load IBKR credentials from environment variables.
-    
+
     Args:
         mode: Trading mode (LIVE or PAPER)
-        
+
     Returns:
         IbkrCredentials with username, password, and account.
-        
+
     Raises:
         ValueError: If required credentials are missing.
     """
     prefix = f"IBKR_{mode.value}_"
-    
+
     username = os.getenv(f"{prefix}USERNAME")
     password = os.getenv(f"{prefix}PASSWORD")
     account = os.getenv(f"{prefix}ACCOUNT")
-    
+
     # Default values
     if mode == IbkrMode.PAPER:
         username = username or "xubtmn245"
@@ -97,19 +97,19 @@ def load_credentials(mode: IbkrMode) -> IbkrCredentials:
     elif mode == IbkrMode.LIVE:
         username = username or "maximilianhuethmayr"
         account = account or "U22014992"
-    
+
     if not username:
         raise ValueError(
             f"IBKR {mode.value} username not configured. "
             f"Set {prefix}USERNAME environment variable."
         )
-    
+
     if not account:
         raise ValueError(
             f"IBKR {mode.value} account not configured. "
             f"Set {prefix}ACCOUNT environment variable."
         )
-    
+
     # Password is optional - will be required by IB Gateway login screen
     # but not needed for API connection if already logged in
     if not password:
@@ -119,7 +119,7 @@ def load_credentials(mode: IbkrMode) -> IbkrCredentials:
             mode.value,
             prefix,
         )
-    
+
     return IbkrCredentials(
         username=username,
         password=password,
@@ -136,20 +136,20 @@ def create_connection_config(
     readonly: bool = False,
 ) -> IbkrConnectionConfig:
     """Create IBKR connection configuration.
-    
+
     Args:
         mode: Trading mode (LIVE or PAPER)
         gateway_type: Gateway type (GATEWAY or TWS), defaults to GATEWAY
         host: IBKR host, defaults to localhost
         client_id: API client ID, defaults to 1
         readonly: Whether to enable readonly mode
-        
+
     Returns:
         IbkrConnectionConfig with appropriate settings for the mode.
     """
     credentials = load_credentials(mode)
     port = IBKR_PORTS[gateway_type][mode]
-    
+
     logger.info(
         "Creating IBKR connection config: mode=%s, gateway=%s, account=%s, port=%d",
         mode.value,
@@ -157,7 +157,7 @@ def create_connection_config(
         credentials.account,
         port,
     )
-    
+
     return IbkrConnectionConfig(
         host=host,
         port=port,
@@ -173,16 +173,16 @@ def create_live_config(
     **kwargs,
 ) -> IbkrConnectionConfig:
     """Create IBKR connection configuration for LIVE trading.
-    
+
     Loads credentials from environment:
     - IBKR_LIVE_USERNAME (default: maximilianhuethmayr)
     - IBKR_LIVE_PASSWORD
     - IBKR_LIVE_ACCOUNT (default: U22014992)
-    
+
     Args:
         gateway_type: Gateway type (GATEWAY or TWS), defaults to GATEWAY
         **kwargs: Additional arguments passed to create_connection_config
-        
+
     Returns:
         IbkrConnectionConfig for live trading.
     """
@@ -198,16 +198,16 @@ def create_paper_config(
     **kwargs,
 ) -> IbkrConnectionConfig:
     """Create IBKR connection configuration for PAPER trading.
-    
+
     Loads credentials from environment:
     - IBKR_PAPER_USERNAME (default: xubtmn245)
     - IBKR_PAPER_PASSWORD
     - IBKR_PAPER_ACCOUNT (default: DUN807925)
-    
+
     Args:
         gateway_type: Gateway type (GATEWAY or TWS), defaults to GATEWAY
         **kwargs: Additional arguments passed to create_connection_config
-        
+
     Returns:
         IbkrConnectionConfig for paper trading.
     """

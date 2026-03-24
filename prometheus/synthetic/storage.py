@@ -14,17 +14,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
-from psycopg2.extras import Json, execute_values
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
+from psycopg2.extras import Json, execute_values
 
-from .types import RealityConfig, ScenarioRequest, ScenarioSetRef, SyntheticReality
-
+from .types import ScenarioRequest, ScenarioSetRef, SyntheticReality
 
 logger = get_logger(__name__)
 

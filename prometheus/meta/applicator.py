@@ -21,14 +21,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Dict, List, Optional, Any
-
-from psycopg2.extras import Json
+from typing import Any, Dict, List, Optional
 
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

@@ -13,22 +13,21 @@ heavy ML stack.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 import numpy as np
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar
 from apathis.data.reader import DataReader
 from apathis.stability.storage import StabilityStorage
-from apathis.stability.types import SoftTargetClass, SoftTargetState
-from prometheus.assessment.api import AssessmentModel, InstrumentScore
+from apathis.stability.types import SoftTargetState
 
+from prometheus.assessment.api import AssessmentModel, InstrumentScore
 
 logger = get_logger(__name__)
 
@@ -71,18 +70,30 @@ class BasicAssessmentModel(AssessmentModel):
     # vectors.
     assessment_context_model_id: str = "joint-assessment-context-v1"
 
-    # Minimum number of trading days to use for the momentum/vol window.
-    min_window_days: int = 21
+    # Trading-day lookback window for momentum and realised-vol computation.
+    # Empirically, cross-sectional momentum works on 6–12 month lookbacks
+    # (126–252 trading days).  Using the same window as horizon_days (21 days)
+    # puts the model in short-term reversal territory, producing negative IC.
+    # Default is 126 days (~6 months), the canonical cross-sectional momentum
+    # window in the factor literature.  Decoupled from horizon_days so signal
+    # formation and prediction horizon are independently tunable.
+    momentum_window_days: int = 126
 
-    # Reference scale for mapping raw momentum into a normalised score and
-    # confidence; values around ``momentum_ref`` correspond to moderate
-    # positive/negative views.
-    momentum_ref: float = 0.10  # 10% move over the window
+    # Reference scale for mapping raw momentum into a normalised score.
+    # 6-month moves are larger than 1-month; 20% (~1 std of annual return)
+    # gives a well-distributed signal across the universe.
+    momentum_ref: float = 0.20  # 20% move over 6-month window
 
     # Strength of the fragility penalty applied to raw momentum. Higher
     # values produce more conservative scores in the presence of high
     # soft-target scores.
-    fragility_penalty_weight: float = 1.0
+    #
+    # The penalty is (soft_target_score / 100) * weight, so with the
+    # median STAB score ~32 the effective penalty at weight=0.15 is
+    # ~0.048 — comparable to typical momentum magnitudes (±0.05–0.15).
+    # The previous default of 1.0 caused penalty ~0.32 which dominated
+    # momentum and clipped virtually all normalised scores to -1.0.
+    fragility_penalty_weight: float = 0.15
 
     # Additional multiplier applied to the fragility penalty when the STAB
     # state reports ``weak_profile=True``.
@@ -238,7 +249,7 @@ class BasicAssessmentModel(AssessmentModel):
         confidence and an ``insufficient_history`` flag in metadata.
         """
 
-        window_days = max(horizon_days, self.min_window_days)
+        window_days = self.momentum_window_days
 
         insufficient_history = False
         try:

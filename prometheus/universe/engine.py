@@ -16,8 +16,6 @@ from datetime import date, timedelta
 from typing import Protocol, Sequence
 
 import numpy as np
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
@@ -27,7 +25,7 @@ from apathis.data.reader import DataReader
 from apathis.profiles.service import ProfileService
 from apathis.stability.storage import StabilityStorage
 from apathis.stability.types import SoftTargetClass
-
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 
@@ -433,6 +431,7 @@ class BasicUniverseModel:
             WHERE i.market_id = ANY(%s)
               AND i.asset_class = 'EQUITY'
               AND i.status = 'ACTIVE'
+              AND i.instrument_id NOT LIKE 'SYNTH_%%'
         """
 
         with self.db_manager.get_runtime_connection() as conn:

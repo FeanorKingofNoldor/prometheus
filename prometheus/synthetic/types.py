@@ -7,14 +7,13 @@ and full synthetic market realities.
 The shapes are aligned with the 170_synthetic_scenarios specification.
 """
 
-from __future__  import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-
 
 # ---------------------------------------------------------------------------
 # Scenario-level types (original)

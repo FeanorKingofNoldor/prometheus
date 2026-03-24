@@ -31,7 +31,6 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, Sequence
 
-from apathis.core.config import load_config
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
 
@@ -247,7 +246,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         nations = list(NATION_CONFIGS.keys())
 
     print(f"{'='*60}")
-    print(f"  Nation Profile Update Pipeline")
+    print("  Nation Profile Update Pipeline")
     print(f"  Date: {date.today()}")
     print(f"  Nations: {', '.join(nations)}")
     print(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
@@ -276,7 +275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     # Step 3: Wikipedia (optional).
     if args.wiki or args.wiki_force:
-        print(f"\n--- Step 3: Wikipedia Enrichment ---")
+        print("\n--- Step 3: Wikipedia Enrichment ---")
         step_wiki(db, nations, force=args.wiki_force, dry_run=args.dry_run)
     else:
         print("\n--- Step 3: Wikipedia Enrichment SKIPPED (use --wiki) ---")

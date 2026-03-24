@@ -30,12 +30,10 @@ from __future__ import annotations
 import argparse
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 
@@ -165,8 +163,9 @@ def _summarise_stab_metrics(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     if not cosines and not norms:
         return {}
 
-    import numpy as np
     from collections import Counter
+
+    import numpy as np
 
     summary: Dict[str, Any] = {}
 

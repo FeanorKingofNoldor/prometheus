@@ -49,20 +49,19 @@ from __future__ import annotations
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-
 from apathis.core.logging import get_logger
+from apathis.sector.health import SECTOR_ETF_MAP
+
 from prometheus.execution.market_data import (
     MarketDataService,
     ScannerResult,
     ScannerSubscription,
     TickSnapshot,
-    SECTOR_ETF_SYMBOLS,
 )
-from apathis.sector.health import SECTOR_ETF_MAP
 
 logger = get_logger(__name__)
 

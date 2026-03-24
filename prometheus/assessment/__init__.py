@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Prometheus v2 – Assessment Engine package.
 
 This package provides the Assessment Engine implementation, including:
@@ -14,6 +12,8 @@ This package provides the Assessment Engine implementation, including:
 Higher-level code should generally import :class:`AssessmentEngine` and
 :class:`InstrumentScore` from this package.
 """
+
+from __future__ import annotations
 
 from .api import AssessmentEngine, AssessmentModel, InstrumentScore
 

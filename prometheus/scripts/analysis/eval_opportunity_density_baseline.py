@@ -21,16 +21,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
-
 from apathis.core.logging import get_logger
-
+from scipy.stats import spearmanr
 
 logger = get_logger(__name__)
 

@@ -22,11 +22,10 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.database import get_db_manager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

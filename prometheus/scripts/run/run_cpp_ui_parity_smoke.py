@@ -275,7 +275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "--cleanup",
         action="store_true",
         help=(
-            "Before running, delete prior prom2_cpp backtest/execution rows with the same base_prefix (" 
+            "Before running, delete prior prom2_cpp backtest/execution rows with the same base_prefix ("
             "uses backtest_runs.config_json->>base_prefix/engine to scope deletions)."
         ),
     )

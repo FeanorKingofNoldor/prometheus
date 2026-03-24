@@ -24,17 +24,17 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from prometheus.books.registry import AllocatorSleeveSpec, BookKind, load_book_registry
-from psycopg2.extras import Json
-from apathis.regime.storage import RegimeStorage
-from apathis.core.markets import infer_region_from_market_id
-from prometheus.meta.market_situation import classify_market_situation, MarketSituationConfig
-from apathis.core.logging import get_logger
 from apathis.core.database import get_db_manager
-from prometheus.backtest.runner import BacktestRunner
+from apathis.core.logging import get_logger
+from apathis.core.markets import infer_region_from_market_id
+from apathis.regime.storage import RegimeStorage
+from psycopg2.extras import Json
+
 from prometheus.backtest.analyzers import EquityCurvePoint
 from prometheus.backtest.config import SleeveConfig
-
+from prometheus.backtest.runner import BacktestRunner
+from prometheus.books.registry import AllocatorSleeveSpec, BookKind, load_book_registry
+from prometheus.meta.market_situation import MarketSituationConfig, classify_market_situation
 
 logger = get_logger(__name__)
 

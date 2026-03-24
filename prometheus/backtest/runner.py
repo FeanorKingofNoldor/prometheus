@@ -26,24 +26,24 @@ from datetime import date, datetime
 from math import sqrt
 from typing import Callable, Dict, List, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
 from apathis.core.markets import infer_region_from_market_id
+from apathis.fragility.storage import FragilityStorage
+from apathis.regime.storage import RegimeStorage
+from apathis.regime.types import RegimeLabel
+from psycopg2.extras import Json
+
 from prometheus.backtest.analyzers import EquityCurveAnalyzer, EquityCurvePoint
 from prometheus.backtest.config import SleeveConfig
-from prometheus.execution.backtest_broker import BacktestBroker
-from prometheus.execution.broker_interface import Fill, Position
 from prometheus.execution.api import apply_execution_plan
+from prometheus.execution.backtest_broker import BacktestBroker
+from prometheus.execution.broker_interface import Fill
 from prometheus.execution.executed_actions import (
     ExecutedActionContext,
     record_executed_actions_for_fills,
 )
-from apathis.fragility.storage import FragilityStorage
-from apathis.regime.storage import RegimeStorage
-from apathis.regime.types import RegimeLabel
 from prometheus.meta.market_situation import (
     MarketSituation,
     MarketSituationConfig,
@@ -51,7 +51,6 @@ from prometheus.meta.market_situation import (
 )
 from prometheus.meta.storage import MetaStorage
 from prometheus.meta.types import DecisionOutcome, EngineDecision
-
 
 logger = get_logger(__name__)
 

@@ -196,6 +196,7 @@ def _fetch_live_performance_context() -> str:
     from datetime import date
 
     from apathis.core.database import get_db_manager as _get_db
+
     from prometheus.decisions.live_performance import LivePerformanceTracker
 
     db = _get_db()

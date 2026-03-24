@@ -17,12 +17,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Mapping, Sequence
 
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from prometheus.execution.broker_interface import Fill, Order, Position
+from psycopg2.extras import Json
 
+from prometheus.execution.broker_interface import Fill, Order, OrderStatus, Position
 
 logger = get_logger(__name__)
 
@@ -272,3 +271,38 @@ def record_positions_snapshot(
         len(positions),
         mode,
     )
+
+
+def update_order_statuses(
+    db_manager: DatabaseManager,
+    *,
+    statuses: Mapping[str, OrderStatus | str],
+) -> None:
+    """Persist latest order statuses for known order_ids.
+
+    Args:
+        db_manager: Runtime database manager.
+        statuses: Mapping of ``order_id -> status`` where status is either
+            :class:`OrderStatus` or an already-normalized string.
+    """
+
+    if not statuses:
+        return
+
+    sql = """
+        UPDATE orders
+        SET status = %s
+        WHERE order_id = %s
+    """
+
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            for order_id, status in statuses.items():
+                status_value = status.value if isinstance(status, OrderStatus) else str(status)
+                cursor.execute(sql, (status_value, str(order_id)))
+            conn.commit()
+        finally:
+            cursor.close()
+
+    logger.info("Updated %d order statuses", len(statuses))

@@ -29,10 +29,10 @@ import argparse
 import json
 from typing import Optional, Sequence
 
+from apathis.core.database import get_db_manager
 from psycopg2.extras import Json
 
 from prometheus.books.registry import BookKind, HedgeEtfSleeveSpec, load_book_registry
-from apathis.core.database import get_db_manager
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

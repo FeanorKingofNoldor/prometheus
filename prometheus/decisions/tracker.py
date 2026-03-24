@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
+
 from prometheus.meta.storage import MetaStorage
 from prometheus.meta.types import EngineDecision
 
@@ -24,7 +25,7 @@ logger = get_logger(__name__)
 @dataclass
 class DecisionTracker:
     """Service for recording engine decisions with structured metadata.
-    
+
     Usage:
         tracker = DecisionTracker(db_manager=db)
         decision_id = tracker.record_assessment_decision(
@@ -35,12 +36,12 @@ class DecisionTracker:
             reasoning={"model": "basic", "horizon_days": 21}
         )
     """
-    
+
     db_manager: DatabaseManager
-    
+
     def __post_init__(self) -> None:
         self._storage = MetaStorage(db_manager=self.db_manager)
-    
+
     def record_universe_decision(
         self,
         *,
@@ -56,7 +57,7 @@ class DecisionTracker:
         config_id: str | None = None,
     ) -> str:
         """Record a universe selection decision.
-        
+
         Args:
             strategy_id: Strategy making the decision (e.g., "US_CORE_LONG_EQ")
             market_id: Market being analyzed (e.g., "US_EQ")
@@ -68,16 +69,16 @@ class DecisionTracker:
             exclusion_reasons: Optional dict mapping instrument_id to exclusion rationale
             run_id: Optional engine run identifier
             config_id: Optional reference to universe config version
-            
+
         Returns:
             decision_id: UUID of the recorded decision
         """
         decision_id = generate_uuid()
-        
+
         input_refs = {
             "candidate_instruments": len(included_instruments) + len(excluded_instruments or []),
         }
-        
+
         output_refs = {
             "universe_id": universe_id,
             "included_count": len(included_instruments),
@@ -88,13 +89,13 @@ class DecisionTracker:
             # Keep a small sample so we can do basic counterfactual analysis
             # later without joining universe_members.
             output_refs["excluded_instruments"] = excluded_instruments[:100]
-        
+
         metadata: Dict[str, Any] = {}
         if inclusion_reasons is not None:
             metadata["inclusion_reasons"] = inclusion_reasons
         if exclusion_reasons is not None:
             metadata["exclusion_reasons"] = exclusion_reasons
-        
+
         decision = EngineDecision(
             decision_id=decision_id,
             engine_name="UNIVERSE",
@@ -107,9 +108,9 @@ class DecisionTracker:
             output_refs=output_refs,
             metadata=metadata,
         )
-        
+
         self._storage.save_engine_decision(decision)
-        
+
         logger.info(
             "Recorded universe decision: decision_id=%s strategy_id=%s universe_id=%s included=%d",
             decision_id,
@@ -117,9 +118,9 @@ class DecisionTracker:
             universe_id,
             len(included_instruments),
         )
-        
+
         return decision_id
-    
+
     def record_assessment_decision(
         self,
         *,
@@ -135,7 +136,7 @@ class DecisionTracker:
         config_id: str | None = None,
     ) -> str:
         """Record an assessment scoring decision.
-        
+
         Args:
             strategy_id: Strategy making the decision
             market_id: Market being analyzed
@@ -147,12 +148,12 @@ class DecisionTracker:
             reasoning: Optional dict with model rationale, features used, etc.
             run_id: Optional engine run identifier
             config_id: Optional reference to assessment config version
-            
+
         Returns:
             decision_id: UUID of the recorded decision
         """
         decision_id = generate_uuid()
-        
+
         # Compute score statistics for metadata
         scores = list(instrument_scores.values())
         score_stats = {
@@ -161,26 +162,26 @@ class DecisionTracker:
             "min": min(scores) if scores else 0.0,
             "max": max(scores) if scores else 0.0,
         }
-        
+
         input_refs = {
             "universe_id": universe_id,
             "instrument_count": len(instrument_scores),
         }
-        
+
         if horizon_days is not None:
             input_refs["horizon_days"] = horizon_days
-        
+
         output_refs = {
             "instrument_scores": instrument_scores,
             "score_statistics": score_stats,
         }
-        
+
         metadata: Dict[str, Any] = {}
         if model_id is not None:
             metadata["model_id"] = model_id
         if reasoning is not None:
             metadata["reasoning"] = reasoning
-        
+
         decision = EngineDecision(
             decision_id=decision_id,
             engine_name="ASSESSMENT",
@@ -193,9 +194,9 @@ class DecisionTracker:
             output_refs=output_refs,
             metadata=metadata,
         )
-        
+
         self._storage.save_engine_decision(decision)
-        
+
         logger.info(
             "Recorded assessment decision: decision_id=%s strategy_id=%s instruments=%d mean_score=%.3f",
             decision_id,
@@ -203,9 +204,9 @@ class DecisionTracker:
             len(instrument_scores),
             score_stats["mean"],
         )
-        
+
         return decision_id
-    
+
     def record_portfolio_decision(
         self,
         *,
@@ -221,7 +222,7 @@ class DecisionTracker:
         config_id: str | None = None,
     ) -> str:
         """Record a portfolio construction decision.
-        
+
         Args:
             strategy_id: Strategy making the decision
             market_id: Market being analyzed
@@ -233,12 +234,12 @@ class DecisionTracker:
             risk_metrics: Optional dict with expected_return, expected_vol, etc.
             run_id: Optional engine run identifier
             config_id: Optional reference to portfolio config version
-            
+
         Returns:
             decision_id: UUID of the recorded decision
         """
         decision_id = generate_uuid()
-        
+
         # Compute weight statistics
         weights = list(target_weights.values())
         weight_stats = {
@@ -247,27 +248,27 @@ class DecisionTracker:
             "mean": sum(weights) / len(weights) if weights else 0.0,
             "max": max(weights) if weights else 0.0,
         }
-        
+
         input_refs = {
             "instrument_count": len(target_weights),
         }
-        
+
         if assessment_decision_id is not None:
             input_refs["assessment_decision_id"] = assessment_decision_id
-        
+
         output_refs = {
             "portfolio_id": portfolio_id,
             "target_weights": target_weights,
             "weight_statistics": weight_stats,
         }
-        
+
         if risk_metrics is not None:
             output_refs["risk_metrics"] = risk_metrics
-        
+
         metadata: Dict[str, Any] = {}
         if constraints_applied is not None:
             metadata["constraints_applied"] = constraints_applied
-        
+
         decision = EngineDecision(
             decision_id=decision_id,
             engine_name="PORTFOLIO",
@@ -280,9 +281,9 @@ class DecisionTracker:
             output_refs=output_refs,
             metadata=metadata,
         )
-        
+
         self._storage.save_engine_decision(decision)
-        
+
         logger.info(
             "Recorded portfolio decision: decision_id=%s strategy_id=%s positions=%d weight_sum=%.3f",
             decision_id,
@@ -290,9 +291,9 @@ class DecisionTracker:
             len(target_weights),
             weight_stats["sum"],
         )
-        
+
         return decision_id
-    
+
     def record_execution_decision(
         self,
         *,
@@ -311,7 +312,7 @@ class DecisionTracker:
         metadata: Dict[str, Any] | None = None,
     ) -> str:
         """Record an execution decision (order generation).
-        
+
         Args:
             strategy_id: Strategy making the decision
             market_id: Market being executed
@@ -323,23 +324,23 @@ class DecisionTracker:
             expected_cost: Optional expected transaction cost estimate
             run_id: Optional engine run identifier
             config_id: Optional reference to execution config version
-            
+
         Returns:
             decision_id: UUID of the recorded decision
         """
         decision_id = generate_uuid()
-        
+
         input_refs = {
             "portfolio_id": portfolio_id,
             "order_count": len(orders_generated),
         }
-        
+
         if portfolio_decision_id is not None:
             input_refs["portfolio_decision_id"] = portfolio_decision_id
-        
+
         if current_positions is not None:
             input_refs["current_position_count"] = len(current_positions)
-        
+
         output_refs = {
             "orders": orders_generated[:100],  # Limit size
             "order_count": len(orders_generated),
@@ -355,7 +356,7 @@ class DecisionTracker:
             output_refs["execution_policy"] = execution_policy
 
         metadata = dict(metadata or {})
-        
+
         decision = EngineDecision(
             decision_id=decision_id,
             engine_name="EXECUTION",
@@ -368,18 +369,18 @@ class DecisionTracker:
             output_refs=output_refs,
             metadata=metadata,
         )
-        
+
         self._storage.save_engine_decision(decision)
-        
+
         logger.info(
             "Recorded execution decision: decision_id=%s strategy_id=%s orders=%d",
             decision_id,
             strategy_id,
             len(orders_generated),
         )
-        
+
         return decision_id
-    
+
     def record_options_decision(
         self,
         *,
@@ -391,7 +392,7 @@ class DecisionTracker:
         run_id: str | None = None,
     ) -> str:
         """Record an options/derivatives trade decision.
-        
+
         Args:
             strategy_id: Strategy group identifier (e.g., "US_OPTIONS")
             market_id: Market being traded (e.g., "US_EQ")
@@ -412,29 +413,29 @@ class DecisionTracker:
             signals_snapshot: Optional dict of market signals at decision time
                 (vix_level, nav, mhi, frag, etc.)
             run_id: Optional engine run identifier
-            
+
         Returns:
             decision_id: UUID of the recorded decision
         """
         decision_id = generate_uuid()
-        
+
         input_refs: Dict[str, Any] = {
             "order_count": len(orders),
         }
         if signals_snapshot is not None:
             input_refs["signals_snapshot"] = signals_snapshot
-        
+
         output_refs: Dict[str, Any] = {
             "orders": orders[:100],  # Cap at 100 orders
             "order_count": len(orders),
         }
-        
+
         # Aggregate summary for quick inspection
         strategies = list({o.get("strategy", "") for o in orders})
         symbols = list({o.get("symbol", "") for o in orders})
         output_refs["strategies"] = strategies
         output_refs["symbols"] = symbols
-        
+
         decision = EngineDecision(
             decision_id=decision_id,
             engine_name="OPTIONS",
@@ -447,9 +448,9 @@ class DecisionTracker:
             output_refs=output_refs,
             metadata={},
         )
-        
+
         self._storage.save_engine_decision(decision)
-        
+
         logger.info(
             "Recorded options decision: decision_id=%s strategy_id=%s orders=%d strategies=%s",
             decision_id,
@@ -457,6 +458,6 @@ class DecisionTracker:
             len(orders),
             strategies,
         )
-        
+
         return decision_id
 

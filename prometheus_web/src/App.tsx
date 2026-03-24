@@ -8,7 +8,10 @@ import Execution from "./pages/Execution";
 import Options from "./pages/Options";
 import LogsReports from "./pages/LogsReports";
 import Settings from "./pages/Settings";
+import EngineParametersSettings from "./pages/settings/EngineParameters";
 import Chat from "./pages/Chat";
+import Docs from "./pages/Docs";
+import Intelligence from "./pages/Intelligence";
 
 export default function App() {
   return (
@@ -20,8 +23,11 @@ export default function App() {
         <Route path="execution" element={<Execution />} />
         <Route path="backtests" element={<Backtests />} />
         <Route path="options" element={<Options />} />
+        <Route path="intelligence" element={<Intelligence />} />
         <Route path="logs" element={<LogsReports />} />
+        <Route path="docs/:pageKey?" element={<Docs />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="settings/engine-parameters" element={<EngineParametersSettings />} />
         <Route path="kronos" element={<Chat />} />
       </Route>
     </Routes>

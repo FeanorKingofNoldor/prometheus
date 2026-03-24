@@ -46,17 +46,16 @@ from typing import Optional
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
+
 from prometheus.pipeline.state import (
     EngineRun,
-    RunPhase,
     EngineRunStateError,
+    RunPhase,
     get_or_create_run,
     list_active_runs,
-    load_run,
     update_phase,
 )
 from prometheus.pipeline.tasks import advance_run
-
 
 logger = get_logger(__name__)
 

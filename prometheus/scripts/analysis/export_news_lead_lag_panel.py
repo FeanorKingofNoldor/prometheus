@@ -39,12 +39,11 @@ import csv
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

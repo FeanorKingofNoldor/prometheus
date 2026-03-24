@@ -19,57 +19,55 @@ conditioned budgets) can be layered on top of this building block.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Sequence
-from concurrent.futures import ThreadPoolExecutor
-import os
+from typing import Dict, List
 
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar
 from apathis.data.reader import DataReader
-from apathis.data.types import PriceBar
-from apathis.stability import (
-    StabilityEngine,
-    StabilityStorage,
-    BasicPriceStabilityModel,
-    StabilityStateChangeForecaster,
-)
-from apathis.regime import RegimeEngine, RegimeStorage, MarketProxyRegimeModel
-from apathis.regime.state_change import RegimeStateChangeForecaster
-from prometheus.assessment import AssessmentEngine
-from apathis.fragility.storage import FragilityStorage
 from apathis.fragility.overlay import FragilityOverlayStepper, overlay_config_from_sleeve_spec
+from apathis.fragility.storage import FragilityStorage
+from apathis.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
+from apathis.regime.state_change import RegimeStateChangeForecaster
+from apathis.sector.health import SectorHealthResult, compute_sector_health
+from apathis.sector.mapper import SectorMapper
+from apathis.stability import (
+    BasicPriceStabilityModel,
+    StabilityEngine,
+    StabilityStateChangeForecaster,
+    StabilityStorage,
+)
+
+from prometheus.assessment import AssessmentEngine
 from prometheus.assessment.model_basic import BasicAssessmentModel
 from prometheus.assessment.model_context import ContextAssessmentModel
 from prometheus.assessment.storage import InstrumentScoreStorage
-from prometheus.universe import (
-    UniverseEngine,
-    UniverseStorage,
-    BasicUniverseModel,
-)
+from prometheus.backtest.config import SleeveConfig
+from prometheus.backtest.runner import TargetPositionsFn
+from prometheus.decisions import DecisionTracker
+from prometheus.execution.backtest_broker import BacktestBroker
+from prometheus.execution.time_machine import TimeMachine
 from prometheus.portfolio import (
+    BasicLongOnlyPortfolioModel,
     PortfolioConfig,
     PortfolioEngine,
     PortfolioStorage,
-    BasicLongOnlyPortfolioModel,
 )
-from prometheus.execution.backtest_broker import BacktestBroker
-from prometheus.execution.broker_interface import Position
-from prometheus.execution.time_machine import TimeMachine
-from apathis.sector.health import SectorHealthResult, compute_sector_health
-from apathis.sector.mapper import SectorMapper
+from prometheus.portfolio.types import TargetPortfolio
 from prometheus.sector.allocator import (
     SectorAllocator,
     SectorAllocatorConfig,
 )
-from prometheus.portfolio.types import TargetPortfolio
-from prometheus.backtest.config import SleeveConfig
-from prometheus.backtest.runner import TargetPositionsFn
-from prometheus.decisions import DecisionTracker
-
+from prometheus.universe import (
+    BasicUniverseModel,
+    UniverseEngine,
+    UniverseStorage,
+)
 
 logger = get_logger(__name__)
 

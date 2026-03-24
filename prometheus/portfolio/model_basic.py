@@ -14,22 +14,21 @@ replaced with a more sophisticated optimisation model later.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable, Dict, List
 
-import math
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.universe.engine import UniverseMember, UniverseStorage
 from apathis.fragility.storage import FragilityStorage
 from apathis.fragility.types import FragilityClass
+
 from prometheus.portfolio.scenario_risk import compute_portfolio_scenario_pnl
+from prometheus.universe.engine import UniverseMember, UniverseStorage
 
 from .config import PortfolioConfig
 from .types import RiskReport, TargetPortfolio
-
 
 logger = get_logger(__name__)
 

@@ -22,15 +22,16 @@ from datetime import date
 
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
+
 from prometheus.decisions import DecisionTracker, OutcomeEvaluator
-from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run, update_phase
-from prometheus.pipeline.tasks import _load_sector_health_for_date
+from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run
 from prometheus.pipeline.tasks import (
-    run_signals_for_run,
-    run_universes_for_run,
+    ExecutionConfig,
+    _load_sector_health_for_date,
     run_books_for_run,
     run_execution_for_run,
-    ExecutionConfig,
+    run_signals_for_run,
+    run_universes_for_run,
 )
 
 logger = get_logger(__name__)
@@ -39,7 +40,7 @@ logger = get_logger(__name__)
 @dataclass
 class DailyPipelineConfig:
     """Configuration for daily pipeline execution.
-    
+
     Attributes:
         region: Region to run (e.g., "US")
         market_id: Market identifier (e.g., "US_EQ")
@@ -53,7 +54,7 @@ class DailyPipelineConfig:
         run_outcome_eval: Whether to evaluate pending outcomes
         outcome_eval_max_decisions: Max decisions to evaluate
     """
-    
+
     region: str = "US"
     market_id: str = "US_EQ"
     run_regime: bool = True
@@ -73,7 +74,7 @@ class DailyPipelineConfig:
 @dataclass
 class DailyOrchestrator:
     """Orchestrator for complete daily trading pipeline.
-    
+
     Usage:
         orchestrator = DailyOrchestrator(db_manager=db)
         run = orchestrator.run_pipeline(
@@ -81,70 +82,70 @@ class DailyOrchestrator:
             config=DailyPipelineConfig()
         )
     """
-    
+
     db_manager: DatabaseManager
-    
+
     def __post_init__(self) -> None:
         self._tracker = DecisionTracker(db_manager=self.db_manager)
         self._evaluator = OutcomeEvaluator(db_manager=self.db_manager)
-    
+
     def run_pipeline(
         self,
         as_of_date: date,
         config: DailyPipelineConfig | None = None,
     ) -> EngineRun:
         """Run the complete daily pipeline for a given date.
-        
+
         This method is idempotent - it can be run multiple times for the
         same date and will resume from the last completed phase.
-        
+
         Args:
             as_of_date: Date to run the pipeline for
             config: Optional configuration (uses defaults if not provided)
-            
+
         Returns:
             EngineRun object with final phase status
         """
         if config is None:
             config = DailyPipelineConfig()
-        
+
         logger.info(
             "Starting daily pipeline: as_of_date=%s region=%s",
             as_of_date,
             config.region,
         )
-        
+
         # Get or create engine run (idempotent)
         run = get_or_create_run(
             db_manager=self.db_manager,
             as_of_date=as_of_date,
             region=config.region,
         )
-        
+
         logger.info(
             "Pipeline run_id=%s current_phase=%s",
             run.run_id,
             run.phase.name,
         )
-        
+
         # Execute phases in order (each phase checks if already complete)
-        
+
         # SIGNALS phase combines regime + STAB/profiles
         if (config.run_regime or config.run_profiles) and run.phase < RunPhase.SIGNALS_DONE:
             logger.info("Running SIGNALS phase (regime + STAB)...")
             run = run_signals_for_run(self.db_manager, run)
             logger.info("SIGNALS phase complete")
-        
+
         if config.run_universes and run.phase < RunPhase.UNIVERSES_DONE:
             logger.info("Running UNIVERSES phase...")
             run = run_universes_for_run(self.db_manager, run)
             logger.info("UNIVERSES phase complete")
-        
+
         if config.run_books and run.phase < RunPhase.BOOKS_DONE:
             logger.info("Running BOOKS phase (portfolio construction)...")
             run = run_books_for_run(self.db_manager, run)
             logger.info("BOOKS phase complete")
-        
+
         if config.run_execution and run.phase < RunPhase.EXECUTION_DONE:
             logger.info("Running EXECUTION phase (mode=%s)...", config.execution_mode)
             exec_cfg = ExecutionConfig(
@@ -155,7 +156,7 @@ class DailyOrchestrator:
                 self.db_manager, run, execution_config=exec_cfg,
             )
             logger.info("EXECUTION phase complete")
-        
+
         if config.run_options and run.phase < RunPhase.OPTIONS_DONE:
             logger.info("Running OPTIONS phase (mode=%s)...", config.options_mode)
             from prometheus.pipeline.tasks import OptionsExecutionConfig, run_options_for_run
@@ -170,7 +171,7 @@ class DailyOrchestrator:
                 logger.info("OPTIONS phase complete")
             except Exception:  # pragma: no cover - non-fatal
                 logger.exception("OPTIONS phase failed (non-blocking)")
-        
+
         # Outcome evaluation (independent phase - doesn't block on errors)
         if config.run_outcome_eval:
             logger.info("Running OUTCOME_EVAL phase...")
@@ -182,7 +183,7 @@ class DailyOrchestrator:
                 logger.info("OUTCOME_EVAL phase complete: evaluated %d outcomes", evaluated_count)
             except Exception:  # pragma: no cover - defensive
                 logger.exception("OUTCOME_EVAL phase failed (non-blocking)")
-        
+
         # ------------------------------------------------------------------
         # Daily summary
         # ------------------------------------------------------------------
@@ -195,12 +196,12 @@ class DailyOrchestrator:
         )
         for line in summary:
             logger.info("  %s", line)
-        
+
         # Append to daily logfile
         self._write_daily_logfile(as_of_date, run, summary)
-        
+
         return run
-    
+
     def _build_daily_summary(
         self,
         as_of_date: date,
@@ -267,8 +268,8 @@ class DailyOrchestrator:
         summary: list[str],
     ) -> None:
         """Append daily summary to a persistent logfile."""
-        from pathlib import Path
         from datetime import datetime, timezone
+        from pathlib import Path
 
         log_dir = Path.home() / "prometheus_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -279,7 +280,7 @@ class DailyOrchestrator:
             f.write(f"\n--- {timestamp} ---\n")
             for line in summary:
                 f.write(f"{line}\n")
-            f.write(f"---\n")
+            f.write("---\n")
 
     def run_pipeline_for_date_range(
         self,
@@ -288,27 +289,27 @@ class DailyOrchestrator:
         config: DailyPipelineConfig | None = None,
     ) -> list[EngineRun]:
         """Run pipeline for a range of dates.
-        
+
         This is useful for backfilling historical runs or catching up
         after downtime.
-        
+
         Args:
             start_date: First date to run (inclusive)
             end_date: Last date to run (inclusive)
             config: Optional configuration
-            
+
         Returns:
             List of EngineRun objects, one per date
         """
         if config is None:
             config = DailyPipelineConfig()
-        
+
         logger.info(
             "Running pipeline for date range: %s to %s",
             start_date,
             end_date,
         )
-        
+
         runs: list[EngineRun] = []
         from datetime import timedelta
 
@@ -322,9 +323,9 @@ class DailyOrchestrator:
                 logger.exception("Pipeline failed for date=%s, continuing...", current)
 
             current = current + timedelta(days=1)
-        
+
         logger.info("Completed pipeline for %d dates", len(runs))
-        
+
         return runs
 
 
@@ -334,19 +335,19 @@ def run_daily_pipeline(
     db_manager: DatabaseManager | None = None,
 ) -> EngineRun:
     """Convenience function to run daily pipeline.
-    
+
     Args:
         as_of_date: Date to run pipeline for
         region: Region (default "US")
         db_manager: Optional database manager
-        
+
     Returns:
         EngineRun object with final phase
     """
     if db_manager is None:
         db_manager = get_db_manager()
-    
+
     config = DailyPipelineConfig(region=region)
     orchestrator = DailyOrchestrator(db_manager=db_manager)
-    
+
     return orchestrator.run_pipeline(as_of_date=as_of_date, config=config)

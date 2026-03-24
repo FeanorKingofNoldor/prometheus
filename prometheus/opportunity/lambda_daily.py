@@ -31,6 +31,7 @@ Database tables accessed:
 - instruments: Read (runtime)
 - issuer_classifications: Read (runtime)
 - soft_target_classes: Read (runtime)
+- sector_health_daily: Read (runtime)
 - prices_daily: Read (historical)
 
 Thread safety: Not thread-safe
@@ -48,16 +49,20 @@ import fcntl
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import TradingCalendar, TradingCalendarConfig
 from apathis.data.reader import DataReader
-from prometheus.opportunity.lambda_model import LambdaPoly2Model
+
+from prometheus.opportunity.lambda_model import (
+    LambdaGBTModel,
+    build_enhanced_features,
+    load_lambda_model,
+)
 
 logger = get_logger(__name__)
 
@@ -86,6 +91,7 @@ class LambdaClusterRow:
     dispersion: float
     avg_vol_window: float
     lambda_value: float
+    sector_health_score: float = 0.0
 
 
 # Maximum staleness (in days) for STAB lookback in the daily lambda query.
@@ -245,6 +251,20 @@ def compute_lambda_for_date(
     if feat.empty:
         return []
 
+    # Load sector health scores for this date (graceful fallback to empty).
+    sector_health: Dict[str, float] = {}
+    try:
+        sql_shi = "SELECT sector_name, score FROM sector_health_daily WHERE as_of_date = %s"
+        with db_manager.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(sql_shi, (as_of_date,))
+                sector_health = {str(r[0]): float(r[1]) for r in cursor.fetchall()}
+            finally:
+                cursor.close()
+    except Exception:
+        logger.debug("compute_lambda_for_date: sector_health_daily unavailable for %s", as_of_date)
+
     # Aggregate per cluster.
     results: List[LambdaClusterRow] = []
     grouped = feat.groupby(["market_id", "sector", "soft_target_class"], dropna=False)
@@ -257,6 +277,7 @@ def compute_lambda_for_date(
         disp = float(np.std(g["ret"].to_numpy(), ddof=1))
         avg_vol = float(g["realised_vol_window"].mean())
         lambda_value = disp + avg_vol
+        shi_score = sector_health.get(str(sector), 0.0)
 
         results.append(LambdaClusterRow(
             as_of_date=as_of_date,
@@ -267,6 +288,7 @@ def compute_lambda_for_date(
             dispersion=disp,
             avg_vol_window=avg_vol,
             lambda_value=lambda_value,
+            sector_health_score=shi_score,
         ))
 
     logger.info(
@@ -343,16 +365,17 @@ def run_daily_lambda(
         if not predictions_csv.is_absolute():
             predictions_csv = PROJECT_ROOT / predictions_csv
 
-    fail = lambda msg: DailyLambdaResult(
-        as_of_date=as_of_date, market_id=market_id,
-        n_clusters=0, n_predictions=0,
-        predictions_csv=str(predictions_csv),
-        success=False, error=msg,
-    )
+    def fail(msg):
+        return DailyLambdaResult(
+            as_of_date=as_of_date, market_id=market_id,
+            n_clusters=0, n_predictions=0,
+            predictions_csv=str(predictions_csv),
+            success=False, error=msg,
+        )
 
-    # Step 1: Load model.
+    # Step 1: Load model (auto-detects Poly2 vs GBT from JSON metadata).
     try:
-        model = LambdaPoly2Model.load(model_path)
+        model = load_lambda_model(model_path)
     except FileNotFoundError:
         logger.warning(
             "run_daily_lambda: model file not found at %s; skipping lambda for %s",
@@ -392,9 +415,21 @@ def run_daily_lambda(
             "dispersion": c.dispersion,
             "avg_vol_window": c.avg_vol_window,
             "lambda_value": c.lambda_value,
+            "sector_health_score": c.sector_health_score,
         }
         for c in clusters
     ])
+
+    # For GBT models, compute enhanced features before prediction.
+    if isinstance(model, LambdaGBTModel):
+        try:
+            df_clusters = build_enhanced_features(df_clusters)
+        except Exception as exc:
+            logger.warning(
+                "run_daily_lambda: enhanced feature engineering failed: %s", exc,
+            )
+            # Fall through — GBT handles NaN natively, so partial features
+            # are better than skipping entirely.
 
     try:
         preds = model.predict(df_clusters)

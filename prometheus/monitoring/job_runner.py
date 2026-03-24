@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
-
 logger = logging.getLogger("prometheus.monitoring.job_runner")
 
 

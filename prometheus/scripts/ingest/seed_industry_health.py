@@ -16,12 +16,10 @@ import argparse
 import random
 from datetime import date, timedelta
 
-import numpy as np
-from psycopg2.extras import Json
-
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.nation.industries import NATION_INDUSTRIES
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

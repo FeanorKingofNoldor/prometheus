@@ -12,12 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Iterable
 from urllib.request import urlopen
 
 import pandas as pd
 from dotenv import dotenv_values
-
 
 DEFAULT_SERIES = [
     "DGS2",

@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
+
 from prometheus.monitoring.log_buffer import get_logs
 
 logger = get_logger(__name__)

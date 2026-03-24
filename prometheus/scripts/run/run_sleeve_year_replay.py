@@ -37,9 +37,9 @@ from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar, TradingCalendarConfig
-from prometheus.backtest.config import SleeveConfig
-from prometheus.backtest.campaign import _run_backtest_for_sleeve
 
+from prometheus.backtest.campaign import _run_backtest_for_sleeve
+from prometheus.backtest.config import SleeveConfig
 
 logger = get_logger(__name__)
 

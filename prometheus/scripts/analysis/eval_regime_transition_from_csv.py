@@ -20,9 +20,8 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
-from apathis.regime.event_eval import run_event_eval
 from apathis.regime.eval_baseline import run_baseline_walk_forward
+from apathis.regime.event_eval import run_event_eval
 from apathis.regime.reporting import build_rollup_dataframe, summarize_folds
 
 

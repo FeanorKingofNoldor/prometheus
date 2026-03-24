@@ -33,7 +33,6 @@ from apathis.data_ingestion.eodhd_fundamentals import (
     ingest_fundamentals_for_issuers,
 )
 
-
 logger = get_logger(__name__)
 
 

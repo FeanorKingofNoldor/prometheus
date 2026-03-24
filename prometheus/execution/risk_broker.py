@@ -21,8 +21,7 @@ from typing import Dict, List, Optional
 from apathis.core.config import ExecutionRiskConfig, get_config
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.risk.engine import RiskActionType
-from prometheus.risk.storage import RiskAction, insert_risk_actions
+
 from prometheus.execution.broker_interface import (
     BrokerInterface,
     Fill,
@@ -31,6 +30,8 @@ from prometheus.execution.broker_interface import (
     OrderStatus,
     Position,
 )
+from prometheus.risk.engine import RiskActionType
+from prometheus.risk.storage import RiskAction, insert_risk_actions
 
 logger = get_logger(__name__)
 

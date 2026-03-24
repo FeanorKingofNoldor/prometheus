@@ -28,17 +28,16 @@ import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional
+
+from apathis.core.logging import get_logger
 
 from prometheus.backtest.iv_surface import IVSurfaceEngine, VolTermStructure
-from prometheus.backtest.option_pricer import bs_price, bs_greeks, fill_price
+from prometheus.backtest.option_pricer import bs_price, fill_price
 from prometheus.backtest.options_position import (
-    BookGreeks,
-    PnLAttribution,
     SyntheticOptionsBook,
 )
 from prometheus.backtest.synthetic_chain import SyntheticChainGenerator
-from apathis.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -91,6 +90,22 @@ class OptionsBacktestConfig:
 
     # SPY instrument ID
     spy_instrument_id: str = "SPY.US"
+
+    # Individual equity universe for short_put strategy.
+    # Explicit list of instrument IDs (e.g. ["AAPL.US", "MSFT.US"]).
+    # When empty, only sector ETFs are loaded (legacy behaviour).
+    equity_universe_ids: List[str] = field(default_factory=list)
+
+    # When True, load the full US_EQ equity universe from the runtime DB
+    # (instruments WHERE asset_class='EQUITY' AND market_id='US_EQ').
+    # IDs from ``equity_universe_ids`` are merged in addition.
+    load_equity_universe_from_db: bool = False
+
+    # Path to the λ-factorial cluster scores CSV exported from prometheus_v2.
+    # When set, replaces the naive 63-day momentum proxy in _compute_lambda_scores
+    # with real model scores keyed by (date, sector, soft_target_class).
+    # Expected columns: as_of_date, sector, soft_target_class, lambda_score_h63, ...
+    lambda_csv_path: Optional[str] = None
 
 
 # ── Backtest result ──────────────────────────────────────────────────
@@ -336,8 +351,10 @@ class OptionsBacktestEngine:
         # State
         self._book = SyntheticOptionsBook()
         self._result = OptionsBacktestResult()
-        self._strategy_pnl: Dict[str, float] = {}  # strategy → cumulative P&L
-        self._strategy_trades: Dict[str, int] = {}  # strategy → trade count
+        self._strategy_pnl: Dict[str, float] = {}          # strategy → cumulative total P&L
+        self._strategy_realized_pnl: Dict[str, float] = {} # strategy → cumulative realized P&L
+        self._strategy_pnl_by_year: Dict[int, Dict[str, float]] = {}  # year → {strategy → P&L}
+        self._strategy_trades: Dict[str, int] = {}          # strategy → trade count
 
         # Pre-loaded data caches
         self._equity_nav: Dict[str, float] = {}
@@ -351,6 +368,11 @@ class OptionsBacktestEngine:
         self._vix6m_cache: Dict[date, float] = {}
         self._vix1y_cache: Dict[date, float] = {}
         self._skew_cache: Dict[date, float] = {}
+
+        # Per-instrument λ-factorial scores (populated by _load_lambda_data).
+        # DataFrame: index=DatetimeIndex, columns=symbol (no .US), values=score [-1, 1].
+        # Covers 2015-01-02 → present; pre-2015 falls back to momentum proxy.
+        self._inst_score_pivot = None
 
         # Risk guardrail state
         self._peak_nav: float = config.initial_nav
@@ -384,8 +406,8 @@ class OptionsBacktestEngine:
         self._book = SyntheticOptionsBook(initial_capital=initial_deriv_capital)
 
         # Build strategies (simplified for backtest — no IBKR broker)
-        from prometheus.execution.strategy_allocator import StrategyAllocator
         from prometheus.execution.position_lifecycle import PositionLifecycleManager
+        from prometheus.execution.strategy_allocator import StrategyAllocator
 
         allocator = StrategyAllocator()
         lifecycle = PositionLifecycleManager()
@@ -469,7 +491,7 @@ class OptionsBacktestEngine:
                     market_situation=situation,
                     signals=signals,
                     portfolio_greeks=self._book.get_portfolio_greeks().to_dict(),
-                    existing_positions=self._book.to_existing_options_list(),
+                existing_positions=self._book.to_existing_options_list(as_of_date=d),
                 )
             except Exception as exc:
                 logger.debug("Allocator error on %s: %s", d, exc)
@@ -478,7 +500,7 @@ class OptionsBacktestEngine:
             # 10. Run lifecycle manager
             try:
                 lifecycle_directives = lifecycle.evaluate(
-                    positions=self._book.to_existing_options_list(),
+                positions=self._book.to_existing_options_list(as_of_date=d),
                     signals=signals,
                 )
             except Exception as exc:
@@ -544,12 +566,45 @@ class OptionsBacktestEngine:
             daily_options_pnl = pnl_attr.total_pnl + expiry_pnl
             cumulative_options_pnl += daily_options_pnl
 
-            # 14a. Attribute daily P&L to strategies
+            # 14a. Attribute daily P&L to strategies (realized + unrealized)
+            year = d.year
+
+            # Realized: positions closed/expired/rolled today
+            close_events = self._book.pop_close_events()
+            for evt in close_events:
+                strat = evt["strategy"]
+                rpnl = evt["realized_pnl"]
+                self._strategy_realized_pnl[strat] = (
+                    self._strategy_realized_pnl.get(strat, 0.0) + rpnl
+                )
+                self._strategy_pnl[strat] = self._strategy_pnl.get(strat, 0.0) + rpnl
+                yr = self._strategy_pnl_by_year.setdefault(year, {})
+                yr[strat] = yr.get(strat, 0.0) + rpnl
+                if self._writer is not None:
+                    self._writer.insert_trade(
+                        trade_date=d,
+                        position_id=evt["position_id"],
+                        symbol=evt["symbol"],
+                        right=evt["right"],
+                        expiry=evt["expiry"],
+                        strike=evt["strike"],
+                        action=evt["action"],
+                        quantity=evt["quantity"],
+                        price=evt["close_price"],
+                        mid_price=evt["close_price"],
+                        underlying_price=underlying_prices.get(evt["symbol"], 0.0),
+                        vix_at_trade=vix,
+                        strategy=strat,
+                        realized_pnl=rpnl,
+                    )
+
+            # Unrealized: daily mark changes on still-open positions
             for pos in self._book.positions.values():
                 strat = pos.strategy or "unknown"
-                # Each position's daily PnL contribution ≈ price change × qty × multiplier
                 daily_pos_pnl = (pos.current_price - pos.prev_price) * pos.multiplier * pos.quantity
                 self._strategy_pnl[strat] = self._strategy_pnl.get(strat, 0.0) + daily_pos_pnl
+                yr = self._strategy_pnl_by_year.setdefault(year, {})
+                yr[strat] = yr.get(strat, 0.0) + daily_pos_pnl
             total_nav = equity_nav + cumulative_options_pnl
 
             greeks = self._book.get_portfolio_greeks()
@@ -623,13 +678,44 @@ class OptionsBacktestEngine:
             "derivatives_budget_pct": cfg.derivatives_budget_pct,
             "n_trading_days": len(trading_days),
         }
-        self._result.strategy_metrics = {
-            strat: {
-                "cumulative_pnl": round(pnl, 2),
-                "trade_count": self._strategy_trades.get(strat, 0),
+
+        # Compute unrealized P&L directly from open book positions.
+        # This avoids the double-counting artefact in _strategy_pnl where both
+        # daily MTM increments AND full realized-at-close P&L were accumulated.
+        unrealized_by_strat: Dict[str, float] = {}
+        for pos in self._book.positions.values():
+            strat = pos.strategy or "unknown"
+            pos_unrealized = (
+                (pos.current_price - pos.entry_price)
+                * pos.multiplier * pos.quantity
+            )
+            unrealized_by_strat[strat] = (
+                unrealized_by_strat.get(strat, 0.0) + pos_unrealized
+            )
+
+        all_strats = sorted(
+            set(list(self._strategy_realized_pnl.keys()) + list(unrealized_by_strat.keys()))
+        )
+        strategy_metrics: Dict[str, Any] = {}
+        for strat in all_strats:
+            realized = self._strategy_realized_pnl.get(strat, 0.0)
+            unrealized = unrealized_by_strat.get(strat, 0.0)
+            total = realized + unrealized
+            year_pnl = {
+                str(yr): round(self._strategy_pnl_by_year[yr].get(strat, 0.0), 2)
+                for yr in sorted(self._strategy_pnl_by_year)
+                if strat in self._strategy_pnl_by_year[yr]
             }
-            for strat, pnl in sorted(self._strategy_pnl.items(), key=lambda x: x[1])
-        }
+            strategy_metrics[strat] = {
+                "cumulative_pnl": round(total, 2),
+                "realized_pnl": round(realized, 2),
+                "unrealized_pnl": round(unrealized, 2),
+                "trade_count": self._strategy_trades.get(strat, 0),
+                "year_pnl": year_pnl,
+            }
+        self._result.strategy_metrics = dict(
+            sorted(strategy_metrics.items(), key=lambda x: x[1]["cumulative_pnl"])
+        )
         self._result.compute_summary()
 
         # Add guardrail stats to summary
@@ -665,12 +751,6 @@ class OptionsBacktestEngine:
         underlying_prices: Dict[str, float],
     ) -> list:
         """Run all enabled strategies and collect OPEN directives."""
-        from prometheus.execution.options_strategy import (
-            OptionsStrategyManager,
-            OptionTradeDirective,
-            TradeAction,
-        )
-        from prometheus.execution.broker_interface import BrokerInterface
 
         # Build a minimal portfolio dict from signals
         portfolio: Dict[str, Any] = {}
@@ -681,21 +761,26 @@ class OptionsBacktestEngine:
                 "avg_cost": price,
             })()
 
-        existing_options = self._book.to_existing_options_list()
+        existing_options = self._book.to_existing_options_list(as_of_date=as_of_date)
 
         # Create strategies without broker (we handle execution ourselves)
         from prometheus.execution.options_strategy import (
-            ProtectivePutStrategy, CoveredCallStrategy,
-            SectorPutSpreadStrategy, VixTailHedgeStrategy,
-            ShortPutStrategy, FuturesOverlayStrategy, FuturesOptionStrategy,
-            BullCallSpreadStrategy, MomentumCallStrategy, LEAPSStrategy,
-            IronCondorStrategy, IronButterflyStrategy,
-            CollarStrategy, CalendarSpreadStrategy,
-            StraddleStrangleStrategy, WheelStrategy,
-            VixTailHedgeConfig, IronCondorConfig, IronButterflyConfig,
-            ShortPutConfig, FuturesOverlayConfig, FuturesOptionConfig,
-            BullCallSpreadConfig, MomentumCallConfig, LEAPSConfig,
-            WheelConfig,
+            BullCallSpreadConfig,
+            BullCallSpreadStrategy,
+            FuturesOptionConfig,
+            FuturesOptionStrategy,
+            FuturesOverlayConfig,
+            FuturesOverlayStrategy,
+            IronButterflyConfig,
+            IronButterflyStrategy,
+            IronCondorConfig,
+            IronCondorStrategy,
+            LEAPSConfig,
+            LEAPSStrategy,
+            MomentumCallConfig,
+            MomentumCallStrategy,
+            VixTailHedgeConfig,
+            VixTailHedgeStrategy,
         )
 
         # Build config objects with optional overrides from grid search
@@ -715,14 +800,24 @@ class OptionsBacktestEngine:
             VixTailHedgeStrategy(config=_cfg(VixTailHedgeConfig)),
             IronCondorStrategy(config=_cfg(IronCondorConfig)),
             IronButterflyStrategy(config=_cfg(IronButterflyConfig)),
-            ShortPutStrategy(config=_cfg(ShortPutConfig)),
+            # short_put DISABLED: IV engine uses VIX as base vol for individual
+            # stocks, understating actual single-stock IV by 5-15 vol pts.
+            # Collected credit is too low relative to realised stock moves →
+            # consistently -EV in ALL 10+ runs (cumulative -$837K v35, scaling
+            # with portfolio size).  Post-2015 with real λ scores the strategy
+            # is near-breakeven, confirming the signal is valid; the backtest
+            # model simply cannot evaluate it fairly.  Keep for live trading.
+            # ShortPutStrategy(config=_cfg(ShortPutConfig)),
             FuturesOverlayStrategy(config=_cfg(FuturesOverlayConfig)),
             FuturesOptionStrategy(config=_cfg(FuturesOptionConfig)),
             BullCallSpreadStrategy(config=_cfg(BullCallSpreadConfig)),
             MomentumCallStrategy(config=_cfg(MomentumCallConfig)),
             LEAPSStrategy(config=_cfg(LEAPSConfig)),
             # collar DISABLED: −$285K over 30yr, pure drag with no crisis alpha.
-            WheelStrategy(config=_cfg(WheelConfig)),
+            # wheel DISABLED: −$286K over 30yr. Strategy requires physical stock
+            # assignment which is not modelled in the cash-settled synthetic book;
+            # only the CSP leg executes, behaving as a worse short_put duplicate.
+            # WheelStrategy(config=_cfg(WheelConfig)),
         ]
 
         # Apply allocations to enable/disable
@@ -905,6 +1000,46 @@ class OptionsBacktestEngine:
 
     # ── Data access helpers
 
+    def _load_equity_universe_ids_from_db(self) -> List[str]:
+        """Query the runtime DB for all active US equity instrument IDs.
+
+        Returns instruments with ``asset_class='EQUITY'`` and
+        ``market_id='US_EQ'``, excluding synthetics.  Falls back to an
+        empty list on any error so the backtest can continue with only
+        sector ETFs.
+        """
+        if self._data_reader is None:
+            return []
+        sql = """
+            SELECT instrument_id
+            FROM instruments
+            WHERE asset_class = 'EQUITY'
+              AND status = 'ACTIVE'
+              AND instrument_id NOT LIKE 'SYNTH_%%'
+              AND market_id = 'US_EQ'
+            ORDER BY instrument_id
+        """
+        try:
+            with self._data_reader.db_manager.get_runtime_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
+            ids = [str(row[0]) for row in rows]
+            logger.info(
+                "Equity universe: loaded %d instrument IDs from runtime DB (US_EQ, EQUITY)",
+                len(ids),
+            )
+            return ids
+        except Exception as exc:
+            logger.warning(
+                "Could not load equity universe from DB — falling back to sector ETFs only: %s",
+                exc,
+            )
+            return []
+
     def _preload_data(self) -> None:
         """Pre-load VIX, SPY prices, and realized vols from database."""
         if self._data_reader is None:
@@ -914,7 +1049,6 @@ class OptionsBacktestEngine:
         cfg = self._config
         try:
             # Load VIX
-            import pandas as pd
             import numpy as np
             vix_df = self._data_reader.read_prices_close(
                 [cfg.vix_instrument_id], cfg.start_date, cfg.end_date,
@@ -960,7 +1094,44 @@ class OptionsBacktestEngine:
                     max(len(self._price_cache[s]) for s in loaded_etfs),
                 )
 
-            # Pre-compute 21-day realized vol for SPY and sector ETFs
+            # Load individual equity universe (for ShortPut and other single-stock strategies).
+            # Collect IDs from config and optionally auto-load from DB.
+            equity_ids: List[str] = list(cfg.equity_universe_ids)
+            if cfg.load_equity_universe_from_db:
+                db_ids = self._load_equity_universe_ids_from_db()
+                existing = set(equity_ids)
+                for iid in db_ids:
+                    if iid not in existing:
+                        equity_ids.append(iid)
+
+            if equity_ids:
+                try:
+                    eq_df = self._data_reader.read_prices_close(
+                        equity_ids, cfg.start_date, cfg.end_date,
+                    )
+                    loaded_eq = 0
+                    skipped_eq = 0
+                    for instrument_id, group in eq_df.groupby("instrument_id"):
+                        symbol = str(instrument_id).replace(".US", "")
+                        if symbol in self._price_cache:
+                            # Sector ETF already loaded — don't overwrite
+                            skipped_eq += 1
+                            continue
+                        prices: Dict[date, float] = {}
+                        for _, row in group.iterrows():
+                            prices[row["trade_date"]] = float(row["close"])
+                        if prices:
+                            self._price_cache[symbol] = prices
+                            loaded_eq += 1
+                    logger.info(
+                        "Loaded %d individual equity price series for options universe "
+                        "(%d requested, %d skipped/already present)",
+                        loaded_eq, len(equity_ids), skipped_eq,
+                    )
+                except Exception as exc:
+                    logger.warning("Error loading equity universe prices: %s", exc)
+
+            # Pre-compute 21-day realized vol for SPY, sector ETFs, and equity universe
             for symbol, cache in self._price_cache.items():
                 if not cache:
                     continue
@@ -1013,6 +1184,9 @@ class OptionsBacktestEngine:
         except Exception as exc:
             logger.warning("Error pre-loading data: %s", exc)
 
+        # Load real λ-factorial scores if configured
+        self._load_lambda_data()
+
         # Load vol term structure indices
         self._preload_vol_indices()
 
@@ -1045,6 +1219,70 @@ class OptionsBacktestEngine:
                     )
             except Exception as exc:
                 logger.debug("Could not load %s: %s", instrument_id, exc)
+
+    def _load_lambda_data(self) -> None:
+        """Load per-instrument λ-factorial scores from the runtime DB.
+
+        Queries ``instrument_scores`` (strategy_id='US_CORE_LONG_EQ',
+        horizon_days=21) and builds a DataFrame pivot:
+
+            _inst_score_pivot: date × symbol → score [-1, 1]
+
+        Coverage: 2015-01-02 → present (~490 dates, ~820 instruments).
+        Dates before 2015 automatically fall back to the 63-day momentum proxy.
+
+        Triggered when ``lambda_csv_path`` is set (path value is used only for
+        logging; the actual scores are loaded from the DB).
+        """
+        cfg = self._config
+        if not cfg.lambda_csv_path:
+            return
+        if self._data_reader is None:
+            logger.warning("lambda_csv_path set but no DataReader — skipping λ scores")
+            return
+
+        import pandas as pd
+        try:
+            sql = """
+                SELECT DISTINCT ON (instrument_id, as_of_date)
+                    instrument_id, as_of_date, score
+                FROM instrument_scores
+                WHERE strategy_id   = 'US_CORE_LONG_EQ'
+                  AND horizon_days  = 21
+                  AND market_id     = 'US_EQ'
+                  AND instrument_id NOT LIKE 'SYNTH_%%'
+                ORDER BY instrument_id, as_of_date, created_at DESC
+            """
+            with self._data_reader.db_manager.get_runtime_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
+
+            df = pd.DataFrame(rows, columns=["instrument_id", "as_of_date", "score"])
+            df["as_of_date"] = pd.to_datetime(df["as_of_date"])
+            df["score"] = df["score"].astype(float)
+            # Strip the .US suffix so columns match symbol keys in underlying_prices
+            df["symbol"] = df["instrument_id"].str.replace(".US", "", regex=False)
+
+            pivot = (
+                df.groupby(["as_of_date", "symbol"])["score"]
+                .last()
+                .unstack("symbol")
+            )
+            pivot.sort_index(inplace=True)
+            self._inst_score_pivot = pivot
+            logger.info(
+                "λ per-instrument scores loaded: %d dates × %d instruments "
+                "(US_CORE_LONG_EQ h21, %s → %s). Pre-2015 uses momentum proxy.",
+                len(pivot), len(pivot.columns),
+                str(pivot.index[0].date()) if len(pivot) > 0 else "?",
+                str(pivot.index[-1].date()) if len(pivot) > 0 else "?",
+            )
+        except Exception as exc:
+            logger.warning("Could not load per-instrument λ scores: %s — using momentum proxy", exc)
 
     def _get_term_structure(self, d: date, vix: float) -> Optional[VolTermStructure]:
         """Build a VolTermStructure for a given date from cached data.
@@ -1204,10 +1442,44 @@ class OptionsBacktestEngine:
     def _compute_lambda_scores(
         self, d: date, underlying_prices: Dict[str, float],
     ) -> Dict[str, float]:
-        """Momentum-based conviction proxy for lambda universe scores.
+        """Return per-symbol λ-factorial scores for today.
 
-        Score = 63-day (3-month) return mapped to [0, 1]:
-        -10% return → 0.0, 0% → 0.5, +10% → 1.0.
+        Uses per-instrument scores from ``instrument_scores`` (strategy
+        US_CORE_LONG_EQ, h21) when ``lambda_csv_path`` is configured and
+        data loaded successfully.  Coverage: 2015-01-02 onward; earlier
+        dates fall through to the 63-day momentum proxy.
+        """
+        if self._inst_score_pivot is None:
+            return self._compute_lambda_scores_proxy(d, underlying_prices)
+
+        import pandas as pd
+        d_ts = pd.Timestamp(d)
+        try:
+            idx = self._inst_score_pivot.index.searchsorted(d_ts, side="right") - 1
+            if idx < 0:
+                # Before the earliest scored date — fall back to proxy
+                return self._compute_lambda_scores_proxy(d, underlying_prices)
+            score_row = self._inst_score_pivot.iloc[idx]  # Series: symbol → score
+        except Exception:
+            return self._compute_lambda_scores_proxy(d, underlying_prices)
+
+        scores: Dict[str, float] = {}
+        for symbol, price in underlying_prices.items():
+            if price <= 0 or symbol in ("SPY", "VIX") or ".INDX" in symbol:
+                continue
+            val = score_row.get(symbol)
+            if val is None or val != val:  # None or NaN
+                continue
+            scores[symbol] = round(float(val), 3)
+        return scores
+
+    def _compute_lambda_scores_proxy(
+        self, d: date, underlying_prices: Dict[str, float],
+    ) -> Dict[str, float]:
+        """Fallback: 63-day price momentum mapped to [0, 1].
+
+        Score = (63d_return + 10%) / 20%.  Active for pre-2015 dates or
+        when the instrument-scores DB table is not configured.
         """
         scores: Dict[str, float] = {}
         for symbol in self._price_cache:
@@ -1336,6 +1608,9 @@ class OptionsBacktestEngine:
     ) -> Dict[str, Any]:
         """Build the signals dict consumed by strategies."""
         lambda_scores = self._compute_lambda_scores(d, underlying_prices)
+        # Momentum scores: always the 63-day proxy (0→1), regardless of lambda source.
+        # Used by bull_call_spread which needs directional momentum, not fundamental λ.
+        momentum_scores = self._compute_lambda_scores_proxy(d, underlying_prices)
         stab_scores = self._compute_stab_scores(realized_vols)
         sector_shi = self._compute_sector_shi(d, underlying_prices, realized_vols)
         frag = self._compute_frag(d, vix)
@@ -1351,10 +1626,22 @@ class OptionsBacktestEngine:
             (spy_price / spy_past - 1.0) if spy_past > 0 and spy_price > 0 else 0.0
         )
 
+        # Total short-premium credit already committed by open butterfly/condor
+        # positions.  Strategies use this together with ``buying_power`` to
+        # enforce a book-level margin cap so that
+        #   sum(n_contracts × credit_per_contract) ≤ derivatives_budget_pct × NAV.
+        _spread_strats = {"iron_butterfly", "iron_condor"}
+        _butterfly_condor_margin_used = sum(
+            abs(pos.entry_price) * abs(pos.quantity) * pos.multiplier
+            for pos in self._book.positions.values()
+            if pos.strategy in _spread_strats and pos.quantity < 0
+        )
+
         return {
             "as_of_date": d,
             "nav": equity_nav,
             "buying_power": equity_nav * self._config.derivatives_budget_pct,
+            "butterfly_condor_margin_used": _butterfly_condor_margin_used,
             "market_state": situation,
             "mhi": mhi,
             "frag": frag,
@@ -1363,6 +1650,7 @@ class OptionsBacktestEngine:
             "spy_momentum_63d": round(spy_momentum_63d, 4),
             "es_price": spy_price * 10.0 if spy_price > 0 else 0.0,
             "lambda_scores": lambda_scores,
+            "momentum_scores": momentum_scores,
             "lambda_aggregate": round(lambda_agg, 3),
             "stab_scores": stab_scores,
             "sector_shi": sector_shi,

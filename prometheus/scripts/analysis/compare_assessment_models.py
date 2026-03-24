@@ -23,11 +23,9 @@ from datetime import date
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

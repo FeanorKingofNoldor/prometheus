@@ -32,7 +32,6 @@ from apathis.core.logging import get_logger
 from apathis.encoders import TextDoc, TextEmbeddingService, TextEmbeddingStore
 from apathis.encoders.models_text_hf import HuggingFaceTextEmbeddingModel
 
-
 logger = get_logger(__name__)
 
 

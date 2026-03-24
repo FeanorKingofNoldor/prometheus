@@ -11,16 +11,14 @@ model-version-specific pruning can be added later if needed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import Mapping
-
-from psycopg2.extras import Json
 
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.assessment.api import InstrumentScore
+from psycopg2.extras import Json
 
+from prometheus.assessment.api import InstrumentScore
 
 logger = get_logger(__name__)
 

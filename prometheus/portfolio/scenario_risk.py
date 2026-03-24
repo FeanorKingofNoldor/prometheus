@@ -13,13 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, Iterable, Tuple
+from typing import Dict
 
 import numpy as np
-
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

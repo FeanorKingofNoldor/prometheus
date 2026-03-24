@@ -25,14 +25,12 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

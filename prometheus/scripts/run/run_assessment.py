@@ -26,11 +26,11 @@ from apathis.core.logging import get_logger
 from apathis.core.time import TradingCalendar
 from apathis.data.reader import DataReader
 from apathis.stability import StabilityStorage
+
 from prometheus.assessment import AssessmentEngine
 from prometheus.assessment.model_basic import BasicAssessmentModel
 from prometheus.assessment.model_context import ContextAssessmentModel
 from prometheus.assessment.storage import InstrumentScoreStorage
-
 
 logger = get_logger(__name__)
 

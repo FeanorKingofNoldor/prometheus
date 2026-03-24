@@ -30,18 +30,16 @@ import argparse
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig, US_EQ
+from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
 from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
 from apathis.data.reader import DataReader
-
 
 logger = get_logger(__name__)
 

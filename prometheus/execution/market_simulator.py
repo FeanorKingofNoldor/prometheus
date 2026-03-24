@@ -13,15 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from typing import Dict, Iterable, List, Sequence
-
-import pandas as pd
+from typing import Dict, List, Sequence
 
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
+
 from prometheus.execution.broker_interface import Fill, Order, OrderSide, Position
 from prometheus.execution.time_machine import TimeMachine
-
 
 logger = get_logger(__name__)
 

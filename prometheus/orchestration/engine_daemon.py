@@ -35,9 +35,9 @@ from typing import List, Optional, Sequence
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.pipeline.state import EngineRun, EngineRunStateError, RunPhase, list_active_runs
-from prometheus.pipeline.tasks import advance_run
 
+from prometheus.pipeline.state import EngineRun, EngineRunStateError, list_active_runs
+from prometheus.pipeline.tasks import advance_run
 
 logger = get_logger(__name__)
 

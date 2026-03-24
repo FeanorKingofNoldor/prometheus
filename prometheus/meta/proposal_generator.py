@@ -20,16 +20,14 @@ Version: v0.1.0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Sequence
-
-from psycopg2.extras import Json
+from typing import Any, Dict, List, Optional
 
 from apathis.core.database import DatabaseManager
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
-from prometheus.meta.diagnostics import DiagnosticReport, DiagnosticsEngine
+from psycopg2.extras import Json
 
+from prometheus.meta.diagnostics import DiagnosticReport, DiagnosticsEngine
 
 logger = get_logger(__name__)
 
@@ -192,21 +190,21 @@ class ProposalGenerator:
         # If many underperforming configs exist, propose more conservative settings
         if len(report.underperforming_configs) > len(report.overall_performance.run_ids) * 0.3:
             # More than 30% underperforming - suggest risk reduction
-            
+
             # Find common config patterns in underperforming vs performing runs
-            underperforming_ids = {c["run_id"] for c in report.underperforming_configs}
-            
+            {c["run_id"] for c in report.underperforming_configs}
+
             # Analyze config differences between performers and underperformers
             # (simplified for now - could be more sophisticated)
-            
+
             confidence = 0.5  # Medium confidence for pattern-based proposals
-            
+
             rationale = (
                 f"{len(report.underperforming_configs)} of "
                 f"{report.overall_performance.sample_size} runs underperform. "
                 f"Recommend reviewing risk parameters and strategy constraints."
             )
-            
+
             # Generic proposal to review configuration
             proposal = ConfigProposal(
                 proposal_id=generate_uuid(),
@@ -239,12 +237,12 @@ class ProposalGenerator:
         # If significant high-risk configs exist, propose risk constraints
         if len(report.high_risk_configs) > 0:
             confidence = 0.6  # Medium-high confidence for risk mitigation
-            
+
             rationale = (
                 f"{len(report.high_risk_configs)} runs show excessive risk. "
                 f"Recommend implementing stricter position sizing or stop-loss rules."
             )
-            
+
             proposal = ConfigProposal(
                 proposal_id=generate_uuid(),
                 strategy_id=report.strategy_id,
@@ -271,21 +269,21 @@ class ProposalGenerator:
     def _generate_comparison_rationale(self, comparison) -> str:
         """Generate human-readable rationale for a config comparison proposal."""
         param_name = comparison.config_key.replace("_", " ").title()
-        
+
         if comparison.sharpe_delta > 0.3:
             impact = "significant"
         elif comparison.sharpe_delta > 0.15:
             impact = "moderate"
         else:
             impact = "modest"
-        
+
         rationale = (
             f"Changing {param_name} from {comparison.baseline_value} to "
             f"{comparison.alternative_value} shows {impact} improvement: "
             f"Sharpe +{comparison.sharpe_delta:.2f}, Return +{comparison.return_delta:.2%}. "
             f"Based on {comparison.sample_count} backtest runs."
         )
-        
+
         return rationale
 
     def _save_proposals(self, proposals: List[ConfigProposal]) -> None:

@@ -24,8 +24,8 @@ from typing import Optional, Sequence
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from prometheus.pipeline.tasks import run_backtest_campaign_and_meta_for_strategy
 
+from prometheus.pipeline.tasks import run_backtest_campaign_and_meta_for_strategy
 
 logger = get_logger(__name__)
 

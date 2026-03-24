@@ -28,7 +28,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.database import get_db_manager
 from apathis.core.markets import MARKETS_BY_REGION
 from apathis.regime.overlay_cache import ensure_overlay_csv
@@ -99,7 +98,7 @@ def _summarise_by_label(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    for label in [l.value for l in RegimeLabel]:
+    for label in [regime_label.value for regime_label in RegimeLabel]:
         sub = df[df[label_col] == label]
         r = pd.to_numeric(sub[ret_col], errors="coerce")
         d = pd.to_numeric(sub[dd_col], errors="coerce")

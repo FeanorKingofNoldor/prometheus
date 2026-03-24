@@ -32,9 +32,8 @@ import argparse
 import math
 import re
 import sys
-import time
-from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from datetime import date
+from typing import Any, Dict, Optional, Sequence
 
 from apathis.core.logging import get_logger
 
@@ -182,8 +181,8 @@ def _load_signals(
 
     # ── ES price ────────────────────────────────────────────────────────
     try:
-        from prometheus.execution.ib_compat import Future
         from prometheus.execution.futures_manager import PRODUCTS
+        from prometheus.execution.ib_compat import Future
         if PRODUCTS.get("ES"):
             es_contract = Future("ES", exchange="CME", currency="USD")
             es_contract.secType = "CONTFUT"
@@ -289,13 +288,13 @@ def run_derivatives_daily(
 
     Returns a summary dict with counts and diagnostics.
     """
-    from prometheus.execution.ib_compat import IB
-    from prometheus.execution.instrument_mapper import InstrumentMapper
+    from prometheus.execution.broker_interface import BrokerInterface
     from prometheus.execution.contract_discovery import ContractDiscoveryService
     from prometheus.execution.futures_manager import FuturesManager
+    from prometheus.execution.ib_compat import IB
+    from prometheus.execution.instrument_mapper import InstrumentMapper
     from prometheus.execution.options_portfolio import OptionsPortfolio
     from prometheus.execution.options_strategy import OptionsStrategyManager
-    from prometheus.execution.broker_interface import BrokerInterface
 
     summary: Dict[str, Any] = {
         "date": date.today().isoformat(),
@@ -431,8 +430,8 @@ def run_derivatives_daily(
         # ── Step 5.5: Compute market situation & allocations ─────────
         logger.info("Computing market situation and strategy allocations...")
 
-        from prometheus.execution.strategy_allocator import StrategyAllocator
         from prometheus.execution.position_lifecycle import PositionLifecycleManager
+        from prometheus.execution.strategy_allocator import StrategyAllocator
 
         # Determine market situation from signals
         market_state = signals.get("market_state", "NEUTRAL")
@@ -500,10 +499,12 @@ def run_derivatives_daily(
             _OPT_RE = re.compile(r'^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.US$')
 
             def submit_order(self, order) -> str:
-                from prometheus.execution.ib_compat import (
-                    Option, LimitOrder, MarketOrder,
-                )
                 from prometheus.execution.broker_interface import OrderSide, OrderType
+                from prometheus.execution.ib_compat import (
+                    LimitOrder,
+                    MarketOrder,
+                    Option,
+                )
 
                 m = self._OPT_RE.match(order.instrument_id)
                 if not m:
@@ -530,7 +531,8 @@ def run_derivatives_daily(
                 # last-trade date, so we try the given expiry and also expiry-1
                 # as a fallback (handles the off-by-one seen in some months).
                 if symbol == "VIX":
-                    from datetime import datetime as _dt, timedelta as _td
+                    from datetime import datetime as _dt
+                    from datetime import timedelta as _td
                     _expiry_attempts = [
                         expiry,
                         (_dt.strptime(expiry, "%Y%m%d").date() - _td(days=1)).strftime("%Y%m%d"),
@@ -690,6 +692,7 @@ def run_derivatives_daily(
             if approved:
                 try:
                     from apathis.core.database import get_db_manager
+
                     from prometheus.decisions.tracker import DecisionTracker
 
                     # Map underlying symbol → canonical instrument ID for price lookups

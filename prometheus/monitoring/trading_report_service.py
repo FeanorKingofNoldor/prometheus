@@ -13,10 +13,11 @@ Report types:
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
+
 from prometheus.monitoring.report_service import _call_llm, _store_report
 
 logger = get_logger(__name__)

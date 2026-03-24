@@ -28,18 +28,16 @@ import argparse
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+from apathis.regime.state_change import _build_transition_matrix
 from apathis.regime.storage import RegimeStorage
 from apathis.regime.types import RegimeLabel, RegimeState
-from apathis.regime.state_change import _build_transition_matrix
-
 
 logger = get_logger(__name__)
 

@@ -21,7 +21,6 @@ from typing import Any, Mapping
 
 import yaml
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "configs" / "meta" / "books.yaml"
 
@@ -44,6 +43,10 @@ class LongEquitySleeveSpec:
 
     # Conviction-based position lifecycle.
     conviction_enabled: bool = False
+
+    # Score concentration: raise raw scores to this power before
+    # normalising into weights. 1.0 = linear, 2.5 = strong concentration.
+    score_concentration_power: float = 1.0
 
     # Book-level overlays.
     apply_fragility_overlay: bool = False
@@ -359,6 +362,9 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
                         portfolio_hysteresis_buffer=_coerce_int(s.get("portfolio_hysteresis_buffer")),
                         portfolio_per_instrument_max_weight=_coerce_float(
                             s.get("portfolio_per_instrument_max_weight")
+                        ),
+                        score_concentration_power=float(
+                            _coerce_float(s.get("score_concentration_power")) or 1.0
                         ),
                         apply_fragility_overlay=bool(s.get("apply_fragility_overlay", False)),
                         fragility_overlay_mode=mode,

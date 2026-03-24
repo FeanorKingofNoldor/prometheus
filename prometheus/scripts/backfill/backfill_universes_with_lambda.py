@@ -28,22 +28,22 @@ from typing import Optional, Sequence
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+from apathis.core.markets import MARKETS_BY_REGION
 from apathis.core.time import TradingCalendar
 from apathis.data.reader import DataReader
 from apathis.profiles import (
+    BasicProfileEmbedder,
+    ProfileFeatureBuilder,
     ProfileService,
     ProfileStorage,
-    ProfileFeatureBuilder,
     RoutedProfileFeatureBuilder,
     SovereignProfileFeatureBuilder,
-    BasicProfileEmbedder,
 )
 from apathis.stability import StabilityStorage
-from prometheus.universe import UniverseEngine, UniverseStorage, BasicUniverseModel
-from prometheus.universe.config import UniverseConfig
-from apathis.core.markets import MARKETS_BY_REGION
-from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
 
+from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
+from prometheus.universe import BasicUniverseModel, UniverseEngine, UniverseStorage
+from prometheus.universe.config import UniverseConfig
 
 logger = get_logger(__name__)
 

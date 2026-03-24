@@ -5,9 +5,9 @@ basic equity universe model built from prices, STAB, and profiles.
 """
 
 from prometheus.universe.engine import (
-    UniverseMember,
-    UniverseStorage,
-    UniverseModel,
-    UniverseEngine,
     BasicUniverseModel,
+    UniverseEngine,
+    UniverseMember,
+    UniverseModel,
+    UniverseStorage,
 )

@@ -8,15 +8,14 @@ Endpoints for the C2 Logs & Reports tab:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, HTTPException, Path, Query
-from pydantic import BaseModel
 
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
-from prometheus.monitoring.log_buffer import get_logs, get_categories
+from fastapi import APIRouter, HTTPException, Path, Query
+from pydantic import BaseModel
+
+from prometheus.monitoring.log_buffer import get_categories, get_logs
 
 logger = get_logger(__name__)
 

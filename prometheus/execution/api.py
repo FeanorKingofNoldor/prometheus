@@ -19,21 +19,27 @@ live/paper execution flows.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
-from typing import Mapping
+from datetime import date, datetime, timezone
+from time import monotonic, sleep
+from typing import Dict, List, Mapping
 
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+
 from prometheus.execution.backtest_broker import BacktestBroker
-from prometheus.execution.broker_interface import BrokerInterface, OrderSide
+from prometheus.execution.broker_interface import BrokerInterface, Fill, OrderSide, OrderStatus
+from prometheus.execution.executed_actions import (
+    ExecutedActionContext,
+    record_executed_actions_for_fills,
+)
 from prometheus.execution.order_planner import plan_orders
 from prometheus.execution.storage import (
     ExecutionMode,
     record_fills,
     record_orders,
     record_positions_snapshot,
+    update_order_statuses,
 )
-
 
 logger = get_logger(__name__)
 
@@ -57,6 +63,8 @@ def apply_execution_plan(
     decision_id: str | None = None,
     record_positions: bool = True,
     sells_first: bool = False,
+    status_poll_timeout_sec: float = 30.0,
+    status_poll_interval_sec: float = 2.0,
 ) -> ExecutionSummary:
     """Apply an execution plan for ``target_positions`` via ``broker``.
 
@@ -74,6 +82,10 @@ def apply_execution_plan(
             orders.
         record_positions: If True, also persist a positions snapshot
             after fills are processed.
+        status_poll_timeout_sec: For PAPER/LIVE mode, how long to poll
+            broker statuses after submission.
+        status_poll_interval_sec: Poll interval in seconds for
+            PAPER/LIVE status updates.
 
     Returns:
         :class:`ExecutionSummary` with counts of orders and fills.
@@ -106,6 +118,9 @@ def apply_execution_plan(
         )
 
     # 2) Submit orders via broker.
+    submission_started_at = datetime.now(timezone.utc)
+    submitted_order_ids = [order.order_id for order in orders]
+    submitted_order_ids_set = set(submitted_order_ids)
     for order in orders:
         broker.submit_order(order)
 
@@ -119,15 +134,98 @@ def apply_execution_plan(
         as_of_date=as_of_date,
     )
 
-    # 4) In BACKTEST mode, process fills synchronously using the
-    # BacktestBroker + MarketSimulator.
-    fills = []
+    # 4) Process fills and reconcile statuses.
+    fills: List[Fill] = []
+    order_statuses: Dict[str, OrderStatus] = {}
+    mode_up = mode.upper()
     if mode.upper() == ExecutionMode.BACKTEST and isinstance(broker, BacktestBroker):
         if as_of_date is None:
             raise ValueError("apply_execution_plan: as_of_date is required for BACKTEST mode")
         fills = broker.process_fills(as_of_date)
         if fills:
             record_fills(db_manager=db_manager, fills=fills, mode=mode)
+        for order_id in submitted_order_ids:
+            try:
+                order_statuses[order_id] = broker.get_order_status(order_id)
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("apply_execution_plan: failed to fetch backtest status for order_id=%s", order_id)
+    else:
+        # PAPER/LIVE: poll broker statuses for submitted orders and
+        # persist any fills emitted during this submission window.
+        pending = set(submitted_order_ids)
+        deadline = monotonic() + max(0.0, float(status_poll_timeout_sec))
+        poll_interval = max(0.2, float(status_poll_interval_sec))
+
+        terminal_statuses = {
+            OrderStatus.FILLED,
+            OrderStatus.CANCELLED,
+            OrderStatus.REJECTED,
+        }
+
+        while pending and monotonic() < deadline:
+            for order_id in list(pending):
+                try:
+                    status = broker.get_order_status(order_id)
+                except Exception:  # pragma: no cover - defensive
+                    continue
+                order_statuses[order_id] = status
+                if status in terminal_statuses:
+                    pending.discard(order_id)
+            if pending:
+                sleep(poll_interval)
+
+        # Final status refresh (including any still-pending ids).
+        for order_id in submitted_order_ids:
+            try:
+                order_statuses[order_id] = broker.get_order_status(order_id)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+        if pending:
+            logger.warning(
+                "apply_execution_plan: %d orders still non-terminal after %.1fs timeout",
+                len(pending),
+                float(status_poll_timeout_sec),
+            )
+
+        try:
+            broker_fills = broker.get_fills(since=submission_started_at)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("apply_execution_plan: failed to fetch broker fills")
+            broker_fills = []
+
+        # Keep only fills corresponding to this submission batch.
+        seen_fill_ids: set[str] = set()
+        for fill in broker_fills:
+            if fill.order_id not in submitted_order_ids_set:
+                continue
+            if fill.fill_id in seen_fill_ids:
+                continue
+            seen_fill_ids.add(fill.fill_id)
+            fills.append(fill)
+
+        if fills:
+            record_fills(db_manager=db_manager, fills=fills, mode=mode)
+            try:
+                record_executed_actions_for_fills(
+                    db_manager=db_manager,
+                    fills=fills,
+                    context=ExecutedActionContext(
+                        run_id=None,
+                        portfolio_id=portfolio_id,
+                        decision_id=decision_id,
+                        mode=mode_up,
+                    ),
+                )
+            except Exception:  # pragma: no cover - defensive
+                logger.exception(
+                    "apply_execution_plan: failed to record executed_actions for portfolio_id=%s mode=%s",
+                    portfolio_id,
+                    mode_up,
+                )
+
+    if order_statuses:
+        update_order_statuses(db_manager=db_manager, statuses=order_statuses)
 
     # 5) Optionally record a positions snapshot after execution.
     if record_positions and portfolio_id is not None and as_of_date is not None:

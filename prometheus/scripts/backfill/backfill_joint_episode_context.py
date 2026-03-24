@@ -32,10 +32,9 @@ import argparse
 import json
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 import numpy as np
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
@@ -45,7 +44,6 @@ from apathis.encoders import (
     JointExample,
 )
 from apathis.encoders.models_joint_simple import SimpleAverageJointModel
-
 
 logger = get_logger(__name__)
 

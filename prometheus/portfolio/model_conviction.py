@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 from apathis.core.logging import get_logger
+
 from prometheus.portfolio.conviction import (
     ConvictionConfig,
     ConvictionDecision,
@@ -30,7 +31,6 @@ from prometheus.portfolio.conviction import (
 )
 from prometheus.portfolio.types import RiskReport, TargetPortfolio
 from prometheus.sector.allocator import StressLevel
-
 
 logger = get_logger(__name__)
 

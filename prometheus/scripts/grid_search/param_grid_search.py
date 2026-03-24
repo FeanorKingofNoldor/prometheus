@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from apathis.core.logging import get_logger
 
@@ -416,12 +416,13 @@ def run_options_config(
     equity_nav_path: str,
 ) -> OptionsResult:
     """Run a single options backtest config."""
+    from apathis.core.database import get_db_manager
+    from apathis.data.reader import DataReader
+
     from prometheus.backtest.options_backtest import (
         OptionsBacktestConfig,
         OptionsBacktestEngine,
     )
-    from apathis.data.reader import DataReader
-    from apathis.core.database import get_db_manager
 
     deriv_budget = cfg.get("derivatives_budget_pct", 0.15)
 

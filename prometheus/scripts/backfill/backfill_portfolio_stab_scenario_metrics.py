@@ -25,12 +25,10 @@ from datetime import date
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from psycopg2.extras import Json
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

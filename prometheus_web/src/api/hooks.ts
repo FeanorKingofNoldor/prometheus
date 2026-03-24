@@ -108,12 +108,35 @@ export const useScheduleDag = () =>
 
 export const useCreateSynthetic = () =>
   useMutation({ mutationFn: (params: Record<string, unknown>) => api.post("/control/create_synthetic_dataset", params) });
+type SyncDataParams = {
+  sources?: string[];
+  portfolioId?: string;
+};
+
+const DEFAULT_SYNC_SOURCES = ["ibkr", "engines", "nations"];
+const DEFAULT_SYNC_PORTFOLIO = "IBKR_PAPER";
+
+function isIbkrPortfolioId(portfolioId: string): boolean {
+  return portfolioId.startsWith("IBKR_");
+}
 
 export const useSyncData = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sources: string[] = ["ibkr", "engines", "nations"]) =>
-      api.post("/control/sync_data", { sources, portfolio_id: "IBKR_PAPER" }),
+    mutationFn: (params: SyncDataParams = {}) => {
+      const sources = params.sources?.length ? params.sources : DEFAULT_SYNC_SOURCES;
+      const requestedPortfolioId = (params.portfolioId ?? DEFAULT_SYNC_PORTFOLIO).trim() || DEFAULT_SYNC_PORTFOLIO;
+      const includesIbkr = sources.includes("ibkr") || sources.includes("all");
+      const safePortfolioId =
+        includesIbkr && !isIbkrPortfolioId(requestedPortfolioId)
+          ? DEFAULT_SYNC_PORTFOLIO
+          : requestedPortfolioId;
+
+      return api.post("/control/sync_data", {
+        sources,
+        portfolio_id: safePortfolioId,
+      });
+    },
     onSuccess: () => {
       // Invalidate all data queries so they refetch
       qc.invalidateQueries({ queryKey: ["status"] });
@@ -175,6 +198,12 @@ export const useApplyBatchProposals = () => {
 export const useConfigChanges = () =>
   useQuery({ queryKey: ["intelligence", "changes"], queryFn: () => api.get("/intelligence/changes") });
 
+export const useScorecard = (horizonDays = 21) =>
+  useQuery({ queryKey: ["intelligence", "scorecard", horizonDays], queryFn: () => api.get(`/intelligence/scorecard?horizon_days=${horizonDays}`), staleTime: 300_000 });
+
+export const useLambdaScorecard = (marketId = "US_EQ") =>
+  useQuery({ queryKey: ["intelligence", "lambda-scorecard", marketId], queryFn: () => api.get(`/intelligence/lambda-scorecard?market_id=${marketId}`), staleTime: 300_000 });
+
 export const useRevertChange = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -213,6 +242,13 @@ export const useEntityProfiles = (id: string) =>
 // ── Meta ────────────────────────────────────────────────
 export const useConfigs = () =>
   useQuery({ queryKey: ["meta", "configs"], queryFn: () => api.get("/meta/configs") });
+
+export const useEngineParameters = () =>
+  useQuery({
+    queryKey: ["meta", "engine_parameters"],
+    queryFn: () => api.get("/meta/engine_parameters"),
+    staleTime: 30_000,
+  });
 
 export const usePerformance = (engineName = "regime") =>
   useQuery({ queryKey: ["meta", "performance", engineName], queryFn: () => api.get(`/meta/performance?engine_name=${engineName}`) });

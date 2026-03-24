@@ -38,7 +38,6 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-
 # ── Configuration ────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

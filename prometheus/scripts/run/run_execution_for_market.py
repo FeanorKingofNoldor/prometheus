@@ -33,14 +33,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
 from apathis.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
+
 from prometheus.meta.policy import load_meta_policy_artifact
 from prometheus.scripts.run.run_execution_for_portfolio import main as run_execution_for_portfolio_main
-
 
 logger = get_logger(__name__)
 

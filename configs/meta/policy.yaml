@@ -12,29 +12,29 @@ updated_by: "bootstrap"
 
 policies:
   US_EQ:
-    # Testing default: route everything through the allocator so we always
-    # produce a single canonical target portfolio.
+    # Production: lambda-driven LONG_EQUITY book (v12 parity).
+    # K=25, max_weight=10%, concentration_power=2.5, sector allocator overlay.
     default:
-      book_id: US_EQ_ALLOCATOR
-      sleeve_id: US_EQ_ALLOCATOR_V1
+      book_id: US_EQ_LONG_V12
+      sleeve_id: US_EQ_LONG_V12_K25
 
     situations:
       RISK_ON:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_V1
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       NEUTRAL:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_V1
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       RISK_OFF:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_V1
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       CRISIS:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_V1
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25
 
       RECOVERY:
-        book_id: US_EQ_ALLOCATOR
-        sleeve_id: US_EQ_ALLOCATOR_V1
+        book_id: US_EQ_LONG_V12
+        sleeve_id: US_EQ_LONG_V12_K25

@@ -25,13 +25,12 @@ import argparse
 from datetime import date
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from psycopg2.extras import Json
-
 from apathis.core.config import get_config
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
-from prometheus.portfolio.scenario_risk import compute_portfolio_scenario_pnl
+from psycopg2.extras import Json
 
+from prometheus.portfolio.scenario_risk import compute_portfolio_scenario_pnl
 
 logger = get_logger(__name__)
 

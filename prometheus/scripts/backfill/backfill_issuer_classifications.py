@@ -27,14 +27,13 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import requests
-from psycopg2.extras import Json
-
 from apathis.core.database import DatabaseManager, get_db_manager
 from apathis.core.logging import get_logger
 from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
+from psycopg2.extras import Json
 
 logger = get_logger(__name__)
 

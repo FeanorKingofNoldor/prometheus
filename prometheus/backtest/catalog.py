@@ -13,7 +13,6 @@ from typing import List, Sequence
 
 from prometheus.backtest.config import SleeveConfig
 
-
 DEFAULT_CORE_HORIZONS: Sequence[int] = (5, 21, 63)
 
 

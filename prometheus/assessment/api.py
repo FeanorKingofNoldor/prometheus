@@ -24,7 +24,6 @@ from typing import Dict, Mapping, Protocol, Sequence
 from apathis.core.logging import get_logger
 from apathis.core.types import MetadataDict
 
-
 logger = get_logger(__name__)
 
 

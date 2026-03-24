@@ -22,10 +22,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from datetime import date
-from pathlib import Path
 from typing import Optional, Sequence
 
 from apathis.core.logging import get_logger
@@ -63,8 +61,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                         help="Output JSON path")
     parser.add_argument("--use-db", action="store_true",
                         help="Load VIX/prices from database (requires DB connection)")
+    parser.add_argument("--equity-universe", type=str, default=None,
+                        help="Comma-separated instrument IDs to load for the options universe "
+                             "(e.g. AAPL.US,MSFT.US,GOOGL.US). Requires --use-db.")
+    parser.add_argument("--load-equity-universe", action="store_true",
+                        help="Auto-load the full US_EQ equity universe from the runtime DB. "
+                             "Gives short_put meaningful single-stock underlyings. Requires --use-db.")
     parser.add_argument("--persist", action="store_true",
                         help="Persist trades, daily positions, and summary to runtime DB")
+    parser.add_argument("--lambda-csv", type=str, default=None,
+                        help="Enable real λ-factorial scores for short_put / bull_call_spread "
+                             "stock selection (requires --use-db). When set, per-instrument "
+                             "scores are loaded from the instrument_scores DB table "
+                             "(strategy US_CORE_LONG_EQ, horizon 21). The path argument is "
+                             "used for logging/documentation only (not read as a CSV).")
 
     args = parser.parse_args(argv)
 
@@ -72,6 +82,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         OptionsBacktestConfig,
         OptionsBacktestEngine,
     )
+
+    equity_universe_ids = []
+    if args.equity_universe:
+        equity_universe_ids = [
+            x.strip() for x in args.equity_universe.split(",") if x.strip()
+        ]
 
     config = OptionsBacktestConfig(
         start_date=args.start,
@@ -82,6 +98,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         slippage_pct=args.slippage,
         max_position_count=args.max_positions,
         log_every_n_days=args.log_frequency,
+        equity_universe_ids=equity_universe_ids,
+        load_equity_universe_from_db=args.load_equity_universe,
+        lambda_csv_path=args.lambda_csv,
     )
 
     # Optionally connect to database for historical data
@@ -101,8 +120,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.persist:
         try:
             from apathis.core.database import get_db_manager
+
             from prometheus.backtest.backtest_options_writer import (
-                BacktestOptionsWriter, generate_run_id,
+                BacktestOptionsWriter,
+                generate_run_id,
             )
             db = get_db_manager()
             run_id = generate_run_id()
@@ -113,13 +134,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     # Run backtest
     print(f"\n{'='*70}")
-    print(f"  Synthetic Options Backtest")
+    print("  Synthetic Options Backtest")
     print(f"  {args.start} → {args.end}")
     print(f"  Initial NAV: ${args.initial_nav:,.0f}")
     print(f"  Derivatives Budget: {args.derivatives_budget*100:.0f}% of NAV")
     if args.equity_backtest:
         print(f"  Equity Backtest: {args.equity_backtest}")
     print(f"  Slippage: {args.slippage*100:.0f}% of half-spread")
+    if equity_universe_ids:
+        print(f"  Equity Universe: {len(equity_universe_ids)} explicit instruments")
+    if args.load_equity_universe:
+        print("  Equity Universe: auto-loading US_EQ from DB (gives short_put real underlyings)")
+    if args.lambda_csv:
+        print(f"  λ-factorial scores: {args.lambda_csv}")
     if writer:
         print(f"  Persisting to DB: run_id={writer.run_id}")
     print(f"{'='*70}\n")
@@ -138,17 +165,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     print(f"  Trading Days:    {summary.get('n_trading_days', 0):,}")
     print(f"  Years:           {summary.get('years', 0):.1f}")
     print()
-    print(f"  Combined (Equity + Options):")
+    print("  Combined (Equity + Options):")
     print(f"    CAGR:          {summary.get('cagr', 0)*100:>7.2f}%")
     print(f"    Sharpe:        {summary.get('sharpe', 0):>7.3f}")
     print(f"    Max Drawdown:  {summary.get('max_drawdown', 0)*100:>7.2f}%")
     print(f"    Ann. Vol:      {summary.get('annualised_vol', 0)*100:>7.2f}%")
     print(f"    Final NAV:     ${summary.get('final_nav', 0):>12,.0f}")
     print()
-    print(f"  Equity Only:")
+    print("  Equity Only:")
     print(f"    CAGR:          {summary.get('equity_only_cagr', 0)*100:>7.2f}%")
     print()
-    print(f"  Options Overlay:")
+    print("  Options Overlay:")
     print(f"    Total P&L:     ${summary.get('options_total_pnl', 0):>12,.0f}")
     print(f"    P&L % of NAV:  {summary.get('options_pnl_pct', 0)*100:>7.2f}%")
     print(f"{'='*70}\n")
