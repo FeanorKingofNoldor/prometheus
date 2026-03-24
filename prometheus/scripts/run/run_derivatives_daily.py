@@ -210,6 +210,25 @@ def _load_signals(
             if qty > 0 and mv > 0:
                 signals["equity_prices"][symbol] = mv / qty
 
+    # ── Sector Health Index (SHI) from runtime DB ────────────────────
+    # Used by SectorPutSpreadStrategy and CrisisAlphaStrategy.
+    try:
+        from apathis.core.database import get_db_manager as _get_db
+        _db = _get_db()
+        with _db.get_runtime_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT sector_name, score
+                    FROM sector_health_daily
+                    WHERE as_of_date = (SELECT MAX(as_of_date) FROM sector_health_daily)
+                """)
+                for sector_name, score in cur.fetchall():
+                    signals["sector_shi"][str(sector_name)] = float(score)
+        if signals["sector_shi"]:
+            logger.info("Loaded SHI for %d sectors", len(signals["sector_shi"]))
+    except Exception as exc:
+        logger.warning("Failed to load sector SHI: %s", exc)
+
     return signals
 
 
