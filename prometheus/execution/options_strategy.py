@@ -110,14 +110,25 @@ class CoveredCallConfig:
 
 @dataclass
 class SectorPutSpreadConfig:
-    """Configuration for sector put spread strategy."""
+    """Configuration for sector put spread strategy.
+
+    Tuned based on root-cause analysis (docs/sector_put_vs_sh_analysis.md):
+    - Wider activation (0.30 vs 0.25) to hedge earlier before IV spikes
+    - No floor threshold — hedge even when SHI is very low (allocator
+      liquidation + put payoff are complementary, not exclusive)
+    - Wider spreads (15%) to capture more tail
+    - OTM long strike (3% OTM) to reduce premium cost
+    - Larger position size (3% NAV) for meaningful hedge notional
+    """
     enabled: bool = True
-    shi_reduce_threshold: float = 0.25  # SHI below this triggers spread (tightened from 0.35)
-    shi_kill_threshold: float = 0.15    # Below this, don't hedge — liquidate
-    spread_width_pct: float = 0.07      # 7% between long and short strikes (reduced from 10%)
+    shi_reduce_threshold: float = 0.30  # SHI below this triggers spread (was 0.25)
+    shi_kill_threshold: float = 0.0     # Disabled — always hedge if SHI < reduce (was 0.15)
+    spread_width_pct: float = 0.15      # 15% between long and short strikes (was 7%)
+    otm_pct: float = 0.03              # Long strike 3% OTM to reduce premium (was ATM)
     target_dte_min: int = 30
     target_dte_max: int = 60
-    max_nav_pct: float = 0.01           # Cap at 1% of NAV per sector hedge
+    max_nav_pct: float = 0.03           # 3% of NAV per sector hedge (was 1%)
+    max_total_nav_pct: float = 0.20     # Total across all sectors capped at 20% NAV
 
 
 @dataclass
@@ -708,13 +719,15 @@ class SectorPutSpreadStrategy(OptionStrategy):
             if opt.get("strategy") == self.name
         }
 
+        # Track total sector hedge allocation to enforce portfolio-level cap.
+        total_sector_hedge_cost = 0.0
+
         for sector_name, shi in sector_shi.items():
             etf_id = SECTOR_NAME_TO_ETF.get(sector_name)
             if not etf_id:
                 continue
             etf_symbol = etf_id.replace(".US", "")
 
-            # In the "reduce" zone: between kill and reduce thresholds
             if shi >= self._config.shi_reduce_threshold:
                 # Sector healthy — close any existing hedges
                 if sector_name in existing_sectors:
@@ -731,8 +744,10 @@ class SectorPutSpreadStrategy(OptionStrategy):
                     ))
                 continue
 
-            if shi < self._config.shi_kill_threshold:
-                # Below kill — allocator handles liquidation, not us
+            # No floor threshold — hedge even when SHI is very low.
+            # The put spread payoff is complementary to the allocator's
+            # equity liquidation (you still benefit from further downside).
+            if self._config.shi_kill_threshold > 0 and shi < self._config.shi_kill_threshold:
                 continue
 
             if sector_name in existing_sectors:
@@ -763,22 +778,30 @@ class SectorPutSpreadStrategy(OptionStrategy):
             if etf_price <= 0:
                 continue
 
-            # ATM long put
-            long_strike = round(etf_price, 0)
-            # Short put: spread_width_pct below
-            short_strike = round(etf_price * (1 - self._config.spread_width_pct), 0)
+            # OTM long put (reduces premium vs ATM)
+            otm_pct = getattr(self._config, "otm_pct", 0.0)
+            long_strike = round(etf_price * (1 - otm_pct), 0)
+            # Short put: spread_width_pct below the long strike
+            short_strike = round(etf_price * (1 - otm_pct - self._config.spread_width_pct), 0)
 
             # Size: hedge the full sector exposure, capped by max_nav_pct
             n_contracts = max(1, int(sector_exposure / (etf_price * 100)))
 
-            # Cap sizing: don't spend more than max_nav_pct of NAV per sector
-            if nav > 0 and self._config.max_nav_pct > 0:
-                spread_cost_per_contract = (long_strike - short_strike) * 100
-                if spread_cost_per_contract > 0:
-                    max_contracts = max(1, int(
-                        (nav * self._config.max_nav_pct) / spread_cost_per_contract
-                    ))
-                    n_contracts = min(n_contracts, max_contracts)
+            # Cap sizing: per-sector and total portfolio caps
+            spread_cost_per_contract = (long_strike - short_strike) * 100
+            if nav > 0 and self._config.max_nav_pct > 0 and spread_cost_per_contract > 0:
+                per_sector_budget = nav * self._config.max_nav_pct
+                max_contracts = max(1, int(per_sector_budget / spread_cost_per_contract))
+                n_contracts = min(n_contracts, max_contracts)
+
+                # Enforce total portfolio hedge cap across all sectors
+                max_total = getattr(self._config, "max_total_nav_pct", 1.0)
+                remaining_budget = (nav * max_total) - total_sector_hedge_cost
+                if remaining_budget <= 0:
+                    continue  # Total hedge budget exhausted
+                max_from_total = max(1, int(remaining_budget / spread_cost_per_contract))
+                n_contracts = min(n_contracts, max_from_total)
+                total_sector_hedge_cost += n_contracts * spread_cost_per_contract
 
             target_expiry = ProtectivePutStrategy._find_target_expiry(
                 today,
