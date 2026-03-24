@@ -17,22 +17,27 @@ logger = get_logger(__name__)
 # ── System prompt ────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are **Kronos**, the meta-orchestrator of the Prometheus v2 trading system.
+You are **Kronos**, the meta-orchestrator of the Prometheus trading system.
 
-Your capabilities:
-- Explain the system's current state (regime, portfolio, orders, risk).
-- Propose backtests, configuration changes, or experiments.
-- Analyse engine performance across regimes.
-- Answer questions about Prometheus architecture and data flow.
+## System Architecture
+- **Alpha engine**: US_EQ_LONG_V12/K25 (lambda-driven, 25 names, 12-17% CAGR, 0.9 Sharpe)
+- **Sector overlay**: SectorAllocator kills sick sectors (SHI<0.25), reduces weak (SHI<0.40), sizes SH.US hedge by fragility
+- **Crisis alpha**: Offensive SPY puts when ≥5 sectors deteriorate (flash: instant, sustained: 3-day filter)
+- **16 options strategies**: regime-adaptive (RISK_ON: income, CRISIS: hedges + crisis alpha)
+- **Pipeline**: daily DAG (ingest → signals → universe → portfolio → execution → options)
 
-You CANNOT directly execute changes — all actions require explicit user
-approval via the Control API.
+## Your Capabilities
+- Explain current state: regime, portfolio positions, sector health, fragility, pipeline status
+- Analyse performance: assessment scorecard (hit rate, IC), live Sharpe, hedge effectiveness
+- Identify risks: sector deterioration, regime shifts, position concentration
+- Propose experiments: backtests, parameter changes, strategy adjustments
+- Monitor signal quality: assessment IC, lambda accuracy, fragility validation
 
-When you propose an action, format it clearly with a short description,
-risk level (LOW / MODERATE / HIGH), and the parameters involved.
-
-Always ground your answers in the **system context** provided below.
-If you don't have enough data, say so honestly.
+## Rules
+- CANNOT execute changes — all actions require user approval via Control API
+- Format proposals with: description, risk level (LOW/MODERATE/HIGH), parameters
+- Ground answers in the system context below — if data is missing, say so
+- Be concise and quantitative — cite numbers, not vague assessments
 """
 
 
@@ -65,28 +70,36 @@ def _fetch_regime_context() -> str:
 
 
 def _fetch_portfolio_context(portfolio_id: str = "IBKR_PAPER") -> str:
-    """Recent positions snapshot."""
+    """Current positions from the latest snapshot timestamp."""
     db = get_db_manager()
     try:
         with db.get_runtime_connection() as conn:
             cur = conn.cursor()
+            # Use latest timestamp only (not historical snapshots)
+            cur.execute(
+                "SELECT MAX(timestamp) FROM positions_snapshots WHERE portfolio_id = %s",
+                (portfolio_id,),
+            )
+            snap_ts = (cur.fetchone() or (None,))[0]
+            if snap_ts is None:
+                cur.close()
+                return f"Portfolio ({portfolio_id}): no positions."
             cur.execute(
                 """
                 SELECT instrument_id, quantity, market_value, unrealized_pnl
                 FROM positions_snapshots
-                WHERE portfolio_id = %s
-                ORDER BY as_of_date DESC, instrument_id
-                LIMIT 20
+                WHERE portfolio_id = %s AND timestamp = %s
+                ORDER BY ABS(market_value) DESC
                 """,
-                (portfolio_id,),
+                (portfolio_id, snap_ts),
             )
             rows = cur.fetchall()
             cur.close()
         if not rows:
             return f"Portfolio ({portfolio_id}): no positions."
-        total_mv = sum(r[2] or 0 for r in rows)
-        total_pnl = sum(r[3] or 0 for r in rows)
-        lines = [f"- {r[0]}: qty={r[1]}, mv=${r[2]:,.0f}, pnl=${r[3]:,.0f}" for r in rows]
+        total_mv = sum(float(r[2] or 0) for r in rows)
+        total_pnl = sum(float(r[3] or 0) for r in rows)
+        lines = [f"- {r[0]}: qty={float(r[1]):.0f}, mv=${float(r[2]):,.0f}, pnl=${float(r[3]):,.0f}" for r in rows]
         header = f"Portfolio {portfolio_id}: {len(rows)} positions, total MV=${total_mv:,.0f}, unrealised PnL=${total_pnl:,.0f}"
         return header + "\n" + "\n".join(lines)
     except Exception as exc:
@@ -95,20 +108,24 @@ def _fetch_portfolio_context(portfolio_id: str = "IBKR_PAPER") -> str:
 
 
 def _fetch_orders_context(portfolio_id: str = "IBKR_PAPER", limit: int = 10) -> str:
-    """Recent orders."""
+    """Recent orders (includes US_EQ_ALLOCATOR alias)."""
     db = get_db_manager()
+    port_ids = [portfolio_id]
+    if portfolio_id.startswith("IBKR_"):
+        port_ids.append("US_EQ_ALLOCATOR")
     try:
         with db.get_runtime_connection() as conn:
             cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(port_ids))
             cur.execute(
-                """
+                f"""
                 SELECT instrument_id, side, quantity, status, timestamp
                 FROM orders
-                WHERE portfolio_id = %s
+                WHERE portfolio_id IN ({placeholders})
                 ORDER BY timestamp DESC
                 LIMIT %s
                 """,
-                (portfolio_id, limit),
+                (*port_ids, limit),
             )
             rows = cur.fetchall()
             cur.close()
@@ -285,6 +302,76 @@ def _fetch_intel_context() -> str:
         return "Intel: unavailable."
 
 
+def _fetch_sector_health_context() -> str:
+    """Current sector health scores."""
+    db = get_db_manager()
+    try:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT sector_name, score
+                FROM sector_health_daily
+                WHERE as_of_date = (SELECT MAX(as_of_date) FROM sector_health_daily)
+                ORDER BY score ASC
+            """)
+            rows = cur.fetchall()
+            cur.close()
+        if not rows:
+            return "Sector health: no data."
+        sick = [r for r in rows if float(r[1]) < 0.25]
+        weak = [r for r in rows if 0.25 <= float(r[1]) < 0.40]
+        lines = [f"- {r[0]}: SHI={float(r[1]):.3f}{' ⚠ SICK' if float(r[1]) < 0.25 else ' weak' if float(r[1]) < 0.40 else ''}" for r in rows]
+        header = f"Sector health ({len(rows)} sectors, {len(sick)} sick, {len(weak)} weak):"
+        return header + "\n" + "\n".join(lines)
+    except Exception as exc:
+        logger.warning("[kronos] Failed to fetch sector health: %s", exc)
+        return "Sector health: unavailable."
+
+
+def _fetch_scorecard_context() -> str:
+    """Assessment prediction scorecard summary."""
+    db = get_db_manager()
+    try:
+        from prometheus.decisions.scorecard import PredictionScorecard
+
+        sc = PredictionScorecard(db_manager=db)
+        report = sc.build_scorecard(horizon_days=21, max_decisions=100)
+        if report.total_predictions == 0:
+            return "Assessment scorecard: no predictions yet."
+        return (
+            f"Assessment scorecard (21d horizon, last 100 decisions):\n"
+            f"  Hit rate: {report.hit_rate:.1%}  Spearman ρ: {report.spearman_rho:.3f}\n"
+            f"  Total predictions: {report.total_predictions:,}\n"
+            f"  Date range: {report.date_range[0]} → {report.date_range[1]}"
+        )
+    except Exception as exc:
+        logger.warning("[kronos] Failed to fetch scorecard: %s", exc)
+        return "Assessment scorecard: unavailable."
+
+
+def _fetch_pipeline_status_context() -> str:
+    """Latest pipeline run status."""
+    db = get_db_manager()
+    try:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT as_of_date, region, phase, error, updated_at
+                FROM engine_runs
+                ORDER BY as_of_date DESC, updated_at DESC
+                LIMIT 3
+            """)
+            rows = cur.fetchall()
+            cur.close()
+        if not rows:
+            return "Pipeline: no runs."
+        lines = [f"- {r[0]} {r[1]}: {r[2]} (updated {str(r[4])[11:19]})" for r in rows]
+        return "Pipeline runs:\n" + "\n".join(lines)
+    except Exception as exc:
+        logger.warning("[kronos] Failed to fetch pipeline status: %s", exc)
+        return "Pipeline: unavailable."
+
+
 def build_system_context() -> str:
     """Assemble a combined context string from all sources."""
     sections = [
@@ -292,8 +379,11 @@ def build_system_context() -> str:
         _fetch_portfolio_context(),
         _fetch_orders_context(),
         _fetch_fragility_context(),
+        _fetch_sector_health_context(),
         _fetch_outcomes_context(),
         _fetch_live_performance_context(),
+        _fetch_scorecard_context(),
+        _fetch_pipeline_status_context(),
         _fetch_intel_context(),
     ]
     return "\n\n".join(sections)
