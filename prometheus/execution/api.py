@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from time import monotonic, sleep
+from time import monotonic, sleep as _blocking_sleep
 from typing import Dict, List, Mapping
 
 from apathis.core.database import DatabaseManager
@@ -152,9 +152,19 @@ def apply_execution_plan(
     else:
         # PAPER/LIVE: poll broker statuses for submitted orders and
         # persist any fills emitted during this submission window.
+        # Use ib.sleep() instead of time.sleep() so the ib_async event
+        # loop can process fill callbacks (execDetailsEvent).
         pending = set(submitted_order_ids)
         deadline = monotonic() + max(0.0, float(status_poll_timeout_sec))
         poll_interval = max(0.2, float(status_poll_interval_sec))
+
+        # Resolve ib.sleep — walk broker wrappers to find the IB instance.
+        _sleep = _blocking_sleep
+        _inner = getattr(broker, "inner", broker)
+        _client = getattr(_inner, "client", getattr(_inner, "_client", None))
+        _ib = getattr(_client, "_ib", None)
+        if _ib is not None and hasattr(_ib, "sleep"):
+            _sleep = _ib.sleep
 
         terminal_statuses = {
             OrderStatus.FILLED,
@@ -172,7 +182,7 @@ def apply_execution_plan(
                 if status in terminal_statuses:
                     pending.discard(order_id)
             if pending:
-                sleep(poll_interval)
+                _sleep(poll_interval)
 
         # Final status refresh (including any still-pending ids).
         for order_id in submitted_order_ids:
