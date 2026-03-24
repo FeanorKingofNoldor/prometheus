@@ -62,6 +62,7 @@ STRATEGY_CATEGORIES: Dict[str, StrategyCategory] = {
     "calendar_spread": StrategyCategory.VOLATILITY,
     "straddle_strangle": StrategyCategory.VOLATILITY,
     "wheel": StrategyCategory.INCOME,
+    "crisis_alpha": StrategyCategory.HEDGE,
 }
 
 
@@ -109,10 +110,11 @@ REGIME_STRATEGY_MAP: Dict[str, Set[str]] = {
     "RISK_OFF": {
         "protective_put", "sector_put_spread", "vix_tail_hedge",
         "collar", "futures_overlay", "futures_option",
+        "crisis_alpha",
     },
     "CRISIS": {
         "protective_put", "vix_tail_hedge", "futures_overlay",
-        "futures_option",
+        "futures_option", "crisis_alpha",
     },
 }
 

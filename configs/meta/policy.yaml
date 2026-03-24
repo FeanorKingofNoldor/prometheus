@@ -6,35 +6,40 @@
 # Offline Meta training will eventually overwrite/update this artifact.
 
 # Optional artifact metadata (parsed by prometheus.meta.policy.load_meta_policy_artifact)
-version: "2025-12-30"
-updated_at: "2025-12-30"
-updated_by: "bootstrap"
+version: "2026-03-24"
+updated_at: "2026-03-24"
+updated_by: "claude-code"
 
 policies:
   US_EQ:
-    # Production: lambda-driven LONG_EQUITY book (v12 parity).
-    # K=25, max_weight=10%, concentration_power=2.5, sector allocator overlay.
+    # Situation-aware routing: different books for different market regimes.
+    #
+    # RISK_ON / NEUTRAL: full growth — long equity K=25, sector allocator overlay.
+    # RECOVERY: growth with tighter risk — allocator with fragility hedging.
+    # RISK_OFF: defensive allocator — lower concentration, SH.US + VIXY hedging.
+    # CRISIS: full defensive — maximum hedge allocation, VIXY + SH.US.
+
     default:
-      book_id: US_EQ_LONG_V12
-      sleeve_id: US_EQ_LONG_V12_K25
+      book_id: US_EQ_ALLOCATOR
+      sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
 
     situations:
       RISK_ON:
-        book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
 
       NEUTRAL:
-        book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
-
-      RISK_OFF:
-        book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
-
-      CRISIS:
-        book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_GROWTH_XL
 
       RECOVERY:
-        book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_GROWTH
+
+      RISK_OFF:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_DEFENSIVE
+
+      CRISIS:
+        book_id: US_EQ_ALLOCATOR
+        sleeve_id: US_EQ_ALLOCATOR_DEFENSIVE
