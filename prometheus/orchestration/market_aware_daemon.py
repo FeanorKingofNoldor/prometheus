@@ -425,22 +425,41 @@ def execute_job(
                     run.run_id,
                     reason=f"stale terminal phase={run.phase.value} before ingest_prices",
                 )
-            # Run complete daily ingestion workflow
+            # Run complete daily ingestion workflow.
+            # EODHD publishes EOD data 1-2 hours after market close.
+            # If coverage is insufficient, return False so the daemon's
+            # retry mechanism re-attempts with exponential backoff.
             result = run_daily_ingestion(
                 db_manager,
                 job.market_id,
                 execution.as_of_date,
             )
 
-            if result.status.value == "COMPLETE":
-                # Check if data is ready for processing
-                if is_data_ready_for_market(db_manager, job.market_id, execution.as_of_date):
-                    # Mark engine run as DATA_READY
-                    if run.phase == RunPhase.WAITING_FOR_DATA:
-                        update_phase(db_manager, run.run_id, RunPhase.DATA_READY)
+            if result.status.value != "COMPLETE":
+                return False, result.error_message or "ingestion failed"
+
+            # Check if enough instruments got data (>= 95% coverage)
+            if is_data_ready_for_market(db_manager, job.market_id, execution.as_of_date):
+                if run.phase == RunPhase.WAITING_FOR_DATA:
+                    update_phase(db_manager, run.run_id, RunPhase.DATA_READY)
+                logger.info(
+                    "ingest_prices: data ready for %s on %s",
+                    job.market_id, execution.as_of_date,
+                )
                 return True, None
             else:
-                return False, result.error_message
+                # Not enough data yet — EODHD may not have published.
+                # Return False to trigger retry (daemon has backoff).
+                received = getattr(result, "instruments_received", 0)
+                expected = getattr(result, "instruments_expected", 0)
+                logger.warning(
+                    "ingest_prices: insufficient coverage for %s on %s "
+                    "(%d/%d instruments). EODHD data may not be published yet. "
+                    "Will retry on next cycle.",
+                    job.market_id, execution.as_of_date,
+                    received, expected,
+                )
+                return False, f"insufficient price coverage: {received}/{expected} instruments"
 
         elif job.job_type == "ingest_factors":
             # Similar to ingest_prices

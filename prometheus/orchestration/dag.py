@@ -275,7 +275,8 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         required_state=MarketState.POST_CLOSE,
         dependencies=(),
         priority=JobPriority.CRITICAL,
-        max_retries=5,  # Extra retries for network/API issues
+        max_retries=12,           # EODHD publishes 1-2h after close
+        retry_delay_seconds=600,  # 10 min between retries → covers 2h window
     )
 
     jobs[job_id("ingest_factors")] = JobMetadata(
