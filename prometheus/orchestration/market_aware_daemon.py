@@ -545,6 +545,8 @@ def execute_job(
             # or BOOKS_DONE (execution also skipped — unusual but safe).
             if run.phase in (RunPhase.OPTIONS_DONE, RunPhase.EXECUTION_DONE, RunPhase.BOOKS_DONE):
                 update_phase(db_manager, run.run_id, RunPhase.COMPLETED)
+                # Post-run health check: validate the run produced meaningful output
+                _run_health_check(db_manager, run, execution.as_of_date, job.market_id)
             return True, None
 
         else:
@@ -554,6 +556,90 @@ def execute_job(
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.exception("execute_job: failed job_id=%s: %s", job.job_id, error_msg)
         return False, error_msg
+
+
+def _run_health_check(
+    db_manager: "DatabaseManager",
+    run: "EngineRun",
+    as_of_date: "date",
+    market_id: str,
+) -> None:
+    """Validate a completed run produced meaningful output.
+
+    Logs warnings for anomalies and writes a health report file.
+    Does NOT fail the run — this is informational only.
+    """
+    from pathlib import Path
+
+    issues: list[str] = []
+
+    try:
+        with db_manager.get_historical_connection() as conn:
+            with conn.cursor() as cur:
+                # Check price coverage
+                cur.execute(
+                    "SELECT COUNT(DISTINCT instrument_id) FROM prices_daily WHERE trade_date = %s",
+                    (as_of_date,),
+                )
+                price_count = cur.fetchone()[0]
+                if price_count < 500:
+                    issues.append(f"LOW PRICE COVERAGE: only {price_count} instruments (expected ~660)")
+                elif price_count == 0:
+                    issues.append(f"ZERO PRICES: no price data ingested for {as_of_date}")
+
+        with db_manager.get_runtime_connection() as conn:
+            with conn.cursor() as cur:
+                # Check target portfolios
+                cur.execute(
+                    "SELECT COUNT(*) FROM target_portfolios WHERE as_of_date = %s",
+                    (as_of_date,),
+                )
+                target_count = cur.fetchone()[0]
+                if target_count == 0:
+                    issues.append("NO TARGET PORTFOLIO: books phase produced no targets")
+
+                # Check orders
+                cur.execute(
+                    "SELECT COUNT(*) FROM orders WHERE timestamp::date = %s",
+                    (as_of_date,),
+                )
+                order_count = cur.fetchone()[0]
+
+                # Check sector health
+                cur.execute(
+                    "SELECT COUNT(*) FROM sector_health_daily WHERE as_of_date = %s",
+                    (as_of_date,),
+                )
+                shi_count = cur.fetchone()[0]
+                if shi_count == 0:
+                    issues.append("NO SECTOR HEALTH: SHI not computed for this date")
+
+        if issues:
+            for issue in issues:
+                logger.warning("HEALTH CHECK [%s %s]: %s", market_id, as_of_date, issue)
+
+            # Write health report file
+            report_dir = Path("/home/feanor/coding/prometheus/data/health_reports")
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / f"health_{as_of_date}_{market_id}.txt"
+            report_path.write_text(
+                f"Pipeline Health Report: {market_id} {as_of_date}\n"
+                f"Run ID: {run.run_id}\n"
+                f"Final Phase: {run.phase.value}\n"
+                f"Prices: {price_count}\n"
+                f"Targets: {target_count}\n"
+                f"Orders: {order_count}\n"
+                f"Sector Health: {shi_count}\n\n"
+                f"ISSUES:\n" + "\n".join(f"  - {i}" for i in issues) + "\n",
+            )
+            logger.warning("Health report written to %s", report_path)
+        else:
+            logger.info(
+                "HEALTH CHECK [%s %s]: OK — prices=%d targets=%d orders=%d shi=%d",
+                market_id, as_of_date, price_count, target_count, order_count, shi_count,
+            )
+    except Exception:
+        logger.debug("Health check failed (non-critical)", exc_info=True)
 
 
 def _execute_intel_job(
