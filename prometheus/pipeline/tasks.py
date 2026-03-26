@@ -737,6 +737,22 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         )
 
     # ------------------------------------------------------------------
+    # Daily Numeric Embeddings — generate for cross-sectional scoring
+    # ------------------------------------------------------------------
+
+    try:
+        from prometheus.pipeline.embedding_daily import generate_numeric_embeddings
+
+        emb_count = generate_numeric_embeddings(
+            db_manager=db_manager,
+            as_of_date=run.as_of_date,
+            market_id=market_id,
+        )
+        logger.info("Numeric embeddings: %d generated for %s", emb_count, run.as_of_date)
+    except Exception:
+        logger.debug("Numeric embedding generation failed (non-critical)", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Forward-Looking Regime Indicators
     # ------------------------------------------------------------------
 

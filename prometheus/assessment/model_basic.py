@@ -320,20 +320,20 @@ class BasicAssessmentModel(AssessmentModel):
             if weak_profile:
                 fragility_penalty *= 1.0 + self.weak_profile_penalty_multiplier
 
-        # Joint embedding context diagnostic (for future use).
-        # Currently disabled: source embeddings end at 2025-12-08 with no
-        # daily generation pipeline. The correct approach when enabled is
-        # cross-sectional cosine distance from universe mean (not L2 norm,
-        # which is meaningless for unnormalized concatenated vectors).
-        assessment_ctx_norm = self._load_assessment_context_norm(
-            instrument_id=instrument_id,
-            as_of_date=as_of_date,
-        )
+        # Cross-sectional embedding score: how far this instrument's
+        # numeric embedding is from the universe mean. High distance =
+        # outlier behavior (unusual momentum/vol/drawdown pattern).
+        # Loaded from _embedding_scores cache set by score_instruments().
+        embedding_penalty = 0.0
+        embedding_cache = getattr(self, "_embedding_scores", {})
+        cs_score = embedding_cache.get(instrument_id)
+        if cs_score is not None and cs_score.percentile_rank > 0.90:
+            # Top 10% outliers get a small penalty (max 3%)
+            embedding_penalty = (cs_score.percentile_rank - 0.90) * 0.30
 
-        # Raw score = simple momentum; adjusted by fragility penalty.
+        # Raw score = simple momentum; adjusted by fragility + embedding penalty.
         raw_score = momentum
-        adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty
-        embedding_penalty = 0.0  # Reserved for future embedding integration
+        adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty - embedding_penalty
 
         # Map adjusted_score into a roughly [-1, 1] band for ranking.
         ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
@@ -375,8 +375,8 @@ class BasicAssessmentModel(AssessmentModel):
         }
         if soft_class_str is not None:
             metadata["soft_target_class"] = soft_class_str
-        if assessment_ctx_norm is not None:
-            metadata["assessment_ctx_norm"] = assessment_ctx_norm
+        if embedding_penalty > 0:
+            metadata["embedding_penalty"] = float(embedding_penalty)
 
         expected_return = float(adjusted_score)
 
@@ -429,6 +429,25 @@ class BasicAssessmentModel(AssessmentModel):
                 sorted_grp = grp.sort_values("trade_date")
                 self._price_cache[str(inst_id)] = sorted_grp["close"].astype(float).to_numpy()
 
+        # ── Load cross-sectional embedding scores (if available) ────
+        self._embedding_scores: Dict[str, object] = {}
+        if self.db_manager is not None:
+            try:
+                from prometheus.pipeline.embedding_daily import compute_cross_sectional_scores
+                self._embedding_scores = compute_cross_sectional_scores(
+                    db_manager=self.db_manager,
+                    instrument_ids=ids_list,
+                    as_of_date=as_of_date,
+                )
+                if self._embedding_scores:
+                    logger.debug(
+                        "Cross-sectional scores: %d instruments, mean_dist=%.4f",
+                        len(self._embedding_scores),
+                        sum(s.cosine_distance for s in self._embedding_scores.values()) / len(self._embedding_scores),
+                    )
+            except Exception:
+                pass  # Embeddings not available — skip silently
+
         # ── Score each instrument from cache ────────────────────────
         scores: Dict[str, InstrumentScore] = {}
 
@@ -455,7 +474,8 @@ class BasicAssessmentModel(AssessmentModel):
             if score is not None:
                 scores[inst_id] = score
 
-        # Clear cache after use
+        # Clear caches after use
         self._price_cache = {}
+        self._embedding_scores = {}
 
         return scores
