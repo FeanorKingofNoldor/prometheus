@@ -119,35 +119,47 @@ class BasicAssessmentModel(AssessmentModel):
     ) -> tuple[float, float]:
         """Return (momentum, realised_vol) for the given window.
 
+        Uses batch-loaded price cache if available (set by score_instruments),
+        otherwise falls back to individual DB query.
+
         Raises ValueError if there is insufficient price history.
         """
 
         if window_days <= 0:
             raise ValueError("window_days must be positive")
 
-        search_start = as_of_date - timedelta(days=window_days * 3)
-        trading_days = self.calendar.trading_days_between(search_start, as_of_date)
-        if len(trading_days) < window_days:
-            raise ValueError(
-                f"Not enough trading history to compute assessment window of {window_days} days "
-                f"for {instrument_id} ending at {as_of_date}"
-            )
-
-        window_days_list = trading_days[-window_days:]
-        start_date = window_days_list[0]
-
-        df = self.data_reader.read_prices([instrument_id], start_date, as_of_date)
-        # Tolerate up to 15% missing days (e.g., 3 gaps in a 21-day window).
-        # Small ingestion gaps should not invalidate the entire score.
         min_required = max(2, int(window_days * 0.85))
-        if df.empty or len(df) < min_required:
-            raise ValueError(
-                f"Insufficient price rows ({len(df)}, need {min_required}) for {instrument_id} between {start_date} and {as_of_date}"
-            )
 
-        df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
-        closes = df_sorted["close"].astype(float).to_numpy()
-        actual_days = closes.shape[0]
+        # Try batch cache first (populated by score_instruments)
+        cache = getattr(self, "_price_cache", {})
+        if instrument_id in cache:
+            closes = cache[instrument_id]
+            if len(closes) < min_required:
+                raise ValueError(
+                    f"Insufficient price rows ({len(closes)}, need {min_required}) "
+                    f"for {instrument_id} on {as_of_date}"
+                )
+        else:
+            # Fallback: individual DB query (for single-instrument scoring)
+            search_start = as_of_date - timedelta(days=window_days * 3)
+            trading_days = self.calendar.trading_days_between(search_start, as_of_date)
+            if len(trading_days) < window_days:
+                raise ValueError(
+                    f"Not enough trading history to compute assessment window of {window_days} days "
+                    f"for {instrument_id} ending at {as_of_date}"
+                )
+
+            window_days_list = trading_days[-window_days:]
+            start_date = window_days_list[0]
+
+            df = self.data_reader.read_prices([instrument_id], start_date, as_of_date)
+            if df.empty or len(df) < min_required:
+                raise ValueError(
+                    f"Insufficient price rows ({len(df)}, need {min_required}) for {instrument_id} between {start_date} and {as_of_date}"
+                )
+
+            df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
+            closes = df_sorted["close"].astype(float).to_numpy()
 
         if closes[0] > 0.0:
             momentum = float((closes[-1] - closes[0]) / closes[0])
@@ -376,11 +388,36 @@ class BasicAssessmentModel(AssessmentModel):
         as_of_date: date,
         horizon_days: int,
     ) -> Dict[str, InstrumentScore]:  # type: ignore[override]
-        """Score a batch of instruments for a given strategy/market/horizon."""
+        """Score a batch of instruments for a given strategy/market/horizon.
+
+        Batch-loads all instrument prices in a single DB query, then
+        scores each instrument from the in-memory cache.
+        """
 
         if horizon_days <= 0:
             raise ValueError("horizon_days must be positive")
 
+        ids_list = list(instrument_ids)
+        window_days = self.momentum_window_days
+
+        # ── Batch-load prices for ALL instruments in one query ──────
+        search_start = as_of_date - timedelta(days=window_days * 3)
+        trading_days = self.calendar.trading_days_between(search_start, as_of_date)
+        if len(trading_days) >= window_days:
+            price_start = trading_days[-window_days]
+        else:
+            price_start = search_start
+
+        df_all = self.data_reader.read_prices(ids_list, price_start, as_of_date)
+
+        # Build per-instrument close arrays: {instrument_id: np.ndarray}
+        self._price_cache: Dict[str, np.ndarray] = {}
+        if not df_all.empty:
+            for inst_id, grp in df_all.groupby("instrument_id"):
+                sorted_grp = grp.sort_values("trade_date")
+                self._price_cache[str(inst_id)] = sorted_grp["close"].astype(float).to_numpy()
+
+        # ── Score each instrument from cache ────────────────────────
         scores: Dict[str, InstrumentScore] = {}
 
         def _score_one(inst_id: str) -> tuple[str, InstrumentScore | None]:
@@ -401,18 +438,12 @@ class BasicAssessmentModel(AssessmentModel):
                 )
                 return inst_id, None
 
-        ids_list = list(instrument_ids)
-        if self.max_workers > 1 and len(ids_list) > 1:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {executor.submit(_score_one, inst_id): inst_id for inst_id in ids_list}
-                for fut in as_completed(futures):
-                    inst_id, score = fut.result()
-                    if score is not None:
-                        scores[inst_id] = score
-        else:
-            for inst_id in ids_list:
-                inst_id, score = _score_one(inst_id)
-                if score is not None:
-                    scores[inst_id] = score
+        for inst_id in ids_list:
+            inst_id, score = _score_one(inst_id)
+            if score is not None:
+                scores[inst_id] = score
+
+        # Clear cache after use
+        self._price_cache = {}
 
         return scores
