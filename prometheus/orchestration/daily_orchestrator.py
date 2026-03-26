@@ -184,6 +184,19 @@ class DailyOrchestrator:
             except Exception:  # pragma: no cover - defensive
                 logger.exception("OUTCOME_EVAL phase failed (non-blocking)")
 
+        # Meta feedback loop — analyze recent decision outcomes
+        try:
+            from prometheus.meta.feedback import compute_feedback_report
+            feedback = compute_feedback_report(self.db_manager, as_of_date)
+            for insight in feedback.insights:
+                if insight.severity in ("warning", "critical"):
+                    logger.warning(
+                        "META FEEDBACK [%s] %s: %s",
+                        insight.severity.upper(), insight.category, insight.message,
+                    )
+        except Exception:
+            logger.debug("Meta feedback analysis failed (non-critical)", exc_info=True)
+
         # ------------------------------------------------------------------
         # Daily summary
         # ------------------------------------------------------------------

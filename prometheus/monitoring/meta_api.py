@@ -413,6 +413,37 @@ async def get_configs() -> List[ConfigRow]:
     return rows
 
 
+@meta_router.get("/feedback")
+async def get_meta_feedback(
+    lookback_days: int = Query(63, ge=7, le=252),
+) -> Dict[str, Any]:
+    """Meta learning feedback: how are decisions performing vs expectations?"""
+    from prometheus.meta.feedback import compute_feedback_report
+
+    db = get_db_manager()
+    report = compute_feedback_report(db, date.today(), lookback_days=lookback_days)
+
+    return {
+        "as_of_date": report.as_of_date.isoformat(),
+        "portfolio_hit_rate": report.portfolio_hit_rate,
+        "assessment_accuracy": report.assessment_accuracy,
+        "risk_override_pct": report.risk_override_pct,
+        "avg_decision_return": report.avg_decision_return,
+        "insights": [
+            {
+                "category": i.category,
+                "severity": i.severity,
+                "message": i.message,
+                "metric_name": i.metric_name,
+                "metric_value": round(i.metric_value, 4),
+                "benchmark": round(i.benchmark, 4),
+                "deviation": round(i.deviation, 4),
+            }
+            for i in report.insights
+        ],
+    }
+
+
 @meta_router.get("/performance")
 async def get_performance(
     engine_name: str = Query("regime", description="Engine name (unused, kept for backward compat)"),
