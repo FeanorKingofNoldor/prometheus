@@ -4,9 +4,13 @@ Generates numeric window embeddings for all active instruments on a given
 date, then computes cross-sectional features (distance from universe mean)
 used by the assessment model.
 
-Tier 1: Numeric embeddings only (no external model files needed).
-Tier 2: + Text embeddings + joint (requires torch + sentence-transformers).
+Numeric-only by design: 63 days of price/volume/returns patterns capture
+actual market behavior. Text/news embeddings were evaluated and rejected —
+they dilute the price signal with stale, semantic noise that doesn't
+translate to alpha. Use LLM structured extraction for text signals instead
+(earnings guidance direction, central bank hawkish/dovish, etc.).
 
+No external model files needed — pure deterministic feature transforms.
 Called by the daily pipeline during the signals phase.
 """
 
