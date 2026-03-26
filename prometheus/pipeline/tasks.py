@@ -732,6 +732,28 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         )
 
     # ------------------------------------------------------------------
+    # Forward-Looking Regime Indicators
+    # ------------------------------------------------------------------
+
+    try:
+        from apathis.regime.forward_indicators import compute_forward_indicators
+
+        fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
+        logger.info(
+            "Forward indicators: as_of=%s overall=%s warnings=%d domains=%s",
+            run.as_of_date,
+            fwd_snap.overall_signal,
+            fwd_snap.warning_count,
+            fwd_snap.domain_signals,
+        )
+    except Exception:  # pragma: no cover - defensive
+        logger.exception(
+            "run_signals_for_run: forward indicators failed for run_id=%s as_of=%s",
+            run.run_id,
+            run.as_of_date,
+        )
+
+    # ------------------------------------------------------------------
     # Lambda Daily – compute fresh lambda_hat predictions for today
     # ------------------------------------------------------------------
 
