@@ -2045,9 +2045,11 @@ def run_books_for_run(
 
             market_adapt = adapt_cfg.get("US_EQ", {}).get(fwd_signal, {})
             if market_adapt:
-                # Apply budget multiplier from forward indicators
+                # Apply budget multiplier from forward indicators.
+                # Floor at 0.35 to prevent over-compounding when multiple
+                # systems (meta budget + fragility + forward) all cut simultaneously.
                 fwd_budget_mult = float(market_adapt.get("meta_budget_multiplier", 1.0))
-                budget_mult = (budget_mult or 1.0) * fwd_budget_mult
+                budget_mult = max(0.35, (budget_mult or 1.0) * fwd_budget_mult)
                 budget_metadata = budget_metadata or {}
                 budget_metadata["fwd_signal"] = fwd_signal
                 budget_metadata["fwd_budget_mult"] = fwd_budget_mult
@@ -2066,15 +2068,16 @@ def run_books_for_run(
     except Exception:
         logger.debug("Forward indicator adaptation unavailable", exc_info=True)
 
-    # Override portfolio params from forward indicator adaptation
+    # Override portfolio params from forward indicator adaptation.
+    # Only tighten max_weight (lower = more conservative).
+    # Do NOT widen max_names when conviction is enabled — it would force
+    # new entries that the conviction model then has to manage, causing churn.
     fwd_max_weight = fwd_adaptation.get("portfolio_per_instrument_max_weight")
-    fwd_max_names = fwd_adaptation.get("portfolio_max_names")
     sleeve_max_weight = float(getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.05) or 0.05)
     sleeve_max_names = getattr(long_sleeve, "portfolio_max_names", None)
 
-    # Use the MORE CONSERVATIVE of sleeve config and forward adaptation
     effective_max_weight = min(sleeve_max_weight, float(fwd_max_weight)) if fwd_max_weight else sleeve_max_weight
-    effective_max_names = max(sleeve_max_names or 25, int(fwd_max_names)) if fwd_max_names else sleeve_max_names
+    effective_max_names = sleeve_max_names  # Keep sleeve default — don't widen
 
     portfolio_config = PortfolioConfig(
         portfolio_id=book_id,
