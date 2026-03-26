@@ -137,7 +137,7 @@ class BasicSleevePipeline:
     # (STAB/Assessment). A value of 1 preserves the original
     # single-threaded behaviour; higher values allow us to better utilise
     # multi-core CPUs when scoring large universes.
-    num_workers: int = 1
+    num_workers: int = 8
 
     # Cached market fragility overlay stepper (optional). This allows us to
     # evaluate EMA+hysteresis overlays efficiently across many dates.
