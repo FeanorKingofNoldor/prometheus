@@ -69,7 +69,7 @@ class BasicAssessmentModel(AssessmentModel):
 
     # Joint model identifier used when looking up Assessment context
     # vectors.
-    assessment_context_model_id: str = "joint-assessment-context-v1"
+    assessment_context_model_id: str = "joint-issuer-day-core-v1"
 
     # Trading-day lookback window for momentum and realised-vol computation.
     # Empirically, cross-sectional momentum works on 6–12 month lookbacks
@@ -197,7 +197,11 @@ class BasicAssessmentModel(AssessmentModel):
         instrument_id: str,
         as_of_date: date,
     ) -> float | None:
-        """Return L2 norm of joint Assessment context embedding, if enabled.
+        """Return L2 norm of joint embedding for an instrument, if enabled.
+
+        The L2 norm serves as an uncertainty/regime-anomaly proxy:
+        higher norms indicate the instrument is in an unusual regime state
+        relative to training history. Used as a small confidence adjustment.
 
         When ``use_assessment_context`` is False or ``db_manager`` is
         None, this returns None without querying the database.
@@ -206,13 +210,16 @@ class BasicAssessmentModel(AssessmentModel):
         if not self.use_assessment_context or self.db_manager is None:
             return None
 
+        # Strip .US suffix to get issuer_id from instrument_id
+        issuer_id = instrument_id.replace(".US", "").replace(".us", "")
+
         sql = """
             SELECT vector
             FROM joint_embeddings
-            WHERE joint_type = 'ASSESSMENT_CTX_V0'
+            WHERE joint_type = 'ISSUER_DAY_V0'
               AND model_id = %s
               AND as_of_date = %s
-              AND (entity_scope->>'entity_id') = %s
+              AND (entity_scope->>'issuer_id') = %s
             ORDER BY joint_id DESC
             LIMIT 1
         """
@@ -225,7 +232,7 @@ class BasicAssessmentModel(AssessmentModel):
                     (
                         self.assessment_context_model_id,
                         as_of_date,
-                        instrument_id,
+                        issuer_id,
                     ),
                 )
                 row = cursor.fetchone()
@@ -313,8 +320,8 @@ class BasicAssessmentModel(AssessmentModel):
             if weak_profile:
                 fragility_penalty *= 1.0 + self.weak_profile_penalty_multiplier
 
-        # Optional joint Assessment context diagnostic (L2 norm of
-        # ASSESSMENT_CTX_V0 vector) – does not affect scoring for now.
+        # Joint embedding context: L2 norm as uncertainty/anomaly proxy.
+        # High norms indicate the instrument is in an unusual regime state.
         assessment_ctx_norm = self._load_assessment_context_norm(
             instrument_id=instrument_id,
             as_of_date=as_of_date,
@@ -323,6 +330,16 @@ class BasicAssessmentModel(AssessmentModel):
         # Raw score = simple momentum; adjusted by fragility penalty.
         raw_score = momentum
         adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty
+
+        # Embedding context adjustment: reduce confidence when embedding
+        # norm is unusually high (z > 1.5 above typical ~15-20 range).
+        # This makes the model less aggressive on instruments in unusual
+        # regime states. Weight is small (5%) to avoid dominating.
+        embedding_penalty = 0.0
+        if assessment_ctx_norm is not None and assessment_ctx_norm > 20.0:
+            # Norm > 20 → mild penalty scaling linearly
+            embedding_penalty = min(0.05, (assessment_ctx_norm - 20.0) / 200.0)
+            adjusted_score -= embedding_penalty
 
         # Map adjusted_score into a roughly [-1, 1] band for ranking.
         ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
@@ -351,6 +368,7 @@ class BasicAssessmentModel(AssessmentModel):
         alpha_components: Dict[str, float] = {
             "momentum": float(momentum),
             "fragility_penalty": float(fragility_penalty),
+            "embedding_penalty": float(embedding_penalty),
         }
 
         metadata = {
