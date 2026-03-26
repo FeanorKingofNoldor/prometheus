@@ -320,8 +320,11 @@ class BasicAssessmentModel(AssessmentModel):
             if weak_profile:
                 fragility_penalty *= 1.0 + self.weak_profile_penalty_multiplier
 
-        # Joint embedding context: L2 norm as uncertainty/anomaly proxy.
-        # High norms indicate the instrument is in an unusual regime state.
+        # Joint embedding context diagnostic (for future use).
+        # Currently disabled: source embeddings end at 2025-12-08 with no
+        # daily generation pipeline. The correct approach when enabled is
+        # cross-sectional cosine distance from universe mean (not L2 norm,
+        # which is meaningless for unnormalized concatenated vectors).
         assessment_ctx_norm = self._load_assessment_context_norm(
             instrument_id=instrument_id,
             as_of_date=as_of_date,
@@ -330,16 +333,7 @@ class BasicAssessmentModel(AssessmentModel):
         # Raw score = simple momentum; adjusted by fragility penalty.
         raw_score = momentum
         adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty
-
-        # Embedding context adjustment: reduce confidence when embedding
-        # norm is unusually high (z > 1.5 above typical ~15-20 range).
-        # This makes the model less aggressive on instruments in unusual
-        # regime states. Weight is small (5%) to avoid dominating.
-        embedding_penalty = 0.0
-        if assessment_ctx_norm is not None and assessment_ctx_norm > 20.0:
-            # Norm > 20 → mild penalty scaling linearly
-            embedding_penalty = min(0.05, (assessment_ctx_norm - 20.0) / 200.0)
-            adjusted_score -= embedding_penalty
+        embedding_penalty = 0.0  # Reserved for future embedding integration
 
         # Map adjusted_score into a roughly [-1, 1] band for ranking.
         ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10

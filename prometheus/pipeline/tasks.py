@@ -635,7 +635,10 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
             calendar=calendar,
             stability_storage=stab_storage,
             db_manager=db_manager,
-            use_assessment_context=True,
+            # Joint embeddings disabled: source data ends at 2025-12-08,
+            # no daily generation pipeline exists yet. Enable when
+            # numeric_window + text embedding daily pipeline is built.
+            use_assessment_context=False,
         )
         assessment_engine = AssessmentEngine(
             model=assessment_model,
