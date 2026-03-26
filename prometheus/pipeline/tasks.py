@@ -2094,7 +2094,7 @@ def run_books_for_run(
             adjusted_weights = apply_risk_constraints(
                 weights=adjusted_weights,
                 strategy_id=book_id,
-                max_single_name=getattr(long_eq_sleeve, "portfolio_per_instrument_max_weight", 0.10),
+                max_single_name=getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.10),
             )
 
             target = TargetPortfolio(
@@ -2375,17 +2375,9 @@ def run_execution_for_run(
         inner_broker = LiveBroker(account_id=conn_config.account_id, client=client)
 
         # Wrap with risk checks so no order bypasses notional/leverage limits.
-        from apathis.core.config import get_config as _get_config
-
-        _exec_risk = _get_config().execution_risk
         from prometheus.execution.risk_broker import RiskCheckingBroker
 
-        broker = RiskCheckingBroker(
-            inner=inner_broker,
-            max_order_notional=_exec_risk.max_order_notional,
-            max_position_notional=_exec_risk.max_position_notional,
-            max_leverage=_exec_risk.max_leverage,
-        )
+        broker = RiskCheckingBroker(inner=inner_broker)
 
         try:
             client.connect()
@@ -2886,8 +2878,13 @@ def build_options_signals(
                 csv_path=Path(lambda_cfg.predictions_csv),
                 experiment_id=lambda_cfg.experiment_id or "US_EQ_GL_POLY2_V0",
             )
-            # Iterate all cluster keys and collect scores for the date
-            for (mid, sec, stc) in provider._date_index:
+            # Iterate unique cluster keys and collect scores for the date
+            seen_clusters: set = set()
+            for (_dt, mid, sec, stc) in provider._table:
+                cluster_key = (mid, sec, stc)
+                if cluster_key in seen_clusters:
+                    continue
+                seen_clusters.add(cluster_key)
                 score = provider.get_cluster_score(
                     as_of_date=as_of_date,
                     market_id=mid,
@@ -3079,7 +3076,7 @@ def run_options_for_run(
     if mode != "dry_run":
         try:
             from prometheus.execution.options_portfolio import OptionsPortfolio
-            opt_portfolio = OptionsPortfolio(ib=client)
+            opt_portfolio = OptionsPortfolio(ib=client._ib)
             opt_portfolio.sync()
             existing_positions = [
                 pos.to_dict() for pos in opt_portfolio.get_all_positions()
@@ -3221,7 +3218,7 @@ def run_options_for_run(
         try:
             from prometheus.execution.contract_discovery import ContractDiscoveryService
 
-            discovery = ContractDiscoveryService(client)
+            discovery = ContractDiscoveryService(client._ib)
             for d in all_directives:
                 try:
                     # Resolve contract via discovery.
