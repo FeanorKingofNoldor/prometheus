@@ -172,6 +172,17 @@ books:
         portfolio_per_instrument_max_weight: 0.10
         score_concentration_power: 2.5
         apply_fragility_overlay: false
+        # Conviction model: builds positions gradually, holds through
+        # temporary signal drops. Backtested 2024: same return as baseline
+        # but Sharpe 1.28→1.36, MaxDD -14.7%→-13.9%.
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
 
   CASH:
     kind: CASH

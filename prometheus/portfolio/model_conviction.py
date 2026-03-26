@@ -111,6 +111,10 @@ class ConvictionPortfolioModel:
 
         # 1) Inner model: score-based target weights.
         inner_target = self.inner_model.build_target_portfolio(portfolio_id, as_of_date)
+        # Propagate _last_members from inner model so PortfolioEngine can persist.
+        inner_members = getattr(self.inner_model, "_last_members", [])
+        if inner_members:
+            self._last_members = inner_members  # type: ignore[attr-defined]
         selection_weights = dict(inner_target.weights)
         current_selection: Set[str] = {
             iid for iid, w in selection_weights.items() if w > 0
