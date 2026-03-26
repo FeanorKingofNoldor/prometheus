@@ -746,6 +746,39 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
             fwd_snap.warning_count,
             fwd_snap.domain_signals,
         )
+
+        # Persist snapshot for historical tracking
+        try:
+            from psycopg2.extras import Json
+            with db_manager.get_runtime_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO forward_indicator_snapshots
+                            (as_of_date, overall_signal, warning_count, domain_signals, indicators)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (as_of_date) DO UPDATE SET
+                            overall_signal = EXCLUDED.overall_signal,
+                            warning_count = EXCLUDED.warning_count,
+                            domain_signals = EXCLUDED.domain_signals,
+                            indicators = EXCLUDED.indicators,
+                            created_at = NOW()
+                    """, (
+                        run.as_of_date,
+                        fwd_snap.overall_signal,
+                        fwd_snap.warning_count,
+                        Json(fwd_snap.domain_signals),
+                        Json({
+                            name: {
+                                "name": ind.name, "value": round(ind.value, 4),
+                                "z_score": round(ind.z_score, 2), "signal": ind.signal,
+                                "domain": ind.domain,
+                            }
+                            for name, ind in fwd_snap.indicators.items()
+                        }),
+                    ))
+                conn.commit()
+        except Exception:
+            logger.debug("Failed to persist forward indicator snapshot", exc_info=True)
     except Exception:  # pragma: no cover - defensive
         logger.exception(
             "run_signals_for_run: forward indicators failed for run_id=%s as_of=%s",
@@ -1991,9 +2024,58 @@ def run_books_for_run(
         "market_situation": situation_info.situation.value if situation_info is not None else None,
     } | fragility_meta
 
-    # Simple, hard-coded PortfolioConfig for the core long-only equity
-    # book in this iteration. This can later be sourced from
-    # engine_configs.
+    # ------------------------------------------------------------------
+    # Forward indicator regime adaptation
+    # ------------------------------------------------------------------
+    fwd_signal = "GREEN"
+    fwd_adaptation: dict[str, object] = {}
+
+    try:
+        from apathis.regime.forward_indicators import compute_forward_indicators
+        from pathlib import Path
+        import yaml
+
+        fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
+        fwd_signal = fwd_snap.overall_signal
+
+        adapt_path = PROJECT_ROOT / "configs" / "regime_adaptation.yaml"
+        if adapt_path.exists():
+            with open(adapt_path) as f:
+                adapt_cfg = yaml.safe_load(f) or {}
+
+            market_adapt = adapt_cfg.get("US_EQ", {}).get(fwd_signal, {})
+            if market_adapt:
+                # Apply budget multiplier from forward indicators
+                fwd_budget_mult = float(market_adapt.get("meta_budget_multiplier", 1.0))
+                budget_mult = (budget_mult or 1.0) * fwd_budget_mult
+                budget_metadata = budget_metadata or {}
+                budget_metadata["fwd_signal"] = fwd_signal
+                budget_metadata["fwd_budget_mult"] = fwd_budget_mult
+                budget_metadata["fwd_warning_count"] = fwd_snap.warning_count
+                budget_metadata["fwd_domains"] = fwd_snap.domain_signals
+
+                fwd_adaptation = market_adapt
+                logger.info(
+                    "run_books_for_run: forward indicator signal=%s budget_mult=%.2f "
+                    "max_weight=%s max_names=%s warnings=%d",
+                    fwd_signal, fwd_budget_mult,
+                    market_adapt.get("portfolio_per_instrument_max_weight"),
+                    market_adapt.get("portfolio_max_names"),
+                    fwd_snap.warning_count,
+                )
+    except Exception:
+        logger.debug("Forward indicator adaptation unavailable", exc_info=True)
+
+    # Override portfolio params from forward indicator adaptation
+    fwd_max_weight = fwd_adaptation.get("portfolio_per_instrument_max_weight")
+    fwd_max_names = fwd_adaptation.get("portfolio_max_names")
+    sleeve_max_weight = float(getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.05) or 0.05)
+    sleeve_max_names = getattr(long_sleeve, "portfolio_max_names", None)
+
+    # Use the MORE CONSERVATIVE of sleeve config and forward adaptation
+    effective_max_weight = min(sleeve_max_weight, float(fwd_max_weight)) if fwd_max_weight else sleeve_max_weight
+    effective_max_names = max(sleeve_max_names or 25, int(fwd_max_names)) if fwd_max_names else sleeve_max_names
+
     portfolio_config = PortfolioConfig(
         portfolio_id=book_id,
         strategies=[book_id],
@@ -2004,8 +2086,8 @@ def run_books_for_run(
         risk_aversion_lambda=0.0,
         leverage_limit=1.0,
         gross_exposure_limit=1.0,
-        per_instrument_max_weight=float(getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.05) or 0.05),
-        max_names=getattr(long_sleeve, "portfolio_max_names", None),
+        per_instrument_max_weight=effective_max_weight,
+        max_names=effective_max_names,
         hysteresis_buffer=getattr(long_sleeve, "portfolio_hysteresis_buffer", None),
         score_concentration_power=float(getattr(long_sleeve, "score_concentration_power", 1.0) or 1.0),
         sector_limits={},
