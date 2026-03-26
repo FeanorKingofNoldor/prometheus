@@ -1,0 +1,41 @@
+# Prometheus -- Dynamic Strategy Adaptation
+#
+# When forward-looking regime indicators signal stress, these overlays
+# are applied to portfolio construction parameters. The overlay is
+# multiplicative on the meta_budget and additive on position limits.
+#
+# Consumed by run_books_for_run() during the BOOKS phase.
+# Forward indicator overall_signal: GREEN | YELLOW | ORANGE | RED
+
+US_EQ:
+  GREEN:
+    # Full risk budget, normal parameters
+    meta_budget_multiplier: 1.0
+    portfolio_max_names: 25
+    portfolio_per_instrument_max_weight: 0.10
+    turnover_limit_override: null
+    notes: "Normal conditions — full deployment"
+
+  YELLOW:
+    # Slight caution — reduce concentration, keep deployment
+    meta_budget_multiplier: 0.95
+    portfolio_max_names: 25
+    portfolio_per_instrument_max_weight: 0.08
+    turnover_limit_override: null
+    notes: "Early warning — reduce concentration"
+
+  ORANGE:
+    # Elevated stress — reduce exposure and diversify
+    meta_budget_multiplier: 0.80
+    portfolio_max_names: 30
+    portfolio_per_instrument_max_weight: 0.06
+    turnover_limit_override: 0.08
+    notes: "Multiple warning domains — reduce exposure, widen portfolio"
+
+  RED:
+    # Crisis conditions — aggressive de-risking
+    meta_budget_multiplier: 0.50
+    portfolio_max_names: 35
+    portfolio_per_instrument_max_weight: 0.04
+    turnover_limit_override: 0.15
+    notes: "Cross-domain stress confirmation — de-risk aggressively"
