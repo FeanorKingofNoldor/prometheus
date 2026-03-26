@@ -18,8 +18,11 @@ policies:
     #
     # Regime adaptation is handled by:
     #   1. Sector allocator OVERLAY on the V12 weights (kill/reduce sick sectors)
-    #   2. Options strategies (crisis_alpha, protective puts, sector puts)
-    #   3. SH.US hedge allocation sized by fragility
+    #   2. Options strategies (crisis_alpha SPY puts, vix_tail_hedge VIX calls)
+    #
+    # Hedge ETFs (SH.US, VIXY.US) removed 2026-03-26 — they suffer from
+    # volatility decay (SH daily rebalancing) and contango bleed (VIXY).
+    # Downside protection is now options-only: defined risk, no decay.
     #
     # The equity BOOK stays V12/K25 in all situations — the overlay and
     # options layer handle the risk reduction, not book switching.
