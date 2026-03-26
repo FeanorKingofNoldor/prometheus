@@ -15,7 +15,20 @@ from apathis.core.logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
+from apathis.core.config import get_config
+from prometheus.assessment.model_basic import BasicAssessmentModel
+from prometheus.books.registry import (
+    AllocatorSleeveSpec,
+    HedgeEtfSleeveSpec,
+    LongEquitySleeveSpec,
+    load_book_registry,
+)
+from prometheus.execution.policy import load_execution_policy_artifact
 from prometheus.meta.policy import MetaPolicySelection, load_meta_policy_artifact
+from prometheus.pipeline.tasks import (
+    _load_daily_portfolio_risk_config,
+    _load_daily_universe_lambda_config,
+)
 
 logger = get_logger(__name__)
 
@@ -357,15 +370,6 @@ async def get_configs() -> List[ConfigRow]:
     The ``section``, ``key``, ``value``, ``editable`` format matches
     the Settings page ConfigRow interface.
     """
-    from apathis.core.config import get_config
-
-    from prometheus.execution.policy import load_execution_policy_artifact
-    from prometheus.meta.policy import load_meta_policy_artifact
-    from prometheus.pipeline.tasks import (
-        _load_daily_portfolio_risk_config,
-        _load_daily_universe_lambda_config,
-    )
-
     region = "US"
     market_id = "US_EQ"
 
@@ -525,21 +529,6 @@ async def get_engine_parameters() -> EngineParametersResponse:
     hardcoded constants in this endpoint.
     """
     import dataclasses
-
-    from apathis.core.config import get_config
-
-    from prometheus.assessment.model_basic import BasicAssessmentModel
-    from prometheus.books.registry import (
-        AllocatorSleeveSpec,
-        HedgeEtfSleeveSpec,
-        LongEquitySleeveSpec,
-        load_book_registry,
-    )
-    from prometheus.execution.policy import load_execution_policy_artifact
-    from prometheus.pipeline.tasks import (
-        _load_daily_portfolio_risk_config,
-        _load_daily_universe_lambda_config,
-    )
 
     assessment_defaults = {
         f.name: f.default

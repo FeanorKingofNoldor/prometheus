@@ -2874,8 +2874,11 @@ def build_options_signals(
     try:
         lambda_cfg = _load_daily_universe_lambda_config(run.region.upper())
         if lambda_cfg.predictions_csv:
+            csv_path = Path(lambda_cfg.predictions_csv)
+            if not csv_path.is_absolute():
+                csv_path = PROJECT_ROOT / csv_path
             provider = CsvLambdaClusterScoreProvider(
-                csv_path=Path(lambda_cfg.predictions_csv),
+                csv_path=csv_path,
                 experiment_id=lambda_cfg.experiment_id or "US_EQ_GL_POLY2_V0",
             )
             # Iterate unique cluster keys and collect scores for the date

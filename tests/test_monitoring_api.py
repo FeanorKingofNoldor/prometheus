@@ -319,7 +319,6 @@ class TestMetaConfigs:
 
     @patch("prometheus.monitoring.meta_api.load_meta_policy_artifact")
     @patch("prometheus.monitoring.meta_api.get_config")
-    @pytest.mark.xfail(reason="lazy imports in get_configs() need function-level patching")
     @patch("prometheus.monitoring.meta_api.load_execution_policy_artifact")
     @patch("prometheus.monitoring.meta_api._load_daily_portfolio_risk_config")
     @patch("prometheus.monitoring.meta_api._load_daily_universe_lambda_config")
@@ -470,7 +469,6 @@ class TestMetaEngineParameters:
 
     @patch("prometheus.monitoring.meta_api.load_book_registry")
     @patch("prometheus.monitoring.meta_api.load_meta_policy_artifact")
-    @pytest.mark.xfail(reason="lazy imports in get_engine_parameters() need function-level patching")
     @patch("prometheus.monitoring.meta_api.get_config")
     @patch("prometheus.monitoring.meta_api.load_execution_policy_artifact")
     @patch("prometheus.monitoring.meta_api._load_daily_portfolio_risk_config")
