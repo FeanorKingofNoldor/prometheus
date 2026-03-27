@@ -974,6 +974,7 @@ class MarketAwareDaemonConfig:
     poll_interval_seconds: int = 60
     as_of_date: date | None = None
     options_mode: str = "paper"
+    morning_catchup_hour: int = 8  # Local hour (0-23) to trigger catch-up if pipeline missed
 
 
 class MarketAwareDaemon:
@@ -1236,6 +1237,75 @@ class MarketAwareDaemon:
             if execution.execution_id in self.running_jobs:
                 del self.running_jobs[execution.execution_id]
 
+    def _maybe_morning_catchup(self, as_of_date: date) -> None:
+        """At the configured morning hour, check if yesterday's pipeline ran.
+
+        If the machine was off during POST_CLOSE (typically 22:00-02:00 CET),
+        the pipeline never triggered. This method detects that case and forces
+        a POST_CLOSE state for US_EQ so the pipeline runs with the previous
+        day's data (which EODHD published overnight).
+
+        Only triggers once per day, at the configured hour (default: 08:00 local).
+        """
+        now_local = datetime.now()
+        if now_local.hour != self.config.morning_catchup_hour:
+            return
+        if now_local.minute > 5:
+            # Only trigger in the first 5 minutes of the hour
+            return
+
+        # Check if we already did a catch-up today
+        catchup_key = f"catchup_{as_of_date}"
+        if hasattr(self, "_catchup_done") and catchup_key in self._catchup_done:
+            return
+
+        # Find the most recent trading day
+        cal = self._calendars.get("US_EQ")
+        if cal is None:
+            cal = TradingCalendar(TradingCalendarConfig(market="US_EQ"))
+            self._calendars["US_EQ"] = cal
+
+        # The pipeline should have run for the last trading day
+        yesterday_candidates = cal.trading_days_between(
+            as_of_date - timedelta(days=7), as_of_date - timedelta(days=1),
+        )
+        if not yesterday_candidates:
+            return
+        last_trading_day = yesterday_candidates[-1]
+
+        # Check if that day's run completed
+        from prometheus.pipeline.state import load_latest_run
+
+        latest_run = load_latest_run(self.db_manager, market_id="US_EQ", as_of_date=last_trading_day)
+        if latest_run and latest_run.phase == RunPhase.COMPLETED:
+            # Pipeline already ran — no catch-up needed
+            if not hasattr(self, "_catchup_done"):
+                self._catchup_done: set = set()
+            self._catchup_done.add(catchup_key)
+            return
+
+        # Pipeline didn't run for the last trading day — force catch-up
+        logger.info(
+            "MarketAwareDaemon: MORNING CATCH-UP — last trading day %s has no completed run, "
+            "forcing POST_CLOSE pipeline at %s local time",
+            last_trading_day,
+            now_local.strftime("%H:%M"),
+        )
+
+        # Override market state to POST_CLOSE for this cycle
+        if "US_EQ" in self.active_dags:
+            dag, dag_id = self.active_dags["US_EQ"]
+            self._process_market(
+                "US_EQ", dag, dag_id,
+                MarketState.POST_CLOSE,
+                last_trading_day,
+                datetime.now(timezone.utc),
+            )
+
+        if not hasattr(self, "_catchup_done"):
+            self._catchup_done = set()
+        self._catchup_done.add(catchup_key)
+
     def _run_cycle(self, as_of_date: date) -> None:
         """Execute one orchestration cycle across all markets."""
         now = datetime.now(timezone.utc)
@@ -1321,6 +1391,11 @@ class MarketAwareDaemon:
                         self._calendars.clear()
                         self._initialize_dags(as_of_date)
 
+                # Morning catch-up: at the configured local hour, if yesterday's
+                # pipeline didn't complete (machine was off overnight), force a
+                # POST_CLOSE cycle so the pipeline runs with stale-but-available data.
+                self._maybe_morning_catchup(as_of_date)
+
                 self._run_cycle(as_of_date)
 
                 # Sleep until next cycle
@@ -1367,6 +1442,12 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         choices=["paper", "live", "dry_run"],
         help="Execution mode for the run_options job (default: paper)",
     )
+    parser.add_argument(
+        "--morning-catchup-hour",
+        type=int,
+        default=8,
+        help="Local hour (0-23) for morning catch-up pipeline if overnight run missed (default: 8)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -1399,6 +1480,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         poll_interval_seconds=args.poll_interval_seconds,
         as_of_date=args.as_of_date,
         options_mode=args.options_mode,
+        morning_catchup_hour=args.morning_catchup_hour,
     )
 
     db_manager = get_db_manager()

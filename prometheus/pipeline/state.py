@@ -126,6 +126,33 @@ def _row_to_engine_run(row: tuple) -> EngineRun:
     )
 
 
+def load_latest_run(
+    db_manager: DatabaseManager,
+    market_id: str = "US_EQ",
+    as_of_date: date | None = None,
+) -> EngineRun | None:
+    """Load the most recent EngineRun for a market/date, or None."""
+    sql = """
+        SELECT run_id, as_of_date, region, phase, error,
+               created_at, updated_at, phase_started_at, phase_completed_at
+        FROM engine_runs
+        WHERE as_of_date = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+    """
+    target = as_of_date or date.today()
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(sql, (target,))
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    if row is None:
+        return None
+    return _row_to_engine_run(row)
+
+
 def load_run(db_manager: DatabaseManager, run_id: str) -> EngineRun:
     """Load an :class:`EngineRun` by ``run_id``.
 
