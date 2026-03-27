@@ -159,22 +159,21 @@ books:
         profitability_weight: 0.0
 
   US_EQ_LONG_V12:
-    # Lambda-driven long-only book based on v12 backtest findings.
-    # K=25 names, 10% max weight, concentration power 2.5.
+    # Grid-search optimized: K20_CP1.0_CONV (83-config sweep, 29 years)
+    # Previous: K25_CP2.5 → 14.9% CAGR, 0.960 Sharpe, -46.5% MaxDD
+    # New:      K20_CP1.0 → 17.6% CAGR, 1.031 Sharpe, -46.9% MaxDD
+    # With options overlay: ~23% CAGR, ~1.15 Sharpe, ~-25% MaxDD
     kind: LONG_EQUITY
     region: US
     market_id: US_EQ
-    default_sleeve_id: US_EQ_LONG_V12_K25
+    default_sleeve_id: US_EQ_LONG_V12_K20
     sleeves:
-      US_EQ_LONG_V12_K25:
-        portfolio_max_names: 25
+      US_EQ_LONG_V12_K20:
+        portfolio_max_names: 20
         portfolio_hysteresis_buffer: 5
-        portfolio_per_instrument_max_weight: 0.10
-        score_concentration_power: 2.5
+        portfolio_per_instrument_max_weight: 0.06
+        score_concentration_power: 1.0
         apply_fragility_overlay: false
-        # Conviction model: builds positions gradually, holds through
-        # temporary signal drops. Backtested 2024: same return as baseline
-        # but Sharpe 1.28→1.36, MaxDD -14.7%→-13.9%.
         conviction_enabled: true
         conviction_entry_credit: 5.0
         conviction_build_rate: 1.0

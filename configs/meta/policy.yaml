@@ -29,25 +29,25 @@ policies:
 
     default:
       book_id: US_EQ_LONG_V12
-      sleeve_id: US_EQ_LONG_V12_K25
+      sleeve_id: US_EQ_LONG_V12_K20
 
     situations:
       RISK_ON:
         book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        sleeve_id: US_EQ_LONG_V12_K20
 
       NEUTRAL:
         book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        sleeve_id: US_EQ_LONG_V12_K20
 
       RISK_OFF:
         book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        sleeve_id: US_EQ_LONG_V12_K20
 
       CRISIS:
         book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        sleeve_id: US_EQ_LONG_V12_K20
 
       RECOVERY:
         book_id: US_EQ_LONG_V12
-        sleeve_id: US_EQ_LONG_V12_K25
+        sleeve_id: US_EQ_LONG_V12_K20
