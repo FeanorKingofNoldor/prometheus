@@ -331,9 +331,23 @@ class BasicAssessmentModel(AssessmentModel):
             # Top 10% outliers get a small penalty (max 3%)
             embedding_penalty = (cs_score.percentile_rank - 0.90) * 0.30
 
-        # Raw score = simple momentum; adjusted by fragility + embedding penalty.
+        # Sector guidance penalty: when >25% of a sector's companies have
+        # lowered guidance, apply a mild penalty to all instruments in that sector.
+        # Uses _instrument_sectors cache (batch-loaded by score_instruments).
+        guidance_penalty = 0.0
+        sector_guidance = getattr(self, "_sector_guidance", {})
+        inst_sectors = getattr(self, "_instrument_sectors", {})
+        if sector_guidance:
+            sector = inst_sectors.get(instrument_id)
+            if sector and sector in sector_guidance:
+                pct_lowered = sector_guidance[sector]
+                if pct_lowered > 0.25:
+                    # 25% lowered = 0, 50% = 0.025, 75% = 0.05
+                    guidance_penalty = min(0.05, (pct_lowered - 0.25) * 0.10)
+
+        # Raw score = simple momentum; adjusted by fragility + embedding + guidance penalty.
         raw_score = momentum
-        adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty - embedding_penalty
+        adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty - embedding_penalty - guidance_penalty
 
         # Map adjusted_score into a roughly [-1, 1] band for ranking.
         ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
@@ -363,6 +377,7 @@ class BasicAssessmentModel(AssessmentModel):
             "momentum": float(momentum),
             "fragility_penalty": float(fragility_penalty),
             "embedding_penalty": float(embedding_penalty),
+            "guidance_penalty": float(guidance_penalty),
         }
 
         metadata = {
@@ -429,6 +444,47 @@ class BasicAssessmentModel(AssessmentModel):
                 sorted_grp = grp.sort_values("trade_date")
                 self._price_cache[str(inst_id)] = sorted_grp["close"].astype(float).to_numpy()
 
+        # ── Load instrument→sector mapping (batch) ──────────────────
+        self._instrument_sectors: Dict[str, str] = {}
+        if self.db_manager is not None:
+            try:
+                with self.db_manager.get_runtime_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT i.instrument_id, ic.sector
+                            FROM instruments i
+                            JOIN issuer_classifications ic ON i.issuer_id = ic.issuer_id
+                            WHERE i.instrument_id = ANY(%s)
+                        """, (ids_list,))
+                        for inst_id, sector in cur.fetchall():
+                            self._instrument_sectors[inst_id] = sector
+            except Exception:
+                pass
+
+        # ── Load sector guidance breadth (corporate guidance signal) ──
+        self._sector_guidance: Dict[str, float] = {}  # sector → pct_lowered
+        if self.db_manager is not None:
+            try:
+                with self.db_manager.get_runtime_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT sector, direction, COUNT(*) as cnt
+                            FROM corporate_guidance
+                            WHERE filing_date >= %s AND direction IN ('raised', 'lowered')
+                            GROUP BY sector, direction
+                        """, (as_of_date - timedelta(days=90),))
+                        sector_counts: Dict[str, Dict[str, int]] = {}
+                        for sector, direction, cnt in cur.fetchall():
+                            if sector not in sector_counts:
+                                sector_counts[sector] = {"raised": 0, "lowered": 0}
+                            sector_counts[sector][direction] = cnt
+                        for sector, counts in sector_counts.items():
+                            total = counts["raised"] + counts["lowered"]
+                            if total >= 3:  # Need at least 3 data points
+                                self._sector_guidance[sector] = counts["lowered"] / total
+            except Exception:
+                pass  # Table may not exist yet
+
         # ── Load cross-sectional embedding scores (if available) ────
         self._embedding_scores: Dict[str, object] = {}
         if self.db_manager is not None:
@@ -477,5 +533,7 @@ class BasicAssessmentModel(AssessmentModel):
         # Clear caches after use
         self._price_cache = {}
         self._embedding_scores = {}
+        self._sector_guidance = {}
+        self._instrument_sectors = {}
 
         return scores
