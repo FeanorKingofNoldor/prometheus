@@ -12,6 +12,7 @@ import EngineParametersSettings from "./pages/settings/EngineParameters";
 import Chat from "./pages/Chat";
 import Docs from "./pages/Docs";
 import Intelligence from "./pages/Intelligence";
+import TradeMonitor from "./pages/TradeMonitor";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="settings/engine-parameters" element={<EngineParametersSettings />} />
         <Route path="kronos" element={<Chat />} />
+        <Route path="monitor" element={<TradeMonitor />} />
       </Route>
     </Routes>
     </PortfolioProvider>

@@ -654,3 +654,13 @@ export const useIntelJob = (jobId: string | null) =>
       return data?.status === "done" || data?.status === "error" ? false : 2_000;
     },
   });
+
+// ── Kronos Trade Monitor ────────────────────────────────────
+export const useWeeklyReport = () =>
+  useQuery({ queryKey: ["meta", "weekly_report"], queryFn: () => api.get("/meta/weekly_report"), staleTime: 60_000 });
+
+export const useTradeJournal = (lookbackDays = 63) =>
+  useQuery({ queryKey: ["meta", "trade_journal", lookbackDays], queryFn: () => api.get(`/meta/trade_journal?lookback_days=${lookbackDays}`), staleTime: 60_000 });
+
+export const useMetaFeedback = (lookbackDays = 63) =>
+  useQuery({ queryKey: ["meta", "feedback", lookbackDays], queryFn: () => api.get(`/meta/feedback?lookback_days=${lookbackDays}`), staleTime: 60_000 });

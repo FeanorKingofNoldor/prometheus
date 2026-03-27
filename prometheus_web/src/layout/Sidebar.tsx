@@ -10,12 +10,14 @@ import {
   Settings,
   MessageSquare,
   Brain,
+  Activity,
 } from "lucide-react";
 
 const links = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/portfolio", icon: Briefcase, label: "Portfolio" },
   { to: "/execution", icon: ArrowRightLeft, label: "Execution" },
+  { to: "/monitor", icon: Activity, label: "Trade Monitor" },
   { to: "/backtests", icon: FlaskConical, label: "Backtests" },
   { to: "/options", icon: LineChart, label: "Options" },
   { to: "/intelligence", icon: Brain, label: "Intelligence" },
