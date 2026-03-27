@@ -211,7 +211,7 @@ class BullCallSpreadConfig:
     target_dte_min: int = 30
     target_dte_max: int = 60
     max_risk_per_trade_pct: float = 0.04   # 4% NAV risk per trade (raised from 3%)
-    max_positions: int = 12           # Raised from 9 — more slots for momentum names
+    max_positions: int = 6            # Reduced from 12 — less directional concentration
     profit_target: float = 0.60       # Close at 60% of max profit
     long_delta: float = 0.55          # Slightly ITM long leg
     short_delta: float = 0.30         # OTM short leg
@@ -267,10 +267,10 @@ class IronCondorConfig:
     wing_width: float = 5.0           # $5 wide wings
     target_dte_min: int = 30
     target_dte_max: int = 45
-    nav_pct: float = 0.04             # 4% of NAV risk budget
-    profit_target: float = 0.50       # Close at 50% profit
-    max_loss_multiple: float = 2.0    # Close at 2x credit received
-    max_positions: int = 5            # Raised from 4
+    nav_pct: float = 0.03             # 3% of NAV risk budget (was 4%)
+    profit_target: float = 0.50
+    max_loss_multiple: float = 2.0
+    max_positions: int = 3            # Max 3 concurrent (was 5)
 
 
 @dataclass
@@ -278,15 +278,15 @@ class IronButterflyConfig:
     """Configuration for iron butterfly strategy."""
     enabled: bool = True
     underlying: str = "SPY"
-    max_vix: float = 20.0             # Raised from 18 — more entry windows for #1 strategy
-    max_frag: float = 0.20            # Keep tight: frag > 0.20 = fragile market, avoid short premium
+    max_vix: float = 20.0
+    max_frag: float = 0.20
     wing_width: float = 10.0          # $10 wide wings
     target_dte_min: int = 30
     target_dte_max: int = 45
-    nav_pct: float = 0.20             # v34 test
-    profit_target: float = 0.50       # Hold winners longer (was 0.40)
-    max_loss_multiple: float = 2.0    # Close short legs at 2x credit received
-    max_positions: int = 6            # Raised from 5
+    nav_pct: float = 0.05             # 5% of NAV per position (was 20% — way too much)
+    profit_target: float = 0.50
+    max_loss_multiple: float = 2.0
+    max_positions: int = 2            # Max 2 simultaneous (was 6 — 120% exposure)
 
 
 @dataclass
@@ -346,8 +346,8 @@ class WheelConfig:
     target_dte_max: int = 45
     profit_target: float = 0.50       # Close at 50% profit
     roll_dte: int = 14
-    max_nav_pct_per_position: float = 0.06  # 6% NAV per wheel position (doubled for v9)
-    max_positions: int = 5
+    max_nav_pct_per_position: float = 0.04  # 4% NAV per wheel position (was 6%)
+    max_positions: int = 3            # Max 3 concurrent (was 5)
 
 
 # ── Trade directive (output of strategies) ───────────────────────────
