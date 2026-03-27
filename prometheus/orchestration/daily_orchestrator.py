@@ -197,6 +197,14 @@ class DailyOrchestrator:
         except Exception:
             logger.debug("Meta feedback analysis failed (non-critical)", exc_info=True)
 
+        # Trade journal — backfill returns for past entries
+        try:
+            from prometheus.meta.trade_journal import backfill_journal_returns, ensure_trade_journal_table
+            ensure_trade_journal_table(self.db_manager)
+            backfill_journal_returns(self.db_manager, as_of_date)
+        except Exception:
+            logger.debug("Trade journal backfill failed (non-critical)", exc_info=True)
+
         # ------------------------------------------------------------------
         # Daily summary
         # ------------------------------------------------------------------

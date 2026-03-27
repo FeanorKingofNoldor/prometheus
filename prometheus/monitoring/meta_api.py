@@ -413,6 +413,53 @@ async def get_configs() -> List[ConfigRow]:
     return rows
 
 
+@meta_router.get("/weekly_report")
+async def get_weekly_report() -> Dict[str, Any]:
+    """Kronos weekly trade monitoring report."""
+    from prometheus.meta.trade_monitor import compute_weekly_report, format_weekly_report
+
+    db = get_db_manager()
+    report = compute_weekly_report(db, date.today())
+    text = format_weekly_report(report)
+
+    return {
+        "period_start": report.period_start.isoformat(),
+        "period_end": report.period_end.isoformat(),
+        "nav": report.current_nav,
+        "n_positions": report.n_positions,
+        "n_entries": report.n_entries,
+        "n_exits": report.n_exits,
+        "turnover_pct": report.turnover_pct,
+        "regime": report.regime_label,
+        "forward_signal": report.forward_signal,
+        "portfolio_hit_rate": report.portfolio_hit_rate,
+        "anomalies": report.anomalies,
+        "top_winners": [
+            {"instrument_id": p.instrument_id, "pnl_pct": round(p.pnl_pct, 4),
+             "pnl": round(p.unrealized_pnl, 2), "sector": p.sector}
+            for p in report.top_winners
+        ],
+        "top_losers": [
+            {"instrument_id": p.instrument_id, "pnl_pct": round(p.pnl_pct, 4),
+             "pnl": round(p.unrealized_pnl, 2), "sector": p.sector}
+            for p in report.top_losers
+        ],
+        "sector_pnl": {k: round(v, 2) for k, v in report.sector_pnl.items()},
+        "formatted_report": text,
+    }
+
+
+@meta_router.get("/trade_journal")
+async def get_trade_journal(
+    lookback_days: int = Query(63, ge=7, le=252),
+) -> Dict[str, Any]:
+    """Trade journal analysis: systematic patterns in trade outcomes."""
+    from prometheus.meta.trade_journal import compute_journal_analysis
+
+    db = get_db_manager()
+    return compute_journal_analysis(db, lookback_days=lookback_days)
+
+
 @meta_router.get("/feedback")
 async def get_meta_feedback(
     lookback_days: int = Query(63, ge=7, le=252),
