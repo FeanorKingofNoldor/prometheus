@@ -1983,15 +1983,18 @@ async def get_execution_decisions(
     db = get_db_manager()
     port_id = str(portfolio_id)
 
-    # Same IBKR alias mapping as get_execution_status
-    _IBKR_ALIAS = {
-        "IBKR_PAPER": ["IBKR_PAPER", "US_EQ_ALLOCATOR"],
-        "IBKR_LIVE": ["IBKR_LIVE", "US_EQ_ALLOCATOR"],
+    # Map portfolio_id to all strategy_ids that produce decisions for it.
+    # Decisions are stored by strategy_id (US_CORE_LONG_EQ, US_EQ_LONG_V12)
+    # but the frontend sends portfolio_id (IBKR_PAPER).
+    _STRATEGY_ALIAS = {
+        "IBKR_PAPER": ["IBKR_PAPER", "US_EQ_ALLOCATOR", "US_CORE_LONG_EQ", "US_EQ_LONG_V12", "US_EQ_LONG_V12_K20", "US_OPTIONS"],
+        "IBKR_LIVE": ["IBKR_LIVE", "US_EQ_ALLOCATOR", "US_CORE_LONG_EQ", "US_EQ_LONG_V12", "US_EQ_LONG_V12_K20", "US_OPTIONS"],
     }
-    port_ids = _IBKR_ALIAS.get(port_id, [port_id])
+    port_ids = _STRATEGY_ALIAS.get(port_id, [port_id])
     placeholders = ",".join(["%s"] * len(port_ids))
 
-    where_clauses = ["engine_name = 'EXECUTION'", f"strategy_id IN ({placeholders})"]
+    # Show ALL engine decisions, not just EXECUTION — include PORTFOLIO, ASSESSMENT, etc.
+    where_clauses = [f"strategy_id IN ({placeholders})"]
     params: list[object] = list(port_ids)
 
     if as_of_date is not None:
@@ -2293,18 +2296,24 @@ async def get_position_pnl_history(
     # Pivot: {date -> {instrument -> pnl}}
     from collections import OrderedDict
     by_date: OrderedDict[str, Dict[str, float]] = OrderedDict()
-    instruments: set = set()
     for d, inst, pnl, mv in rows:
         ds = str(d)
-        instruments.add(str(inst))
         if ds not in by_date:
             by_date[ds] = {}
         by_date[ds][str(inst)] = float(pnl or 0.0)
 
+    # Only include instruments that appear in the LATEST date's snapshot
+    # This prevents historical positions from cluttering the chart legend
+    dates = list(by_date.keys())
+    if dates:
+        latest_instruments = set(by_date[dates[-1]].keys())
+    else:
+        latest_instruments = set()
+
     out: List[Dict[str, Any]] = []
     for d, vals in by_date.items():
         row: Dict[str, Any] = {"date": d}
-        for inst in sorted(instruments):
+        for inst in sorted(latest_instruments):
             row[inst] = vals.get(inst, None)
         out.append(row)
 
