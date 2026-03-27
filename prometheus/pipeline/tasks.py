@@ -753,6 +753,31 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         logger.debug("Numeric embedding generation failed (non-critical)", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Tier 1 Systemic Risk Monitor
+    # ------------------------------------------------------------------
+
+    try:
+        from apathis.api.graph import get_graph
+        from apathis.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
+
+        t1_graph = get_graph()
+        t1_snapshot = compute_tier1_scores(db_manager, t1_graph, run.as_of_date)
+        t1_sops = evaluate_sops(t1_snapshot)
+
+        logger.info(
+            "Tier 1 monitor: worst=%s stressed=%d alerts=%d sops=%d",
+            t1_snapshot.worst_state, t1_snapshot.entities_in_stress,
+            len(t1_snapshot.alerts), len(t1_sops),
+        )
+        for alert in t1_snapshot.alerts:
+            logger.warning("TIER1 ALERT: %s", alert)
+        for sop in t1_sops:
+            logger.warning("TIER1 SOP: [%s] %s -> %s=%s (%s)",
+                          sop.action_type, sop.trigger_entity, sop.parameter, sop.value, sop.reason)
+    except Exception:
+        logger.debug("Tier 1 monitor failed (non-critical)", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Forward-Looking Regime Indicators
     # ------------------------------------------------------------------
 
@@ -2044,6 +2069,29 @@ def run_books_for_run(
         "meta_selected_sleeve_id": resolved_sleeve_id,
         "market_situation": situation_info.situation.value if situation_info is not None else None,
     } | fragility_meta
+
+    # ------------------------------------------------------------------
+    # Tier 1 SOP constraints (from systemic risk monitor)
+    # ------------------------------------------------------------------
+
+    try:
+        from apathis.api.graph import get_graph
+        from apathis.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
+
+        t1_graph = get_graph()
+        t1_snap = compute_tier1_scores(db_manager, t1_graph, run.as_of_date)
+        t1_sops = evaluate_sops(t1_snap)
+
+        for sop in t1_sops:
+            if sop.action_type == "reduce_exposure" and sop.parameter == "budget_multiplier":
+                sop_mult = float(sop.value)
+                budget_mult = max(0.35, (budget_mult or 1.0) * sop_mult)
+                budget_metadata = budget_metadata or {}
+                budget_metadata["tier1_sop"] = sop.reason
+                budget_metadata["tier1_worst_state"] = t1_snap.worst_state
+                logger.warning("TIER1 SOP applied: budget_mult=%.2f (%s)", budget_mult, sop.reason)
+    except Exception:
+        logger.debug("Tier 1 SOP evaluation unavailable", exc_info=True)
 
     # ------------------------------------------------------------------
     # Forward indicator regime adaptation
