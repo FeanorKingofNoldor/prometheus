@@ -12,11 +12,11 @@ import { usePortfolioContext } from "../context/PortfolioContext";
 
 interface OrderRow extends Record<string, unknown> {
   timestamp: string;
-  instrument: string;
+  instrument_id: string;
   side: string;
-  qty: number;
-  filled_qty: number;
-  price: number;
+  quantity: number;
+  limit_price: number | null;
+  stop_price: number | null;
   status: string;
   order_type: string;
 }
@@ -53,18 +53,25 @@ export default function Execution() {
   const rawRisk = riskActions.data;
   const riskList = (Array.isArray(rawRisk) ? rawRisk : ((rawRisk as Record<string, unknown> | undefined)?.actions ?? [])) as RiskActionRow[];
 
-  const totalVolume = orders.reduce((s, o) => s + Math.abs(Number(o.qty ?? 0) * Number(o.price ?? 0)), 0);
+  const totalVolume = orders.reduce((s, o) => s + Math.abs(Number(o.quantity ?? 0) * Number(o.limit_price ?? 0)), 0);
   const fillRate = orders.length > 0 ? fills.length / orders.length : 0;
   const pendingRisk = riskList.filter((r) => !r.resolved).length;
 
   const orderCols: Column<OrderRow>[] = [
-    { key: "timestamp", label: "Time", render: (r) => String(r.timestamp ?? "").slice(11, 19) || "—" },
-    { key: "instrument", label: "Instrument" },
+    { key: "timestamp", label: "Date/Time", render: (r) => {
+      const ts = String(r.timestamp ?? "");
+      // Show date + time: "Mar 26 14:30"
+      if (ts.length >= 16) {
+        const d = new Date(ts);
+        return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + ts.slice(11, 16);
+      }
+      return ts.slice(11, 19) || "\u2014";
+    }},
+    { key: "instrument_id", label: "Instrument", render: (r) => <span className="font-mono text-zinc-200">{r.instrument_id || "\u2014"}</span> },
     { key: "side", label: "Side", render: (r) => <StatusBadge label={String(r.side)} variant={r.side === "BUY" ? "positive" : "negative"} /> },
     { key: "order_type", label: "Type" },
-    { key: "qty", label: "Qty", align: "right" },
-    { key: "filled_qty", label: "Filled", align: "right" },
-    { key: "price", label: "Price", align: "right", render: (r) => r.price != null ? `$${Number(r.price).toFixed(2)}` : "—" },
+    { key: "quantity", label: "Qty", align: "right", render: (r) => r.quantity != null ? Number(r.quantity).toLocaleString() : "\u2014" },
+    { key: "limit_price", label: "Price", align: "right", render: (r) => r.limit_price != null ? `$${Number(r.limit_price).toFixed(2)}` : r.order_type === "MARKET" ? "MKT" : "\u2014" },
     { key: "status", label: "Status", render: (r) => (
       <StatusBadge
         label={String(r.status)}
