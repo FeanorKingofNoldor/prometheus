@@ -2317,7 +2317,7 @@ async def get_position_pnl_history(
             row[inst] = vals.get(inst, None)
         out.append(row)
 
-    logger.info("[api/position_pnl_history] portfolio_id=%s instruments=%d points=%d", port_id, len(instruments), len(out))
+    logger.info("[api/position_pnl_history] portfolio_id=%s instruments=%d points=%d", port_id, len(latest_instruments), len(out))
     return out
 
 
