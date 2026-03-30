@@ -2542,6 +2542,14 @@ def run_execution_for_run(
                 run.run_id,
             )
 
+        # ib_insync requires an asyncio event loop. When running in a
+        # daemon thread (APScheduler), there may not be one.
+        import asyncio
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         conn_config = create_connection_config(
             mode=ibkr_mode,
             gateway_type=IbkrGatewayType.GATEWAY,
@@ -2576,8 +2584,13 @@ def run_execution_for_run(
                 or account_state.get("TotalCashValue")
                 or 100_000.0
             )
+            # Load prices for BOTH target instruments AND current positions
+            # so we can generate sell orders for positions not in the target.
+            all_instrument_ids = list(
+                set(target_weights.keys()) | set(current_positions.keys())
+            )
             prices = _load_latest_prices(
-                db_manager, list(target_weights.keys()), run.as_of_date,
+                db_manager, all_instrument_ids, run.as_of_date,
             )
         except Exception:
             logger.exception(
@@ -3183,6 +3196,14 @@ def run_options_for_run(
             conn_config = create_connection_config(
                 mode=ibkr_mode, gateway_type=IbkrGatewayType.GATEWAY, client_id=11,
             )
+            # ib_insync requires an asyncio event loop. When running in a
+            # daemon thread (APScheduler), there may not be one.
+            import asyncio
+            try:
+                asyncio.get_event_loop()
+            except RuntimeError:
+                asyncio.set_event_loop(asyncio.new_event_loop())
+
             client = IbkrClientImpl(config=conn_config)
             client.connect()
             broker = LiveBroker(account_id=conn_config.account_id, client=client)
