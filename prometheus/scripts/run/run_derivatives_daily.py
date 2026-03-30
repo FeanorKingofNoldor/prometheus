@@ -327,6 +327,13 @@ def run_derivatives_daily(
     # ── Step 1: Connect ───────────────────────────────────────────────
     try:
         logger.info("Connecting to IBKR at %s:%d (client_id=%d)", host, port, client_id)
+        # ib_insync requires an asyncio event loop. Daemon threads don't have one.
+        import asyncio
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         ib.connect(host=host, port=port, clientId=client_id, timeout=30)
         summary["steps_completed"].append("connect")
         logger.info("Connected to IBKR")
