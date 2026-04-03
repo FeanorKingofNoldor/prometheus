@@ -24,6 +24,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── Kill stale processes from previous runs ──────────────
+echo "Cleaning up stale processes..."
+for port in $APATHIS_PORT $BACKEND_PORT $FRONTEND_PORT $APATHIS_FRONTEND_PORT; do
+  pids=$(lsof -ti:"$port" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    echo "  Killing PIDs on port $port: $pids"
+    kill -9 $pids 2>/dev/null || true
+  fi
+done
+# Also kill any leftover daemon
+pkill -f "prometheus.orchestration.market_aware_daemon" 2>/dev/null || true
+sleep 1
+echo "Cleanup done."
+
 # ── Activate Apathis venv (shared base for all Python) ───
 source "$APATHIS_VENV/bin/activate"
 echo "Activated venv: $APATHIS_VENV"
@@ -67,14 +81,25 @@ APATHIS_FE_PID=$!
 cd "$ROOT"
 
 # ── Market-aware daemon (daily pipeline orchestrator) ────
+DAEMON_LOG="/tmp/prometheus-daemon.log"
 if [[ "${NO_DAEMON:-}" != "1" ]]; then
-  echo "Starting market-aware daemon (US_EQ + KRONOS + INTEL, options=paper)..."
-  "$PROM_VENV/bin/python" -m prometheus.orchestration.market_aware_daemon \
+  echo "Starting market-aware daemon (all equity markets + KRONOS + INTEL, options=paper)..."
+  # Rotate log if > 10 MB
+  if [[ -f "$DAEMON_LOG" ]] && (( $(stat -c%s "$DAEMON_LOG" 2>/dev/null || echo 0) > 10485760 )); then
+    mv "$DAEMON_LOG" "${DAEMON_LOG}.prev"
+  fi
+  "$PROM_VENV/bin/python" -u -m prometheus.orchestration.market_aware_daemon \
     --market US_EQ \
+    --market UK_EQ \
+    --market EU_EQ \
+    --market JP_EQ \
+    --market HK_EQ \
+    --market KR_EQ \
+    --market AU_EQ \
     --market KRONOS \
     --market INTEL \
     --options-mode paper \
-    --poll-interval-seconds 60 &
+    --poll-interval-seconds 60 2>&1 | tee -a "$DAEMON_LOG" &
   DAEMON_PID=$!
 else
   echo "Daemon disabled (NO_DAEMON=1)"
@@ -98,7 +123,7 @@ echo "  Apathis API:      http://localhost:$APATHIS_PORT/api/docs"
 echo "  Prometheus API:   http://localhost:$BACKEND_PORT/api/docs"
 echo "  Prometheus UI:    http://localhost:$FRONTEND_PORT"
 echo "  Apathis UI:       http://localhost:$APATHIS_FRONTEND_PORT"
-[[ -n "$DAEMON_PID" ]] && echo "  Daemon:         PID $DAEMON_PID (US_EQ,KRONOS,INTEL, options=paper, 60s poll)"
+[[ -n "$DAEMON_PID" ]] && echo "  Daemon:         PID $DAEMON_PID (US/UK/EU/JP/HK/KR/AU_EQ,KRONOS,INTEL, options=paper, 60s poll)"
 echo "  Press Ctrl+C to stop all services"
 echo "════════════════════════════════════════════════════════"
 echo ""
