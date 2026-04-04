@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Prometheus + Apathis — Development Frontend Servers
+# Prometheus + Apathis + Cassandra — Development Frontend Servers
 #
-# Backends (Apathis API, Prometheus API, Daemon) run via systemd.
-# This script only starts the Vite dev servers for hot-reload development.
+# Backends run via systemd:
+#   apathis-api         → :8100  (geopolitical intelligence)
+#   cassandra           → :8200  (prediction market module)
+#   prometheus-web      → :8000  (trading C2 backend)
+#   prometheus-daemon   → orchestration (no port)
 #
+# This script only starts the Vite dev servers for hot-reload.
 # For production: run ./deploy.sh instead (builds + copies static files).
 set -euo pipefail
 
@@ -24,7 +28,7 @@ trap cleanup EXIT INT TERM
 
 # ── Check backends are running ──────────────────────────
 echo "Checking backend services..."
-for svc in apathis-api prometheus-api prometheus-daemon; do
+for svc in apathis-api cassandra prometheus-web prometheus-daemon; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     echo "  ✓ $svc is running"
   else
@@ -49,13 +53,15 @@ cd "$ROOT"
 sleep 3
 echo ""
 echo "════════════════════════════════════════════════════════"
-echo "  Backends:       via systemd (check with systemctl status)"
+echo "  Backends (systemd):"
 echo "  Apathis API:    http://localhost:8100"
-echo "  Prometheus API: http://localhost:8200"
+echo "  Cassandra API:  http://localhost:8200  (prediction markets)"
+echo "  Prometheus API: http://localhost:8000"
 echo ""
 echo "  Frontends (dev mode — hot reload):"
 echo "  Prometheus UI:  http://localhost:$FRONTEND_PORT"
 echo "  Apathis UI:     http://localhost:$APATHIS_FRONTEND_PORT"
+echo "    └ Polymarket:  http://localhost:$APATHIS_FRONTEND_PORT/app/polymarket"
 echo ""
 echo "  Press Ctrl+C to stop frontend dev servers"
 echo "════════════════════════════════════════════════════════"
