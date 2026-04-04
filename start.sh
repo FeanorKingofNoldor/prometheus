@@ -24,7 +24,7 @@ trap cleanup EXIT INT TERM
 
 # ── Check backends are running ──────────────────────────
 echo "Checking backend services..."
-for svc in apathis-api prometheus-daemon; do
+for svc in apathis-api prometheus-api prometheus-daemon; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     echo "  ✓ $svc is running"
   else

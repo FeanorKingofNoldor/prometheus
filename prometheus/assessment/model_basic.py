@@ -14,7 +14,6 @@ heavy ML stack.
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, Sequence
@@ -355,12 +354,11 @@ class BasicAssessmentModel(AssessmentModel):
         if ref > 0.0:
             normalised_score = float(max(-1.0, min(1.0, adjusted_score / ref)))
 
-        # Confidence increases with absolute raw momentum but is clipped
-        # to [0, 1].
+        # Confidence uses adjusted_score (not raw) so penalties are reflected.
         conf_ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
         confidence = 0.0
         if not insufficient_history and conf_ref > 0.0:
-            confidence = float(min(1.0, max(0.0, abs(raw_score) / conf_ref)))
+            confidence = float(min(1.0, max(0.0, abs(adjusted_score) / conf_ref)))
 
         # Discrete signal label.
         label = "HOLD"

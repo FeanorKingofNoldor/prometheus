@@ -471,17 +471,20 @@ class OutcomeEvaluator:
         return daily_vol * math.sqrt(252)
 
     def _compute_drawdown(self, returns: List[float]) -> float:
-        """Compute maximum drawdown from daily returns."""
+        """Compute maximum drawdown from daily returns.
+
+        Returns a value in [-1.0, 0.0]. Capped at -1.0 (total loss).
+        """
         if not returns:
             return 0.0
 
-        # Compute cumulative returns
         cumulative = 1.0
         peak = 1.0
         max_dd = 0.0
 
         for ret in returns:
             cumulative *= (1.0 + ret)
+            cumulative = max(cumulative, 0.0)  # floor at zero (total loss)
             if cumulative > peak:
                 peak = cumulative
 
@@ -489,7 +492,7 @@ class OutcomeEvaluator:
             if dd < max_dd:
                 max_dd = dd
 
-        return max_dd
+        return max(max_dd, -1.0)  # cap at -100%
 
     def evaluate_pending_outcomes(
         self,

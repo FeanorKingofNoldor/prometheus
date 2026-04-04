@@ -470,20 +470,28 @@ def execute_job(
         elif job.job_type == "compute_returns":
             # Returns are computed during backfill or on-demand
             # Mark as success if we're past DATA_READY
-            return run.phase != RunPhase.WAITING_FOR_DATA, None
+            if run.phase == RunPhase.WAITING_FOR_DATA:
+                return False, f"EngineRun for {execution.as_of_date} still WAITING_FOR_DATA — data not yet ingested"
+            return True, None
 
         elif job.job_type == "compute_volatility":
             # Volatility computed during backfill
-            return run.phase != RunPhase.WAITING_FOR_DATA, None
+            if run.phase == RunPhase.WAITING_FOR_DATA:
+                return False, f"EngineRun for {execution.as_of_date} still WAITING_FOR_DATA — data not yet ingested"
+            return True, None
 
         elif job.job_type == "build_numeric_windows":
             # Numeric embeddings backfilled separately
-            return run.phase != RunPhase.WAITING_FOR_DATA, None
+            if run.phase == RunPhase.WAITING_FOR_DATA:
+                return False, f"EngineRun for {execution.as_of_date} still WAITING_FOR_DATA — data not yet ingested"
+            return True, None
 
         elif job.job_type == "update_profiles":
             # Profiles are updated as part of run_signals_for_run
             # This is a no-op marker for dependency ordering
-            return run.phase != RunPhase.WAITING_FOR_DATA, None
+            if run.phase == RunPhase.WAITING_FOR_DATA:
+                return False, f"EngineRun for {execution.as_of_date} still WAITING_FOR_DATA — data not yet ingested"
+            return True, None
 
         elif job.job_type == "run_signals":
             # Execute signals phase
@@ -1069,11 +1077,12 @@ class MarketAwareDaemon:
                 )
 
         for execution_id in timed_out:
+            timed_out_job, _ = self.running_jobs[execution_id]
             update_job_execution_status(
                 self.db_manager,
                 execution_id,
                 JobStatus.FAILED,
-                error_message=f"Job timed out after {job.timeout_seconds}s",
+                error_message=f"Job timed out after {timed_out_job.timeout_seconds}s",
             )
             del self.running_jobs[execution_id]
 
@@ -1242,8 +1251,11 @@ class MarketAwareDaemon:
 
         If the machine was off during POST_CLOSE (typically 22:00-02:00 CET),
         the pipeline never triggered. This method detects that case and forces
-        a POST_CLOSE state for US_EQ so the pipeline runs with the previous
-        day's data (which EODHD published overnight).
+        a POST_CLOSE cycle using a *temporary DAG built for the catchup date*,
+        so today's DAG is never polluted with yesterday's job state.
+
+        The catchup loops until all jobs in the catchup DAG complete, ensuring
+        the full pipeline (ingest → compute → signals → execution) runs.
 
         Only triggers once per day, at the configured hour (default: 08:00 local).
         """
@@ -1292,14 +1304,55 @@ class MarketAwareDaemon:
             now_local.strftime("%H:%M"),
         )
 
-        # Override market state to POST_CLOSE for this cycle
-        if "US_EQ" in self.active_dags:
-            dag, dag_id = self.active_dags["US_EQ"]
+        # Build a SEPARATE DAG for the catchup date so we don't pollute
+        # today's DAG with yesterday's job state. This avoids the date
+        # mismatch where ingest runs for yesterday but compute_returns
+        # tries to use today's (empty) EngineRun.
+        catchup_dag = build_market_dag("US_EQ", last_trading_day)
+        catchup_dag_id = f"US_EQ_{last_trading_day.isoformat()}"
+
+        # Loop until all catchup jobs complete (or we hit a safety limit).
+        # Each iteration runs one _process_market cycle, then sleeps for
+        # poll_interval_seconds so retry backoffs can expire.
+        max_iterations = 60  # 12 jobs * ~3 retries + margin
+        for iteration in range(max_iterations):
+            now = datetime.now(timezone.utc)
+            completed = self._get_completed_jobs(catchup_dag_id)
+            running = self._get_running_job_ids()
+            runnable = catchup_dag.get_runnable_jobs(completed, running, MarketState.POST_CLOSE)
+
+            if not runnable:
+                logger.info(
+                    "MarketAwareDaemon: MORNING CATCH-UP complete for %s after %d iterations "
+                    "(%d/%d jobs done)",
+                    last_trading_day,
+                    iteration + 1,
+                    len(completed),
+                    len(catchup_dag.jobs),
+                )
+                break
+
             self._process_market(
-                "US_EQ", dag, dag_id,
+                "US_EQ", catchup_dag, catchup_dag_id,
                 MarketState.POST_CLOSE,
                 last_trading_day,
-                datetime.now(timezone.utc),
+                now,
+            )
+
+            if self.shutdown_requested:
+                break
+
+            # Sleep between iterations to allow retry backoffs to expire
+            # and avoid busy-looping when jobs are in retry delay.
+            time.sleep(self.config.poll_interval_seconds)
+        else:
+            logger.warning(
+                "MarketAwareDaemon: MORNING CATCH-UP for %s exhausted %d iterations "
+                "(%d/%d jobs done) — some jobs may not have completed",
+                last_trading_day,
+                max_iterations,
+                len(self._get_completed_jobs(catchup_dag_id)),
+                len(catchup_dag.jobs),
             )
 
         if not hasattr(self, "_catchup_done"):

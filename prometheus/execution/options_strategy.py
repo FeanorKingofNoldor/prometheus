@@ -100,7 +100,7 @@ class CoveredCallConfig:
     target_delta: float = 0.20         # Sell ~0.20 delta calls (further OTM)
     target_dte_min: int = 30
     target_dte_max: int = 45
-    coverage_ratio: float = 0.20       # Cover up to 20% of position (tightened from 30%)
+    coverage_ratio: float = 0.50       # Cover up to 50% of position
     min_position_days: int = 5         # Only on positions held > 5 days
     profit_target: float = 0.80        # Buy back at 80% profit
     roll_dte: int = 14
@@ -2095,6 +2095,20 @@ class IronCondorStrategy(OptionStrategy):
             entry_price = opt.get("entry_price", 0)
             current_price = opt.get("current_price", entry_price)
 
+            # Emergency exit FIRST — regime hostile takes priority over profit/stop
+            if regime_hostile:
+                directives.append(OptionTradeDirective(
+                    strategy=self.name,
+                    action=TradeAction.CLOSE,
+                    symbol=opt["symbol"],
+                    right=opt.get("right", "P"),
+                    expiry=opt["expiry"],
+                    strike=opt["strike"],
+                    quantity=-opt["quantity"],
+                    reason=f"Iron condor regime exit: VIX={vix:.1f} FRAG={frag:.2f}",
+                ))
+                continue
+
             if entry_price > 0 and current_price > 0:
                 # Profit target: buy back at configured % of max credit
                 profit_pct = (entry_price - current_price) / max(entry_price, 0.01)
@@ -2141,20 +2155,7 @@ class IronCondorStrategy(OptionStrategy):
                 ))
                 continue
 
-            # Emergency exit: regime turned hostile after entry
-            if regime_hostile:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right=opt.get("right", "P"),
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Iron condor regime exit: VIX={vix:.1f} FRAG={frag:.2f}",
-                ))
-
-        # No new positions when regime is hostile or VIX floor not met (premium too thin)
+        # No new positions when regime is hostile or VIX floor not met
         if regime_hostile or vix < self._config.min_vix:
             return directives
 

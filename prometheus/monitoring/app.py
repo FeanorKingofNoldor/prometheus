@@ -25,6 +25,7 @@ from prometheus.monitoring.intelligence_api import intelligence_router
 from prometheus.monitoring.log_buffer import install_buffer
 from prometheus.monitoring.logs_api import router as logs_router
 from prometheus.monitoring.meta_api import kronos_router, meta_router
+from prometheus.monitoring.operations_api import router as operations_router
 from prometheus.monitoring.options_api import router as options_router
 from prometheus.monitoring.visualization_api import router as viz_router
 
@@ -93,6 +94,9 @@ app.include_router(options_router)
 
 # Logs & Reports endpoints
 app.include_router(logs_router)
+
+# Operations dashboard endpoints
+app.include_router(operations_router)
 
 # NOTE: Info-layer routes (entities, intel, nation, geo) are served
 # by the Apathis API on :8100.

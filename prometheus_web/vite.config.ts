@@ -52,6 +52,10 @@ export default defineConfig({
         target: "http://localhost:8100",
         changeOrigin: true,
       },
+      "/api/ops": {
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
       // All other /api/* routes → Prometheus trading API (:8200)
       "/api": {
         target: "http://localhost:8200",

@@ -13,6 +13,7 @@ previous results with the same values.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -370,6 +371,10 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     )
 
     # Transition from WAITING_FOR_DATA to DATA_READY if needed
+    # TODO(issue-22): Race condition — derived data (returns, volatility) may not
+    # be fully computed when this transition fires. The ingestion orchestrator
+    # marks COMPLETE after prices land but before derived series finish. Consider
+    # adding a derived-data-ready gate or computing returns inline here.
     if run.phase == RunPhase.WAITING_FOR_DATA:
         run = update_phase(db_manager, run.run_id, RunPhase.DATA_READY)
 
@@ -377,7 +382,6 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # Regime detection (provider-only)
     # ------------------------------------------------------------------
 
-    regime_ok = False
     try:
         risk_cfg = _load_daily_portfolio_risk_config(run.region)
         regime_storage = RegimeStorage(db_manager=db_manager)
@@ -387,7 +391,6 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         )
         regime_engine = RegimeEngine(model=regime_model, storage=regime_storage)
         regime_engine.get_regime(as_of_date=run.as_of_date, region=run.region.upper())
-        regime_ok = True
     except Exception:  # pragma: no cover - defensive
         logger.exception(
             "run_signals_for_run: CRITICAL — regime detection failed for run_id=%s as_of=%s region=%s. "
@@ -456,6 +459,14 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # Filter candidates to instruments that have a close price on as_of_date.
     # This removes stale/delisted instruments that are still marked ACTIVE
     # in the runtime instruments table.
+    # TODO(issue-23): Stale weekend prices — this filter checks only for a price
+    # on as_of_date exactly, but weekends/holidays have no prices. Consider
+    # allowing a lookback window (e.g. 3 business days) via the trading calendar
+    # to avoid dropping all instruments on non-trading days.
+    # TODO(issue-26): Delistings — instruments that delist mid-period are only
+    # caught by the missing-price filter here. Add explicit delisting detection
+    # (via corporate actions data or EODHD status) and handle open positions in
+    # delisted names (force-close at last traded price, log to trade journal).
     candidate_total = len(instruments)
     instrument_ids_all = [row[0] for row in instruments]
     prices_today = reader.read_prices_close(
@@ -1469,6 +1480,10 @@ def run_books_for_run(
         gross_exposure = float(sum(abs(w) for w in weights.values()))
         cash_weight = float(max(0.0, 1.0 - net_exposure))
 
+        total = net_exposure + cash_weight
+        if total < 0.90:
+            logger.warning("run_books: weights significantly underinvested: net=%.2f cash=%.2f total=%.2f", net_exposure, cash_weight, total)
+
         # Persist hedge targets into book_targets.
         portfolio_storage = PortfolioStorage(db_manager=db_manager)
 
@@ -1693,6 +1708,10 @@ def run_books_for_run(
                 long_overlay_meta["fragility_budget_mult"] = float(mult_computed)
                 long_overlay_meta["fragility_overlay_enabled"] = True
         except Exception:  # pragma: no cover - defensive
+            logger.error(
+                "fragility overlay failed for sleeve run_id=%s as_of=%s — defaulting mult to 1.0",
+                run.run_id, run.as_of_date, exc_info=True,
+            )
             long_overlay_mult = 1.0
             long_overlay_meta = {"fragility_budget_error": "overlay_failed"}
 
@@ -1781,6 +1800,10 @@ def run_books_for_run(
         net_exposure = float(sum(weights.values()))
         gross_exposure = float(sum(abs(w) for w in weights.values()))
         cash_weight = float(max(0.0, 1.0 - net_exposure))
+
+        total = net_exposure + cash_weight
+        if total < 0.90:
+            logger.warning("run_books: weights significantly underinvested: net=%.2f cash=%.2f total=%.2f", net_exposure, cash_weight, total)
 
         # Persist combined universe members for transparency.
         master_universe_id = f"{book_id}_UNIVERSE"
@@ -2101,7 +2124,6 @@ def run_books_for_run(
 
     try:
         from apathis.regime.forward_indicators import compute_forward_indicators
-        from pathlib import Path
         import yaml
 
         fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
@@ -2265,13 +2287,21 @@ def run_books_for_run(
             # then re-apply risk constraints so the sector allocator
             # can't push weights above per-instrument or portfolio limits.
             adjusted_weights = alloc_decision.adjusted_weights
-            from prometheus.risk.api import apply_risk_constraints
 
-            adjusted_weights = apply_risk_constraints(
-                weights=adjusted_weights,
+            risk_decisions = [
+                {"instrument_id": inst_id, "target_weight": float(w)}
+                for inst_id, w in adjusted_weights.items()
+            ]
+            risk_adjusted = apply_risk_constraints(
+                risk_decisions,
                 strategy_id=book_id,
-                max_single_name=getattr(long_sleeve, "portfolio_per_instrument_max_weight", 0.10),
+                db_manager=db_manager,
             )
+            adjusted_weights = {
+                str(d["instrument_id"]): float(d.get("target_weight", 0.0))
+                for d in risk_adjusted
+                if d.get("instrument_id") is not None
+            }
 
             target = TargetPortfolio(
                 portfolio_id=target.portfolio_id,
@@ -2305,12 +2335,25 @@ def run_books_for_run(
                 run.as_of_date,
             )
     except Exception:  # pragma: no cover - defensive
-        logger.exception(
+        logger.error(
             "run_books_for_run: sector allocator failed for run_id=%s as_of=%s; "
             "proceeding with unadjusted weights",
             run.run_id,
             run.as_of_date,
+            exc_info=True,
         )
+        # Record the failure in target metadata so decision tracker captures it
+        if target.metadata is None:
+            target = TargetPortfolio(
+                portfolio_id=target.portfolio_id, as_of_date=target.as_of_date,
+                weights=target.weights, expected_return=target.expected_return,
+                expected_volatility=target.expected_volatility,
+                risk_metrics=target.risk_metrics, factor_exposures=target.factor_exposures,
+                constraints_status=target.constraints_status,
+                metadata={"sector_allocator_failed": True},
+            )
+        else:
+            target.metadata["sector_allocator_failed"] = True
 
     # Record portfolio decision
     try:
@@ -2522,7 +2565,7 @@ def run_execution_for_run(
     if mode == "dry_run":
         # Synthesise empty positions for dry-run (no broker connection).
         current_positions: Dict[str, BrokerPosition] = {}
-        account_equity = 1_000_000.0  # notional equity for dry-run
+        account_equity = float(os.getenv("DRY_RUN_EQUITY", "1000000"))  # notional equity for dry-run
         prices: Dict[str, float] = _load_latest_prices(
             db_manager, list(target_weights.keys()), run.as_of_date,
         )
@@ -2546,9 +2589,10 @@ def run_execution_for_run(
         # daemon thread (APScheduler), there may not be one.
         import asyncio
         try:
-            asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         conn_config = create_connection_config(
             mode=ibkr_mode,
@@ -2649,6 +2693,15 @@ def run_execution_for_run(
         len(current_positions),
         len(target_quantities),
     )
+
+    # After orders are computed, log turnover
+    total_trade_value = sum(
+        abs(o.quantity * prices.get(o.instrument_id, 0.0)) for o in orders
+    )
+    if account_equity > 0:
+        turnover = total_trade_value / account_equity
+        if turnover > 0.5:
+            logger.warning("run_execution: turnover %.1f%% exceeds 50%% limit", turnover * 100)
 
     # Safety check: max order count.
     # On breach, mark the run as FAILED — do NOT advance to EXECUTION_DONE,
@@ -3200,9 +3253,10 @@ def run_options_for_run(
             # daemon thread (APScheduler), there may not be one.
             import asyncio
             try:
-                asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                asyncio.set_event_loop(asyncio.new_event_loop())
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
             client = IbkrClientImpl(config=conn_config)
             client.connect()

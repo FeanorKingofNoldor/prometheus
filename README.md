@@ -40,6 +40,7 @@ The daily pipeline progresses through phases tracked in `engine_runs`:
 | **Tier 1 Monitor** | 39 systemic entities (G-SIBs, central banks) → SOP constraints | `apathis/stability/tier1_monitor.py` |
 | **Options** | 7 strategies (iron butterfly, VIX tail hedge, bull call spread, etc.) | `prometheus/execution/options_strategy.py` |
 | **Crisis Alpha** | Offensive SPY puts when 5+ sectors deteriorate | `prometheus/sector/crisis_alpha.py` |
+| **Daemon Log Viewer** | Live-tailing daemon logs in the frontend dashboard | `prometheus/monitoring/` |
 
 ### Production Config
 
@@ -152,6 +153,7 @@ FastAPI on port 8200. Docs at `http://localhost:8200/api/docs`.
 | Execution | `/api/status/execution`, `/api/status/orders` |
 | Meta | `/api/meta/feedback`, `/api/meta/weekly_report`, `/api/meta/trade_journal` |
 | Control | `/api/control/schedule_dag`, `/api/control/sync_data` |
+| Logs | `/api/logs/daemon` (live tailing) |
 | Kronos | `/api/kronos/chat` |
 
 ## Tech Stack

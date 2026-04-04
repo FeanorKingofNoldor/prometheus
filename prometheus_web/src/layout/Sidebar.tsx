@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Brain,
   Activity,
+  Server,
 } from "lucide-react";
 
 const links = [
@@ -18,6 +19,7 @@ const links = [
   { to: "/portfolio", icon: Briefcase, label: "Portfolio" },
   { to: "/execution", icon: ArrowRightLeft, label: "Execution" },
   { to: "/monitor", icon: Activity, label: "Trade Monitor" },
+  { to: "/operations", icon: Server, label: "Operations" },
   { to: "/backtests", icon: FlaskConical, label: "Backtests" },
   { to: "/options", icon: LineChart, label: "Options" },
   { to: "/intelligence", icon: Brain, label: "Intelligence" },

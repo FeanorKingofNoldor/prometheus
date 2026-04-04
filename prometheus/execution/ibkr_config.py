@@ -90,13 +90,7 @@ def load_credentials(mode: IbkrMode) -> IbkrCredentials:
     password = os.getenv(f"{prefix}PASSWORD")
     account = os.getenv(f"{prefix}ACCOUNT")
 
-    # Default values
-    if mode == IbkrMode.PAPER:
-        username = username or "xubtmn245"
-        account = account or "DUN807925"
-    elif mode == IbkrMode.LIVE:
-        username = username or "maximilianhuethmayr"
-        account = account or "U22014992"
+    # No hardcoded defaults — credentials MUST come from environment variables.
 
     if not username:
         raise ValueError(

@@ -1,0 +1,33 @@
+[Unit]
+Description=Prometheus Monitoring API (FastAPI/Uvicorn)
+After=network.target postgresql.service apathis-api.service
+Requires=postgresql.service
+Wants=apathis-api.service
+
+[Service]
+Type=simple
+User=feanor
+Group=feanor
+WorkingDirectory=/home/feanor/coding/prometheus
+EnvironmentFile=/etc/sysconfig/prometheus-daemon
+
+Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apathis:/home/feanor/coding/prometheus
+
+ExecStart=/usr/bin/python3.14 \
+    -m uvicorn prometheus.monitoring.app:app \
+    --host 0.0.0.0 \
+    --port 8200 \
+    --workers 2
+
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prometheus-api
+
+[Install]
+WantedBy=multi-user.target

@@ -519,7 +519,7 @@ def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
-        timeout_seconds=120,  # Flash check is fast (no LLM)
+        timeout_seconds=300,  # First run ~180s (cold SQL cache), subsequent <1s
     )
 
     # Daily SITREP — heavy (4 analysts + synthesis via Ollama)
@@ -532,7 +532,7 @@ def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=300,
-        timeout_seconds=1800,  # 30 min — Ollama is slow
+        timeout_seconds=5400,  # 90 min — 5 sequential Ollama LLM calls take 45-75 min
     )
 
     # Weekly assessment — only on Sundays, depends on daily SITREP
@@ -626,6 +626,7 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 2. Prediction scorecard — compares assessment scores vs realized returns
+    #    63d horizon processes 250K+ evaluations and needs >10 min; no timeout.
     jobs[f"kronos_scorecard_{date_str}"] = JobMetadata(
         job_id=f"kronos_scorecard_{date_str}",
         job_type="kronos_scorecard",
@@ -635,7 +636,7 @@ def build_kronos_dag(as_of_date: date) -> DAG:
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
-        timeout_seconds=600,
+        timeout_seconds=3600,
     )
 
     # 3. Lambda scorecard — evaluates lambda_hat directional accuracy

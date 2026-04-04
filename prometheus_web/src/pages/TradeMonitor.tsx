@@ -217,7 +217,7 @@ export default function TradeMonitor() {
       )}
 
       {/* Formatted Report */}
-      {w.formatted_report && (
+      {!!w.formatted_report && (
         <Panel title="Full Weekly Report (Text)">
           <pre className="whitespace-pre-wrap text-[11px] text-zinc-400 font-mono max-h-96 overflow-y-auto">
             {String(w.formatted_report)}

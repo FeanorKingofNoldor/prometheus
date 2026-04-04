@@ -1,12 +1,14 @@
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { ScrollText, Activity, FileText, ArrowRightLeft } from "lucide-react";
+import { ScrollText, Activity, FileText, ArrowRightLeft, Terminal } from "lucide-react";
+import DaemonTab from "./logs/DaemonTab";
 import SystemLogsTab from "./logs/SystemLogsTab";
 import PipelineRunsTab from "./logs/PipelineRunsTab";
 import ReportsTab from "./logs/ReportsTab";
 import ExecutionTab from "./logs/ExecutionTab";
 
 const TABS = [
+  { key: "daemon", label: "Daemon", icon: Terminal },
   { key: "system", label: "System Logs", icon: ScrollText },
   { key: "runs", label: "Pipeline Runs", icon: Activity },
   { key: "reports", label: "Reports", icon: FileText },
@@ -17,7 +19,7 @@ type TabKey = (typeof TABS)[number]["key"];
 
 export default function LogsReports() {
   const [params, setParams] = useSearchParams();
-  const activeTab = (params.get("tab") as TabKey) || "system";
+  const activeTab = (params.get("tab") as TabKey) || "daemon";
 
   const setTab = (t: TabKey) => setParams({ tab: t });
 
@@ -47,6 +49,7 @@ export default function LogsReports() {
       </div>
 
       {/* Active tab content */}
+      {activeTab === "daemon" && <DaemonTab />}
       {activeTab === "system" && <SystemLogsTab />}
       {activeTab === "runs" && <PipelineRunsTab />}
       {activeTab === "reports" && <ReportsTab />}

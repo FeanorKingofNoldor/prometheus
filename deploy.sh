@@ -19,7 +19,10 @@ cd "$APATHIS_ROOT/apathis_web"
 npm run build
 rm -rf "$APATHIS_ROOT/static"
 cp -r dist "$APATHIS_ROOT/static"
-echo "  ✓ Apathis frontend built → $APATHIS_ROOT/static/"
+# Copy to /opt/ for nginx (nginx can't traverse /home/feanor/)
+sudo rm -rf /opt/apathis/static
+sudo cp -r dist /opt/apathis/static
+echo "  ✓ Apathis frontend built → /opt/apathis/static/"
 
 # ── Build Prometheus frontend ────────────────────────────
 echo ""
@@ -28,7 +31,19 @@ cd "$ROOT/prometheus_web"
 npm run build
 rm -rf "$ROOT/static"
 cp -r dist "$ROOT/static"
-echo "  ✓ Prometheus frontend built → $ROOT/static/"
+# Copy to /opt/ for nginx
+sudo mkdir -p /opt/prometheus
+sudo rm -rf /opt/prometheus/static
+sudo cp -r dist /opt/prometheus/static
+echo "  ✓ Prometheus frontend built → /opt/prometheus/static/"
+
+# ── Deploy nginx configs ─────────────────────────────────
+echo ""
+echo "Deploying nginx configs..."
+sudo cp "$ROOT/deploy/nginx/prometheus.conf" /etc/nginx/conf.d/prometheus.conf
+sudo cp "$ROOT/deploy/nginx/apathis.conf" /etc/nginx/conf.d/apathis.conf
+sudo nginx -t && sudo systemctl reload nginx
+echo "  ✓ Nginx configs deployed"
 
 # ── Restart backends to pick up static files ─────────────
 echo ""

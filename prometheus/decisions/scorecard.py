@@ -7,6 +7,12 @@ forward returns to measure prediction accuracy. Produces:
 - Sector breakdown: hit rate and avg error per sector
 - Top misses: largest absolute mismatches between prediction and outcome
 
+# TODO(issue-27): Selection bias — the scorecard only evaluates instruments that
+# received decisions (i.e. were selected into the universe). Instruments that were
+# scored but excluded are not tracked, so the scorecard overstates accuracy if the
+# universe filter systematically avoids low-confidence predictions. Add an
+# "out-of-universe" comparison group to measure selection effect.
+
 Usage::
 
     from prometheus.decisions.scorecard import PredictionScorecard
@@ -285,27 +291,55 @@ class PredictionScorecard:
         entry_date: date,
         exit_date: date,
     ) -> Dict[str, float]:
-        """Compute forward returns from entry_date to exit_date."""
+        """Compute forward returns from entry_date to exit_date.
+
+        Uses a single batch SQL query instead of per-instrument lookups.
+        """
+        if not instrument_ids:
+            return {}
+
         returns: Dict[str, float] = {}
 
-        for inst_id in instrument_ids:
+        # Check if we already have prices cached for this date range
+        cache_key = (entry_date, exit_date)
+        if not hasattr(self, "_price_cache"):
+            self._price_cache: Dict[tuple, Dict[str, tuple]] = {}
+
+        if cache_key not in self._price_cache:
+            # Batch load: get first and last close for all instruments in date range
+            sql = """
+                SELECT instrument_id,
+                       (ARRAY_AGG(close ORDER BY trade_date ASC))[1]  AS entry_px,
+                       (ARRAY_AGG(close ORDER BY trade_date DESC))[1] AS exit_px
+                FROM prices_daily
+                WHERE instrument_id = ANY(%s)
+                  AND trade_date BETWEEN %s AND %s
+                  AND close > 0
+                GROUP BY instrument_id
+                HAVING COUNT(*) >= 2
+            """
+            batch: Dict[str, tuple] = {}
             try:
-                df = self._data_reader.read_prices(
-                    instrument_ids=[inst_id],
-                    start_date=entry_date,
-                    end_date=exit_date,
-                )
-                if df.empty or len(df) < 2:
-                    continue
-
-                df_sorted = df.sort_values("trade_date")
-                entry_px = float(df_sorted.iloc[0]["close"])
-                exit_px = float(df_sorted.iloc[-1]["close"])
-
-                if entry_px > 0 and math.isfinite(entry_px) and math.isfinite(exit_px):
-                    returns[inst_id] = (exit_px / entry_px) - 1.0
+                with self.db_manager.get_historical_connection() as conn:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(sql, (instrument_ids, entry_date, exit_date))
+                        for inst_id, entry_px, exit_px in cursor.fetchall():
+                            batch[str(inst_id)] = (float(entry_px), float(exit_px))
+                    finally:
+                        cursor.close()
             except Exception:
+                pass
+            self._price_cache[cache_key] = batch
+
+        cached = self._price_cache[cache_key]
+        for inst_id in instrument_ids:
+            px = cached.get(inst_id)
+            if px is None:
                 continue
+            entry_px, exit_px = px
+            if entry_px > 0 and math.isfinite(entry_px) and math.isfinite(exit_px):
+                returns[inst_id] = (exit_px / entry_px) - 1.0
 
         return returns
 

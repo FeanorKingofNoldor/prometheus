@@ -14,13 +14,10 @@ Usage:
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
+from typing import Any, Dict, List, Tuple
 from apathis.core.database import get_db_manager
 from apathis.core.logging import get_logger
 from apathis.sector.health import SectorHealthEngine, SECTOR_NAME_TO_ETF
@@ -335,9 +332,6 @@ def main() -> None:
         for p in pnl:
             cum += p
             cum_returns.append(cum)
-
-        peak_pnl = max(cum_returns) if cum_returns else 0
-        max_dd = min(c - peak_pnl for c in cum_returns) if cum_returns else 0
 
         print(f"\n{name}")
         print(f"  Net P&L:       ${total_pnl:>+15,.0f}")

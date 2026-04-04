@@ -13,6 +13,7 @@ import Chat from "./pages/Chat";
 import Docs from "./pages/Docs";
 import Intelligence from "./pages/Intelligence";
 import TradeMonitor from "./pages/TradeMonitor";
+import Operations from "./pages/Operations";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="backtests" element={<Backtests />} />
         <Route path="options" element={<Options />} />
         <Route path="intelligence" element={<Intelligence />} />
+        <Route path="operations" element={<Operations />} />
         <Route path="logs" element={<LogsReports />} />
         <Route path="docs/:pageKey?" element={<Docs />} />
         <Route path="settings" element={<Settings />} />

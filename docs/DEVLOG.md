@@ -1,5 +1,36 @@
 # Prometheus Development Log
 
+## 2026-04-01 — Pipeline Audit, Ollama Streaming, Daemon Log Viewer
+
+### Pipeline Audit (38 Issues)
+- **5 critical**: IBKR credentials removed from source, `timedelta` import fix, `decision_outcomes` UNIQUE constraint, log returns division-by-zero guard, volatility window off-by-one
+- **12 high**: confidence now uses `adjusted_score`, scorecard O(N^2) replaced with batch SQL, max drawdown capped at -100%, FAILED state recovery, iron condor regime exit priority, COALESCE NULL fix
+- **14 medium, 7 low**: assorted robustness and correctness fixes across the pipeline
+
+### Ollama Streaming Timeout
+- Replaced blocking `stream: False` with token-flow monitoring to avoid timeouts on long LLM calls
+
+### DDG News Entity Mapping
+- Topics from DuckDuckGo news now map to real graph entities instead of raw strings
+
+### Daemon Log Viewer
+- New frontend tab with live log tailing for the production daemon
+
+### GDELT Rate Limiting
+- Added 1.5s delay between GDELT queries to avoid HTTP 429 errors
+
+### Conflict Analyst
+- Re-enabled with 2 focused tools (was disabled due to hallucination issues)
+
+### Runtime Data Cleanup
+- Cleared runtime data for first real test week; March 30 reconstructed from source data
+
+### Config Changes
+- Covered call coverage ratio increased from 20% to 50%
+- Kronos scorecard timeout increased to 3600s
+
+---
+
 ## 2026-03-27 — Grid Search, Tier 1 Monitor, EDGAR Guidance, Kronos Monitor
 
 ### Production Config Optimization

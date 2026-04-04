@@ -17,7 +17,7 @@ Designed for the 2-3 month live validation period on $250K paper.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -135,6 +135,7 @@ def compute_weekly_report(
     n_exits = 0
     current_nav = 0.0
     period_return = 0.0
+    start_nav = 0.0
 
     with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
@@ -182,6 +183,21 @@ def compute_weekly_report(
 
                 # Sector attribution
                 sector_pnl[sector] = sector_pnl.get(sector, 0) + float(pnl)
+
+            # ── Period return from NAV changes ──────────────────────
+            cur.execute("""
+                SELECT COALESCE(SUM(market_value), 0)
+                FROM positions_snapshots
+                WHERE timestamp = (
+                    SELECT MAX(timestamp) FROM positions_snapshots
+                    WHERE timestamp::date <= %s
+                )
+            """, (period_start,))
+            start_row = cur.fetchone()
+            if start_row and start_row[0]:
+                start_nav = float(start_row[0])
+            if start_nav > 0 and current_nav > 0:
+                period_return = (current_nav - start_nav) / start_nav
 
             # ── Orders this period ───────────────────────────────────
             cur.execute("""
@@ -314,7 +330,7 @@ def format_weekly_report(report: WeeklyReport) -> str:
     """Format the weekly report as human-readable text."""
     lines = [
         f"{'='*60}",
-        f"KRONOS WEEKLY TRADE MONITOR",
+        "KRONOS WEEKLY TRADE MONITOR",
         f"Period: {report.period_start} to {report.period_end}",
         f"{'='*60}",
         "",

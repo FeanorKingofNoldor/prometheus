@@ -301,6 +301,10 @@ class BasicUniverseModel:
     # issuers.sector value if no as-of classification is available.
     allow_legacy_issuer_sector_fallback: bool = False
 
+    # NOTE: Market cap filtering is intentionally omitted. The liquidity
+    # filter (min_avg_volume) combined with STAB/fragility scoring is
+    # sufficient to exclude illiquid micro-caps without imposing an
+    # arbitrary capitalisation threshold.
     min_avg_volume: float = 100_000.0
     max_soft_target_score: float = 80.0
     exclude_breakers: bool = True
@@ -808,6 +812,10 @@ class BasicUniverseModel:
                             soft_target_class=stab_state.soft_target_class.value,
                         )
                     except Exception:  # pragma: no cover - defensive
+                        # TODO(issue-24): Lambda provider errors are silently swallowed.
+                        # Consider tracking failure rate and disabling the provider if it
+                        # fails consistently, rather than silently falling back to zero
+                        # lambda weight per instrument.
                         logger.exception(
                             "BasicUniverseModel: lambda provider failed for as_of=%s market=%s sector=%s soft_target_class=%s",
                             as_of_date,

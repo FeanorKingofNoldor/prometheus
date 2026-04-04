@@ -6,6 +6,11 @@ helpers for applying simple constraints such as per-name weight caps.
 Later iterations can extend this to load configs from dedicated
 ``risk_configs`` / ``strategy_configs`` tables as described in the
 planning documents.
+
+# TODO(issue-21): Risk constraints are per-name only — add sector-level,
+# gross/net exposure, correlation, and drawdown constraints. Currently the
+# only constraint is max_abs_weight_per_name which misses portfolio-level
+# risk limits (e.g. sector concentration, factor exposure, beta).
 """
 
 from __future__ import annotations

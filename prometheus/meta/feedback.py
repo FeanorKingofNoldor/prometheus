@@ -11,9 +11,9 @@ Called after outcome evaluation in the daily pipeline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger

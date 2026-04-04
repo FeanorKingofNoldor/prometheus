@@ -117,22 +117,25 @@ export function DataTable<T extends Record<string, unknown>>({
                   }`}
                   onClick={() => onRowClick?.(row)}
                 >
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      className={`${py} px-3 ${
-                        col.align === "right"
-                          ? "text-right"
-                          : col.align === "center"
-                            ? "text-center"
-                            : ""
-                      }`}
-                    >
-                      {col.render
-                        ? col.render(row)
-                        : String(row[col.key] ?? "—")}
-                    </td>
-                  ))}
+                  {columns.map((col) => {
+                    const cell: React.ReactNode = col.render
+                      ? col.render(row)
+                      : String(row[col.key] ?? "—");
+                    return (
+                      <td
+                        key={col.key}
+                        className={`${py} px-3 ${
+                          col.align === "right"
+                            ? "text-right"
+                            : col.align === "center"
+                              ? "text-center"
+                              : ""
+                        }`}
+                      >
+                        {cell}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))
             )}

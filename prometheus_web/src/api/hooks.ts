@@ -52,6 +52,13 @@ export const useExecutionDecisions = (portfolioId = DEFAULT_PORTFOLIO) =>
 export const useRiskActions = (strategyId = DEFAULT_STRATEGY) =>
   useQuery({ queryKey: ["status", "risk_actions", strategyId], queryFn: () => api.get(`/status/risk_actions?strategy_id=${strategyId}`) });
 
+// ── Operations ────────────────────────────────────────────
+export const useOpsOverview = () =>
+  useQuery({ queryKey: ["ops", "overview"], queryFn: () => api.get("/ops/overview"), refetchInterval: 30_000 });
+
+export const useOpsDay = (targetDate: string) =>
+  useQuery({ queryKey: ["ops", "day", targetDate], queryFn: () => api.get(`/ops/day/${targetDate}`), enabled: !!targetDate });
+
 // ── Options ─────────────────────────────────────────────
 export const useOptionsResults = () =>
   useQuery({ queryKey: ["options", "results"], queryFn: () => api.get("/options/results") });
@@ -482,6 +489,25 @@ export const useSystemLogs = (params?: { level?: string; category?: string; sear
 
 export const useLogCategories = () =>
   useQuery({ queryKey: ["logs", "system", "categories"], queryFn: () => api.get("/logs/system/categories") });
+
+export const useDaemonLogs = (params?: { level?: string; category?: string; search?: string; limit?: number; enabled?: boolean }) =>
+  useQuery({
+    queryKey: ["logs", "daemon", params],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (params?.level) qs.set("level", params.level);
+      if (params?.category) qs.set("category", params.category);
+      if (params?.search) qs.set("search", params.search);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      const q = qs.toString();
+      return api.get(`/logs/daemon${q ? `?${q}` : ""}`);
+    },
+    refetchInterval: 5_000,
+    enabled: params?.enabled !== false,
+  });
+
+export const useDaemonCategories = () =>
+  useQuery({ queryKey: ["logs", "daemon", "categories"], queryFn: () => api.get("/logs/daemon/categories") });
 
 export const useEngineRuns = (params?: { status?: string; region?: string; limit?: number }) =>
   useQuery({

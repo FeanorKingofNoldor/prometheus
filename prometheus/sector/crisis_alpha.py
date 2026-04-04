@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from apathis.core.logging import get_logger
 

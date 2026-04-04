@@ -490,6 +490,11 @@ class SyntheticOptionsBook:
 
     # ── Expiration handling ──────────────────────────────────────────
 
+    # TODO(issue-29): Options intrinsic value — expiration settlement uses only
+    # intrinsic value (max(S-K,0) for calls, max(K-S,0) for puts). For American
+    # options, early exercise decisions should also consider time value. For spread
+    # positions, the net intrinsic may misstate P&L if only one leg is ITM. Consider
+    # adding proper spread-aware settlement logic.
     def expire_positions(
         self,
         as_of_date: date,

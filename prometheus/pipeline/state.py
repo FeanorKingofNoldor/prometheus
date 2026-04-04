@@ -267,7 +267,9 @@ def _validate_transition(current: RunPhase, new: RunPhase) -> None:
         return
 
     if current == RunPhase.FAILED:
-        raise EngineRunStateError("Cannot transition from FAILED state")
+        if new == RunPhase.WAITING_FOR_DATA:
+            return  # allow retry from FAILED
+        raise EngineRunStateError("Cannot transition from FAILED state (only WAITING_FOR_DATA allowed)")
 
     allowed_successors: dict[RunPhase, set[RunPhase]] = {
         RunPhase.WAITING_FOR_DATA: {RunPhase.DATA_READY, RunPhase.FAILED},

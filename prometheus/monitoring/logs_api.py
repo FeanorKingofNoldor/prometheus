@@ -2,12 +2,15 @@
 
 Endpoints for the C2 Logs & Reports tab:
   - System log viewer (from in-memory buffer)
+  - Daemon log viewer (from log file)
   - Engine runs (from engine_runs table)
   - LLM-generated reports (from reports table)
 """
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Any, Dict, List, Optional
 
 from apathis.core.database import get_db_manager
@@ -20,6 +23,8 @@ from prometheus.monitoring.log_buffer import get_categories, get_logs
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
+
+DAEMON_LOG_PATH = os.environ.get("DAEMON_LOG_PATH", "/tmp/prometheus-daemon.log")
 
 
 # ── Response models ──────────────────────────────────────────────────
@@ -87,6 +92,123 @@ async def get_system_logs(
 async def get_log_categories() -> List[str]:
     """Return unique log category names."""
     return get_categories()
+
+
+# ── Daemon Logs (from log file) ─────────────────────────────────────
+
+# Pattern: "2026-03-31 12:37:38 - apathis.core.database - INFO - message"
+_DAEMON_LOG_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+"  # timestamp
+    r"([\w.]+)\s+-\s+"                                     # logger name
+    r"(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+-\s+"           # level
+    r"(.*)$"                                                # message
+)
+
+_LEVEL_RANK = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+
+
+def _parse_daemon_log(
+    *,
+    level: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 500,
+    offset_bytes: int = 0,
+) -> tuple[List[Dict[str, Any]], int]:
+    """Parse daemon log file, returning (entries_newest_first, file_size)."""
+    if not os.path.isfile(DAEMON_LOG_PATH):
+        return [], 0
+
+    file_size = os.path.getsize(DAEMON_LOG_PATH)
+
+    # Read from the end for efficiency — grab last 2MB max
+    read_size = min(file_size, 2 * 1024 * 1024)
+    start_pos = max(0, file_size - read_size) if offset_bytes == 0 else offset_bytes
+
+    with open(DAEMON_LOG_PATH, "r", errors="replace") as f:
+        if start_pos > 0:
+            f.seek(start_pos)
+            f.readline()  # skip partial line
+        lines = f.readlines()
+
+    min_rank = _LEVEL_RANK.get(level.upper(), 0) if level else 0
+    cat_filter = category.lower() if category else None
+    search_filter = search.lower() if search else None
+
+    entries: List[Dict[str, Any]] = []
+    # Multiline: accumulate continuation lines into previous entry's message
+    current: Optional[Dict[str, Any]] = None
+
+    for line in lines:
+        line = line.rstrip("\n")
+        m = _DAEMON_LOG_RE.match(line)
+        if m:
+            # Flush previous entry
+            if current is not None:
+                entries.append(current)
+            ts, name, lvl, msg = m.groups()
+            # Shorten category: "apathis.prometheus.pipeline.tasks" → "pipeline.tasks"
+            parts = name.split(".")
+            if len(parts) > 2:
+                short_cat = ".".join(parts[-2:])
+            else:
+                short_cat = name
+            current = {
+                "timestamp": ts,
+                "level": lvl,
+                "category": short_cat,
+                "source": name,
+                "message": msg,
+            }
+        elif current is not None:
+            # Continuation line (traceback, etc.)
+            current["message"] += "\n" + line
+
+    # Flush last entry
+    if current is not None:
+        entries.append(current)
+
+    # Filter
+    filtered: List[Dict[str, Any]] = []
+    for e in reversed(entries):
+        if min_rank and _LEVEL_RANK.get(e["level"], 0) < min_rank:
+            continue
+        if cat_filter and cat_filter not in e["category"].lower() and cat_filter not in e["source"].lower():
+            continue
+        if search_filter and search_filter not in e["message"].lower():
+            continue
+        filtered.append(e)
+        if len(filtered) >= limit:
+            break
+
+    return filtered, file_size
+
+
+@router.get("/daemon")
+async def get_daemon_logs(
+    level: Optional[str] = Query(None, description="Min level: DEBUG|INFO|WARNING|ERROR"),
+    category: Optional[str] = Query(None, description="Substring match on logger name"),
+    search: Optional[str] = Query(None, description="Substring match on message"),
+    limit: int = Query(500, ge=1, le=5000),
+) -> Dict[str, Any]:
+    """Return recent daemon log entries from the log file."""
+    entries, file_size = _parse_daemon_log(
+        level=level, category=category, search=search, limit=limit,
+    )
+    return {
+        "entries": entries,
+        "file_size": file_size,
+        "log_path": DAEMON_LOG_PATH,
+        "available": os.path.isfile(DAEMON_LOG_PATH),
+    }
+
+
+@router.get("/daemon/categories")
+async def get_daemon_categories() -> List[str]:
+    """Return unique categories from daemon log file."""
+    entries, _ = _parse_daemon_log(limit=5000)
+    cats = sorted({e["category"] for e in entries})
+    return cats
 
 
 # ── Engine Runs ──────────────────────────────────────────────────────
