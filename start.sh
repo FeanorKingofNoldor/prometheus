@@ -16,12 +16,14 @@ APATHIS_ROOT="/home/feanor/coding/apathis"
 
 FRONTEND_PORT=5173
 APATHIS_FRONTEND_PORT=5174
+CASSANDRA_FRONTEND_PORT=5175
+CASSANDRA_ROOT="/home/feanor/coding/cassandra"
 
 cleanup() {
   echo ""
   echo "Shutting down frontend dev servers..."
-  kill "$FRONTEND_PID" "$APATHIS_FE_PID" 2>/dev/null || true
-  wait "$FRONTEND_PID" "$APATHIS_FE_PID" 2>/dev/null || true
+  kill "$FRONTEND_PID" "$APATHIS_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
+  wait "$FRONTEND_PID" "$APATHIS_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
   echo "Done."
 }
 trap cleanup EXIT INT TERM
@@ -39,7 +41,7 @@ for pid in $(pgrep -f "uvicorn cassandra.api.app" 2>/dev/null || true); do
 done
 
 # Kill orphan vite processes on our ports
-for port in $FRONTEND_PORT $APATHIS_FRONTEND_PORT; do
+for port in $FRONTEND_PORT $APATHIS_FRONTEND_PORT $CASSANDRA_FRONTEND_PORT; do
   stale_pid=$(lsof -ti ":$port" 2>/dev/null || true)
   if [ -n "$stale_pid" ]; then
     echo "  Killing stale process on :$port (pid $stale_pid)"
@@ -84,6 +86,13 @@ npx vite --port "$APATHIS_FRONTEND_PORT" < /dev/null &
 APATHIS_FE_PID=$!
 cd "$ROOT"
 
+# ── Cassandra Frontend ──────────────────────────────────
+echo "Starting Cassandra frontend on :$CASSANDRA_FRONTEND_PORT..."
+cd "$CASSANDRA_ROOT/cassandra_web"
+npx vite --port "$CASSANDRA_FRONTEND_PORT" < /dev/null &
+CASSANDRA_FE_PID=$!
+cd "$ROOT"
+
 sleep 3
 echo ""
 echo "════════════════════════════════════════════════════════"
@@ -95,11 +104,7 @@ echo ""
 echo "  Frontends (dev mode — hot reload):"
 echo "  Prometheus UI:  http://localhost:$FRONTEND_PORT"
 echo "  Apathis UI:     http://localhost:$APATHIS_FRONTEND_PORT"
-echo "    Polymarket:   http://localhost:$APATHIS_FRONTEND_PORT/app/polymarket"
-echo "    Docs:         http://localhost:$APATHIS_FRONTEND_PORT/app/docs/polymarket"
-echo ""
-echo "  Web (via nginx):"
-echo "  Public:         https://apathis.ai/app/polymarket"
+echo "  Cassandra UI:   http://localhost:$CASSANDRA_FRONTEND_PORT"
 echo ""
 echo "  Press Ctrl+C to stop frontend dev servers"
 echo "════════════════════════════════════════════════════════"
