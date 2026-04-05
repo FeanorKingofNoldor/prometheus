@@ -1,5 +1,29 @@
 # Prometheus Development Log
 
+## 2026-04-05 — Operations Dashboard, Daemon Reliability, Production Deployment
+
+### Daemon Reliability
+- Morning catchup date mismatch fix: separate temporary DAG for catchup date
+- Timeout fixes: intel_flash_check 120s→300s, intel_daily_sitrep 1800s→5400s
+- Catchup busy loop fix: sleep between iterations, max_iterations=60
+- _check_timeouts stale variable: fixed wrong job reference
+- Descriptive error messages for compute_returns/volatility failures
+- Critical: apply_risk_constraints called with wrong kwargs in tasks.py
+
+### Operations Dashboard
+- New `/api/ops/overview` + `/api/ops/day/{date}` endpoints
+- Frontend page at `/operations` with service status, 14-day history, day drill-down
+- Sidebar entry with Server icon
+
+### Production Deployment
+- nginx configs: split routing (info-layer→:8100, trading→:8200)
+- deploy.sh: builds frontends, copies to /opt/, deploys nginx, restarts services
+- start.sh: added prometheus-api to health check
+- Static IP: 88.116.16.140:8443
+
+### Code Quality
+- 4 audit rounds, 15+ fixes: lint errors, unused imports, TS type issues, cursor leaks
+
 ## 2026-04-01 — Pipeline Audit, Ollama Streaming, Daemon Log Viewer
 
 ### Pipeline Audit (38 Issues)

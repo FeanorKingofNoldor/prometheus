@@ -1,0 +1,12 @@
+Pipeline Health Report: UK_EQ 2026-04-02
+Run ID: d4fd9ec6-fce6-4ba6-bcd9-567928dc66de
+Final Phase: EXECUTION_DONE
+Prices: 45
+Targets: 0
+Orders: 0
+Sector Health: 0
+
+ISSUES:
+  - LOW PRICE COVERAGE: only 45 instruments (expected ~660)
+  - NO TARGET PORTFOLIO: books phase produced no targets
+  - NO SECTOR HEALTH: SHI not computed for this date

@@ -1,0 +1,12 @@
+Pipeline Health Report: KR_EQ 2026-04-03
+Run ID: 592c8cb2-7454-48b4-9bc4-1681bb5f7f5a
+Final Phase: EXECUTION_DONE
+Prices: 0
+Targets: 0
+Orders: 0
+Sector Health: 0
+
+ISSUES:
+  - LOW PRICE COVERAGE: only 0 instruments (expected ~660)
+  - NO TARGET PORTFOLIO: books phase produced no targets
+  - NO SECTOR HEALTH: SHI not computed for this date
