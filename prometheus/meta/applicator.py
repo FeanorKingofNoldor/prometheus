@@ -1,4 +1,4 @@
-"""Prometheus v2 – Meta/Kronos Proposal Applicator.
+"""Prometheus v2 – Meta/Iris Proposal Applicator.
 
 This module applies approved configuration proposals to strategies and tracks
 their performance outcomes. It provides safe application with validation,

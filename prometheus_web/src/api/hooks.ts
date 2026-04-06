@@ -305,24 +305,24 @@ export const useIbkrStatus = () =>
     refetchInterval: 15_000,
   });
 
-// ── Kronos ──────────────────────────────────────────────
-export const useKronosChat = () =>
-  useMutation({ mutationFn: (payload: { question: string; context?: Record<string, unknown> }) => api.post("/kronos/chat", payload) });
+// ── Iris ──────────────────────────────────────────────
+export const useIrisChat = () =>
+  useMutation({ mutationFn: (payload: { question: string; context?: Record<string, unknown> }) => api.post("/iris/chat", payload) });
 
 export const useLlmConfig = () =>
-  useQuery({ queryKey: ["kronos", "llm_config"], queryFn: () => api.get("/kronos/llm/config") });
+  useQuery({ queryKey: ["iris", "llm_config"], queryFn: () => api.get("/iris/llm/config") });
 
 export const useSetLlmConfig = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: { provider: string; model?: string; api_key?: string; base_url?: string }) =>
-      api.post("/kronos/llm/config", payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["kronos", "llm_config"] }),
+      api.post("/iris/llm/config", payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["iris", "llm_config"] }),
   });
 };
 
 export const useLlmHealth = () =>
-  useQuery({ queryKey: ["kronos", "llm_health"], queryFn: () => api.get("/kronos/llm/health"), enabled: false });
+  useQuery({ queryKey: ["iris", "llm_health"], queryFn: () => api.get("/iris/llm/health"), enabled: false });
 
 // ── Nation ───────────────────────────────────────────────
 // Geo data changes infrequently — cache aggressively (5 min stale, 10 min GC).
@@ -681,7 +681,7 @@ export const useIntelJob = (jobId: string | null) =>
     },
   });
 
-// ── Kronos Trade Monitor ────────────────────────────────────
+// ── Iris Trade Monitor ────────────────────────────────────
 export const useWeeklyReport = () =>
   useQuery({ queryKey: ["meta", "weekly_report"], queryFn: () => api.get("/meta/weekly_report"), staleTime: 60_000 });
 

@@ -3071,7 +3071,7 @@ graph TB
         API["FastAPI Server\\n(REST endpoints)"]
         NGINX["nginx reverse proxy\\n(:8443 HTTPS)"]
         GUI["React GUI\\n(Bloomberg-style C2)"]
-        KRONOS["Kronos Meta-Orchestrator\\n(analytics, LLM chat)"]
+        IRIS["Iris Meta-Orchestrator\\n(analytics, LLM chat)"]
     end
 
     subgraph BT["Backtesting"]
@@ -3151,7 +3151,7 @@ graph TB
     DECISIONS --> API
     API --> NGINX
     NGINX --> GUI
-    API --> KRONOS
+    API --> IRIS
 
     REGIME -.-> DECISIONS
     STAB -.-> DECISIONS
@@ -3171,7 +3171,7 @@ graph TB
     class REGIME,STAB,FRAG,SHI,ASSESS,UNIV,PORT,LAMBDA engine
     class EQUITY_EXEC,ALLOC,OSM,LIFECYCLE,LIVE_B,PAPER_B,BT_B exec
     class DAEMON,CAL,DAG orch
-    class API,NGINX,GUI,KRONOS mon
+    class API,NGINX,GUI,IRIS mon
 ```
 
 ---
@@ -3182,7 +3182,7 @@ graph TB
 2. **Representation** — Raw data is encoded into numeric window embeddings (price patterns) and text embeddings (news/macro), then fused via a joint encoder.
 3. **Engines** — Six decision engines process the representations: Regime (market state), Stability (per-entity classification), Fragility (stress scores), Sector Health (11 sectors × 6 signals), Assessment (alpha scores), and Universe (member selection).
 4. **Execution** — The portfolio optimizer generates target weights; the equity executor computes deltas; the options layer deploys 17 regime-adaptive derivative strategies.
-5. **Monitoring** — FastAPI serves all engine outputs to a React GUI dashboard. Kronos meta-orchestrator provides analytics and LLM chat interface.
+5. **Monitoring** — FastAPI serves all engine outputs to a React GUI dashboard. Iris meta-orchestrator provides analytics and LLM chat interface.
 """,
     },
     "pipeline": {

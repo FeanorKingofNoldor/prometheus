@@ -9,13 +9,13 @@ React frontend for the Prometheus trading system. Provides real-time portfolio m
 | **Dashboard** | `/` | System overview: P&L, regime, pipeline status, alerts |
 | **Portfolio** | `/portfolio` | Holdings, equity curve, sector exposure, trading reports |
 | **Execution** | `/execution` | Live orders, fill tracking, risk actions |
-| **Trade Monitor** | `/monitor` | Kronos weekly report, anomaly detection, sector P&L, trade journal analysis |
+| **Trade Monitor** | `/monitor` | Iris weekly report, anomaly detection, sector P&L, trade journal analysis |
 | **Backtests** | `/backtests` | Backtest run results and equity curves |
 | **Options** | `/options` | Options campaign results and strategy P&L |
 | **Intelligence** | `/intelligence` | ML proposals, scorecard, config change tracking |
 | **Logs & Reports** | `/logs` | System logs, trading report generation |
 | **Settings** | `/settings` | LLM config, engine parameters |
-| **Kronos** | `/kronos` | AI assistant chat interface |
+| **Iris** | `/iris` | AI assistant chat interface |
 | **Docs** | `/docs` | Documentation pages |
 
 ## Tech Stack

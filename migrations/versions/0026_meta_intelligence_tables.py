@@ -4,7 +4,7 @@ Revision ID: 0026
 Revises: 0025
 Create Date: 2025-12-02
 
-This migration introduces tables used by the Meta/Kronos intelligence layer
+This migration introduces tables used by the Meta/Iris intelligence layer
 for analyzing backtest results and generating configuration improvement proposals:
 
 - meta_config_proposals: Stores generated configuration change proposals

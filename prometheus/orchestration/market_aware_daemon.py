@@ -42,7 +42,7 @@ from prometheus.orchestration.dag import (
     JobMetadata,
     JobStatus,
     build_intel_dag,
-    build_kronos_dag,
+    build_iris_dag,
     build_market_dag,
 )
 from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run, update_phase
@@ -396,10 +396,10 @@ def execute_job(
     )
 
     try:
-        # Intel and Kronos jobs have no market_id — execute without an EngineRun.
+        # Intel and Iris jobs have no market_id — execute without an EngineRun.
         if job.market_id is None:
-            if job.job_type.startswith("kronos_"):
-                return _execute_kronos_job(job, execution, db_manager=db_manager)
+            if job.job_type.startswith("iris_"):
+                return _execute_iris_job(job, execution, db_manager=db_manager)
             return _execute_intel_job(job, execution)
 
         # Get or create EngineRun
@@ -688,19 +688,19 @@ def _execute_intel_job(
 # Strategies to run DiagnosticsEngine + ProposalGenerator against.
 # These all need backtest_runs data to produce output; missing data is
 # handled gracefully (ValueError caught, job still succeeds).
-_KRONOS_STRATEGY_IDS = [
+_IRIS_STRATEGY_IDS = [
     "US_CORE_LONG_EQ",
     "US_SMALL_CAP",
     "EU_CORE_LONG_EQ",
 ]
 
 
-def _execute_kronos_job(
+def _execute_iris_job(
     job: JobMetadata,
     execution: "JobExecution",
     db_manager: DatabaseManager | None = None,
 ) -> Tuple[bool, str | None]:
-    """Execute a Kronos meta-intelligence job.
+    """Execute a Iris meta-intelligence job.
 
     Runs with no EngineRun.  All jobs are non-fatal — failures are logged
     but never propagate to the trading pipeline.
@@ -709,7 +709,7 @@ def _execute_kronos_job(
     if db_manager is None:
         db_manager = get_db_manager()
     try:
-        if job.job_type == "kronos_outcome_eval":
+        if job.job_type == "iris_outcome_eval":
 
             from prometheus.decisions.evaluator import OutcomeEvaluator
 
@@ -720,10 +720,10 @@ def _execute_kronos_job(
                 max_decisions=500,
                 num_workers=8,
             )
-            logger.info("[Kronos] outcome_eval: evaluated %d outcomes", count)
+            logger.info("[Iris] outcome_eval: evaluated %d outcomes", count)
             return True, None
 
-        elif job.job_type == "kronos_scorecard":
+        elif job.job_type == "iris_scorecard":
 
             from prometheus.decisions.scorecard import PredictionScorecard
 
@@ -737,17 +737,17 @@ def _execute_kronos_job(
                         end_date=execution.as_of_date,
                     )
                     logger.info(
-                        "[Kronos] scorecard %dd: n=%d hit_rate=%.1f%% spearman_rho=%.3f",
+                        "[Iris] scorecard %dd: n=%d hit_rate=%.1f%% spearman_rho=%.3f",
                         horizon,
                         report.total_predictions,
                         report.hit_rate * 100,
                         report.spearman_rho,
                     )
                 except Exception:
-                    logger.exception("[Kronos] scorecard %dd failed", horizon)
+                    logger.exception("[Iris] scorecard %dd failed", horizon)
             return True, None
 
-        elif job.job_type == "kronos_lambda_scorecard":
+        elif job.job_type == "iris_lambda_scorecard":
 
             from prometheus.decisions.lambda_scorecard import LambdaScorecard
 
@@ -759,27 +759,27 @@ def _execute_kronos_job(
                     end_date=execution.as_of_date,
                 )
                 logger.info(
-                    "[Kronos] lambda_scorecard: n=%d mae=%.4f dir_acc=%.1f%% r2=%.3f",
+                    "[Iris] lambda_scorecard: n=%d mae=%.4f dir_acc=%.1f%% r2=%.3f",
                     report.total_predictions,
                     report.mae,
                     report.direction_accuracy * 100,
                     report.r_squared,
                 )
             except Exception:
-                logger.exception("[Kronos] lambda_scorecard failed (non-fatal)")
+                logger.exception("[Iris] lambda_scorecard failed (non-fatal)")
             return True, None
 
-        elif job.job_type == "kronos_diagnostics":
+        elif job.job_type == "iris_diagnostics":
 
             from prometheus.meta.diagnostics import DiagnosticsEngine
 
             db = db_manager
             engine = DiagnosticsEngine(db_manager=db)
-            for strategy_id in _KRONOS_STRATEGY_IDS:
+            for strategy_id in _IRIS_STRATEGY_IDS:
                 try:
                     report = engine.analyze_strategy(strategy_id)
                     logger.info(
-                        "[Kronos] diagnostics %s: sharpe=%.3f return=%.2f%% drawdown=%.2f%%"
+                        "[Iris] diagnostics %s: sharpe=%.3f return=%.2f%% drawdown=%.2f%%"
                         " underperforming=%d high_risk=%d",
                         strategy_id,
                         report.overall_performance.sharpe,
@@ -790,12 +790,12 @@ def _execute_kronos_job(
                     )
                 except ValueError:
                     # Insufficient backtest data — expected early in live operation
-                    logger.info("[Kronos] diagnostics %s: insufficient data (skipped)", strategy_id)
+                    logger.info("[Iris] diagnostics %s: insufficient data (skipped)", strategy_id)
                 except Exception:
-                    logger.exception("[Kronos] diagnostics %s failed", strategy_id)
+                    logger.exception("[Iris] diagnostics %s failed", strategy_id)
             return True, None
 
-        elif job.job_type == "kronos_proposals":
+        elif job.job_type == "iris_proposals":
 
             from prometheus.meta.diagnostics import DiagnosticsEngine
             from prometheus.meta.proposal_generator import ProposalGenerator
@@ -804,27 +804,27 @@ def _execute_kronos_job(
             engine = DiagnosticsEngine(db_manager=db)
             gen = ProposalGenerator(db_manager=db, diagnostics_engine=engine)
             total = 0
-            for strategy_id in _KRONOS_STRATEGY_IDS:
+            for strategy_id in _IRIS_STRATEGY_IDS:
                 try:
                     proposals = gen.generate_proposals(strategy_id, auto_save=True)
                     logger.info(
-                        "[Kronos] proposals %s: generated %d proposals",
+                        "[Iris] proposals %s: generated %d proposals",
                         strategy_id, len(proposals),
                     )
                     total += len(proposals)
                 except ValueError:
-                    logger.info("[Kronos] proposals %s: insufficient data (skipped)", strategy_id)
+                    logger.info("[Iris] proposals %s: insufficient data (skipped)", strategy_id)
                 except Exception:
-                    logger.exception("[Kronos] proposals %s failed", strategy_id)
-            logger.info("[Kronos] proposals total: %d generated", total)
+                    logger.exception("[Iris] proposals %s failed", strategy_id)
+            logger.info("[Iris] proposals total: %d generated", total)
             return True, None
 
-        elif job.job_type == "kronos_log_report":
+        elif job.job_type == "iris_log_report":
             from prometheus.monitoring.report_service import generate_log_report
             generate_log_report("log_daily")
             return True, None
 
-        elif job.job_type == "kronos_live_perf":
+        elif job.job_type == "iris_live_perf":
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
@@ -835,7 +835,7 @@ def _execute_kronos_job(
                 import math
                 sharpe_str = f"{perf['sharpe']:.3f}" if not math.isnan(perf.get('sharpe', float('nan'))) else "n/a"
                 logger.info(
-                    "[Kronos] live_perf @21d: n=%d sharpe=%s win=%.0f%% max_dd=%.1f%% pnl=%+.2f",
+                    "[Iris] live_perf @21d: n=%d sharpe=%s win=%.0f%% max_dd=%.1f%% pnl=%+.2f",
                     perf["n"], sharpe_str,
                     (perf["win_rate"] or 0) * 100,
                     (perf["max_drawdown"] or 0) * 100,
@@ -843,16 +843,16 @@ def _execute_kronos_job(
                 )
                 for s in perf.get("by_strategy", []):
                     logger.info(
-                        "[Kronos] live_perf strategy=%s n=%d avg_ret=%s win=%.0f%%",
+                        "[Iris] live_perf strategy=%s n=%d avg_ret=%s win=%.0f%%",
                         s["engine"], s["n"],
                         f"{s['avg_return']:+.4f}" if s["avg_return"] is not None else "n/a",
                         (s["win_rate"] or 0) * 100,
                     )
             else:
-                logger.warning("[Kronos] live_perf error: %s", perf["error"])
+                logger.warning("[Iris] live_perf error: %s", perf["error"])
             return True, None
 
-        elif job.job_type == "kronos_regime_eval":
+        elif job.job_type == "iris_regime_eval":
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
@@ -861,18 +861,18 @@ def _execute_kronos_job(
             regimes = tracker.compute_regime_breakdown(execution.as_of_date)
             for r in regimes:
                 if "error" in r:
-                    logger.warning("[Kronos] regime_eval error: %s", r["error"])
+                    logger.warning("[Iris] regime_eval error: %s", r["error"])
                 else:
                     import math
                     logger.info(
-                        "[Kronos] regime_eval %s: n=%d sharpe=%s win=%.0f%%",
+                        "[Iris] regime_eval %s: n=%d sharpe=%s win=%.0f%%",
                         r["regime_label"], r["n"],
                         f"{r['sharpe']:.3f}" if not math.isnan(r["sharpe"]) else "n/a",
                         r["win_rate"] * 100,
                     )
             return True, None
 
-        elif job.job_type == "kronos_fragility_check":
+        elif job.job_type == "iris_fragility_check":
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
@@ -884,14 +884,14 @@ def _execute_kronos_job(
                 rho_str = f"{result['spearman_rho']:.3f}" if not math.isnan(result.get('spearman_rho', float('nan'))) else "n/a"
                 icon = "\u2713" if result.get("verdict") == "SIGNAL_VALID" else "\u26a0"
                 logger.info(
-                    "[Kronos] fragility_check: n=%d spearman_rho=%s verdict=%s %s",
+                    "[Iris] fragility_check: n=%d spearman_rho=%s verdict=%s %s",
                     result["n"], rho_str, result.get("verdict", "?"), icon,
                 )
             else:
-                logger.warning("[Kronos] fragility_check error: %s", result["error"])
+                logger.warning("[Iris] fragility_check error: %s", result["error"])
             return True, None
 
-        elif job.job_type == "kronos_hedge_eval":
+        elif job.job_type == "iris_hedge_eval":
 
             from prometheus.decisions.live_performance import LivePerformanceTracker
 
@@ -903,20 +903,20 @@ def _execute_kronos_job(
                 r_str = f"{result['pearson_r']:.3f}" if not math.isnan(result.get('pearson_r', float('nan'))) else "n/a"
                 icon = "\u2713" if result.get("verdict") == "HEDGE_EFFECTIVE" else "\u26a0"
                 logger.info(
-                    "[Kronos] hedge_eval: n=%d pearson_r=%s verdict=%s %s opts_pnl=%+.2f",
+                    "[Iris] hedge_eval: n=%d pearson_r=%s verdict=%s %s opts_pnl=%+.2f",
                     result["n_dates"], r_str, result.get("verdict", "?"), icon,
                     result.get("options_pnl_total", 0),
                 )
             else:
-                logger.warning("[Kronos] hedge_eval error: %s", result["error"])
+                logger.warning("[Iris] hedge_eval error: %s", result["error"])
             return True, None
 
         else:
-            return False, f"Unknown kronos job_type: {job.job_type}"
+            return False, f"Unknown iris job_type: {job.job_type}"
 
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}"
-        logger.exception("_execute_kronos_job: failed job_id=%s: %s", job.job_id, error_msg)
+        logger.exception("_execute_iris_job: failed job_id=%s: %s", job.job_id, error_msg)
         return False, error_msg
 
 
@@ -1030,9 +1030,9 @@ class MarketAwareDaemon:
             if market_id == "INTEL":
                 dag = build_intel_dag(as_of_date, is_sunday=as_of_date.weekday() == 6)
                 dag_id = dag.dag_id  # e.g. "intel_daily_2026-03-19"
-            elif market_id == "KRONOS":
-                dag = build_kronos_dag(as_of_date)
-                dag_id = dag.dag_id  # e.g. "kronos_daily_2026-03-19"
+            elif market_id == "IRIS":
+                dag = build_iris_dag(as_of_date)
+                dag_id = dag.dag_id  # e.g. "iris_daily_2026-03-19"
             else:
                 dag = build_market_dag(market_id, as_of_date)
                 dag_id = f"{market_id}_{as_of_date.isoformat()}"
@@ -1372,9 +1372,9 @@ class MarketAwareDaemon:
                 continue
 
             dag, dag_id = self.active_dags[market_id]
-            # INTEL/KRONOS are not real markets — their jobs use required_state=None
+            # INTEL/IRIS are not real markets — their jobs use required_state=None
             # so any state passes.  Use POST_CLOSE as a safe placeholder.
-            if market_id in ("INTEL", "KRONOS"):
+            if market_id in ("INTEL", "IRIS"):
                 current_state = MarketState.POST_CLOSE
             else:
                 if market_id not in self._calendars:

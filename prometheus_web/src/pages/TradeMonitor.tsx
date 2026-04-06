@@ -83,7 +83,7 @@ export default function TradeMonitor() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Kronos Trade Monitor"
+        title="Iris Trade Monitor"
         subtitle="Live validation — every trade under scrutiny"
         onRefresh={() => { weekly.refetch(); journal.refetch(); feedback.refetch(); }}
       />

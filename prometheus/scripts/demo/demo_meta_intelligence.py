@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prometheus v2 – Meta/Kronos Intelligence Demo.
+"""Prometheus v2 – Meta/Iris Intelligence Demo.
 
-This script demonstrates the Meta/Kronos intelligence layer:
+This script demonstrates the Meta/Iris intelligence layer:
 1. Analyzes backtest results using the diagnostics engine
 2. Generates configuration improvement proposals
 3. Displays proposals with confidence scores and expected impacts
@@ -235,7 +235,7 @@ def demo_applicator(db_manager) -> None:
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Demonstrate Meta/Kronos intelligence layer"
+        description="Demonstrate Meta/Iris intelligence layer"
     )
     parser.add_argument(
         "--strategy-id",
@@ -255,7 +255,7 @@ def main() -> int:
     db_manager = get_db_manager()
 
     print("\n" + "=" * 80)
-    print("  PROMETHEUS v2 - META/KRONOS INTELLIGENCE LAYER DEMO")
+    print("  PROMETHEUS v2 - META/IRIS INTELLIGENCE LAYER DEMO")
     print("=" * 80)
 
     if args.workflow_only:

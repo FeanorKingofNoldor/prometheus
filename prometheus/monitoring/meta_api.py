@@ -1,7 +1,7 @@
-"""Prometheus v2 – Meta APIs (Kronos Chat + Geo).
+"""Prometheus v2 – Meta APIs (Iris Chat + Geo).
 
 This module provides:
-- Kronos Chat API for LLM-powered meta-orchestration
+- Iris Chat API for LLM-powered meta-orchestration
 - Geo API for world map visualization with country-level data
 """
 
@@ -33,25 +33,25 @@ from prometheus.pipeline.tasks import (
 logger = get_logger(__name__)
 
 
-kronos_router = APIRouter(prefix="/api/kronos", tags=["kronos"])
+iris_router = APIRouter(prefix="/api/iris", tags=["iris"])
 geo_router = APIRouter(prefix="/api/geo", tags=["geo"])
 meta_router = APIRouter(prefix="/api/meta", tags=["meta"])
 
 
 # ============================================================================
-# Kronos Chat Models
+# Iris Chat Models
 # ============================================================================
 
 
-class KronosRequest(BaseModel):
-    """Request to Kronos chat interface."""
+class IrisRequest(BaseModel):
+    """Request to Iris chat interface."""
 
     question: str
     context: Dict[str, Any] = Field(default_factory=dict)
 
 
-class KronosProposal(BaseModel):
-    """Action proposal from Kronos."""
+class IrisProposal(BaseModel):
+    """Action proposal from Iris."""
 
     proposal_id: str
     action_type: str  # backtest, config_change, synthetic_dataset
@@ -60,11 +60,11 @@ class KronosProposal(BaseModel):
     risk_level: str = "LOW"
 
 
-class KronosResponse(BaseModel):
-    """Response from Kronos chat."""
+class IrisResponse(BaseModel):
+    """Response from Iris chat."""
 
     answer: str
-    proposals: List[KronosProposal] = Field(default_factory=list)
+    proposals: List[IrisProposal] = Field(default_factory=list)
     sources: List[str] = Field(default_factory=list)
 
 
@@ -188,33 +188,33 @@ class MetaPolicyDecisionResponse(BaseModel):
 
 
 # ============================================================================
-# Kronos Endpoints
+# Iris Endpoints
 # ============================================================================
 
 
-@kronos_router.post("/chat", response_model=KronosResponse)
-def kronos_chat(request: KronosRequest = Body(...)) -> KronosResponse:
-    """Interact with Kronos meta-orchestrator.
+@iris_router.post("/chat", response_model=IrisResponse)
+def iris_chat(request: IrisRequest = Body(...)) -> IrisResponse:
+    """Interact with Iris meta-orchestrator.
 
-    Kronos can explain system behavior, propose experiments, and analyze
+    Iris can explain system behavior, propose experiments, and analyze
     engine performance. It cannot directly execute changes - all actions
     require explicit approval via the Control API.
     """
-    from prometheus.monitoring.kronos_service import kronos_chat as _kronos_chat
+    from prometheus.monitoring.iris_service import iris_chat as _iris_chat
 
     history = request.context.get("history", []) if request.context else []
 
     try:
-        result = _kronos_chat(question=request.question, history=history)
-        return KronosResponse(
+        result = _iris_chat(question=request.question, history=history)
+        return IrisResponse(
             answer=result["answer"],
-            proposals=[KronosProposal(**p) for p in result.get("proposals", [])],
+            proposals=[IrisProposal(**p) for p in result.get("proposals", [])],
             sources=result.get("sources", []),
         )
     except Exception as exc:
-        logger.exception("[kronos] Chat failed: %s", exc)
-        return KronosResponse(
-            answer=f"Kronos encountered an error: {exc}. Check LLM configuration in Settings.",
+        logger.exception("[iris] Chat failed: %s", exc)
+        return IrisResponse(
+            answer=f"Iris encountered an error: {exc}. Check LLM configuration in Settings.",
             proposals=[],
             sources=[],
         )
@@ -234,14 +234,14 @@ class LLMConfigRequest(BaseModel):
     base_url: Optional[str] = None
 
 
-@kronos_router.get("/llm/config")
+@iris_router.get("/llm/config")
 async def get_llm_config() -> Dict[str, Any]:
     """Return current LLM configuration (no secrets)."""
     from apathis.llm.gateway import get_llm_info
     return get_llm_info()
 
 
-@kronos_router.post("/llm/config")
+@iris_router.post("/llm/config")
 async def set_llm_config(request: LLMConfigRequest = Body(...)) -> Dict[str, Any]:
     """Reconfigure the LLM provider at runtime."""
     from apathis.llm.gateway import configure_llm
@@ -255,11 +255,11 @@ async def set_llm_config(request: LLMConfigRequest = Body(...)) -> Dict[str, Any
         )
         return {"status": "ok", "health": health}
     except Exception as exc:
-        logger.exception("[kronos] LLM config failed: %s", exc)
+        logger.exception("[iris] LLM config failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@kronos_router.get("/llm/health")
+@iris_router.get("/llm/health")
 async def llm_health() -> Dict[str, Any]:
     """Run a health check on the current LLM provider."""
     from apathis.llm.gateway import get_llm
@@ -415,7 +415,7 @@ async def get_configs() -> List[ConfigRow]:
 
 @meta_router.get("/weekly_report")
 async def get_weekly_report() -> Dict[str, Any]:
-    """Kronos weekly trade monitoring report."""
+    """Iris weekly trade monitoring report."""
     from prometheus.meta.trade_monitor import compute_weekly_report, format_weekly_report
 
     db = get_db_manager()

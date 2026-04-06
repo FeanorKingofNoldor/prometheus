@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # ── System prompt ───────────────────────────────────────────────────
 
 LOG_HEALTH_PROMPT = """\
-You are Kronos, the operations monitoring agent for Prometheus v2 — a live
+You are Iris, the operations monitoring agent for Prometheus v2 — a live
 quantitative trading system. You review system logs, engine run results,
 regime transitions, and risk actions to assess operational health.
 

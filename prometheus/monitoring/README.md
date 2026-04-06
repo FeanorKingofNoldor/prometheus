@@ -9,7 +9,7 @@ The backend is organized into several API modules:
 - **`api.py`** - Monitoring/status endpoints (system overview, pipeline status, regime, stability, fragility, portfolio, risk)
 - **`visualization_api.py`** - ANT_HILL 3D visualization data (scenes, traces, DB tables, embedding spaces)
 - **`control_api.py`** - Write operations (backtests, synthetic datasets, DAG scheduling, config changes)
-- **`meta_api.py`** - Kronos Chat, Geo data, engine configs and performance
+- **`meta_api.py`** - Iris Chat, Geo data, engine configs and performance
 - **`app.py`** - FastAPI application entry point that wires everything together
 
 ## Quick Start
@@ -64,8 +64,8 @@ Open your browser to:
 - `POST /api/control/apply_config_change` - Apply config change
 - `GET /api/control/jobs/{job_id}` - Query job status
 
-### Kronos Chat (`/api/kronos`)
-- `POST /api/kronos/chat` - Chat with Kronos meta-orchestrator
+### Iris Chat (`/api/iris`)
+- `POST /api/iris/chat` - Chat with Iris meta-orchestrator
 
 ### Geo (`/api/geo`)
 - `GET /api/geo/countries` - Country-level status for map
@@ -104,8 +104,8 @@ curl -X POST http://localhost:8000/api/control/run_backtest \
     "market_ids": ["US_EQ"]
   }'
 
-# Kronos chat
-curl -X POST http://localhost:8000/api/kronos/chat \
+# Iris chat
+curl -X POST http://localhost:8000/api/iris/chat \
   -H "Content-Type: application/json" \
   -d '{
     "question": "Should I run a backtest?"

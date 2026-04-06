@@ -1,7 +1,7 @@
-"""Prometheus v2 – Kronos Service.
+"""Prometheus v2 – Iris Service.
 
 Assembles system context from the database and drives the LLM
-conversation for the Kronos chat endpoint.
+conversation for the Iris chat endpoint.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 # ── System prompt ────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are **Kronos**, the meta-orchestrator of the Prometheus trading system.
+You are **Iris**, the meta-orchestrator of the Prometheus trading system.
 
 ## System Architecture
 - **Alpha engine**: US_EQ_LONG_V12/K25 (lambda-driven, 25 names, 12-17% CAGR, 0.9 Sharpe)
@@ -65,7 +65,7 @@ def _fetch_regime_context() -> str:
         lines = [f"- {r[0]}: {r[1]} (confidence={r[2]:.2f}, as_of={r[3]})" for r in rows]
         return "Current regimes:\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch regime context: %s", exc)
+        logger.warning("[iris] Failed to fetch regime context: %s", exc)
         return "Regime: unavailable."
 
 
@@ -103,7 +103,7 @@ def _fetch_portfolio_context(portfolio_id: str = "IBKR_PAPER") -> str:
         header = f"Portfolio {portfolio_id}: {len(rows)} positions, total MV=${total_mv:,.0f}, unrealised PnL=${total_pnl:,.0f}"
         return header + "\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch portfolio context: %s", exc)
+        logger.warning("[iris] Failed to fetch portfolio context: %s", exc)
         return f"Portfolio ({portfolio_id}): unavailable."
 
 
@@ -134,7 +134,7 @@ def _fetch_orders_context(portfolio_id: str = "IBKR_PAPER", limit: int = 10) -> 
         lines = [f"- {r[0]} {r[1]} {r[2]} status={r[3]} @ {r[4]}" for r in rows]
         return "Recent orders:\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch orders context: %s", exc)
+        logger.warning("[iris] Failed to fetch orders context: %s", exc)
         return "Recent orders: unavailable."
 
 
@@ -159,7 +159,7 @@ def _fetch_fragility_context() -> str:
         lines = [f"- {r[0]}: score={r[1]:.3f} (as_of={r[2]})" for r in rows]
         return "Top fragility:\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch fragility context: %s", exc)
+        logger.warning("[iris] Failed to fetch fragility context: %s", exc)
         return "Fragility: unavailable."
 
 
@@ -203,7 +203,7 @@ def _fetch_outcomes_context(lookback_days: int = 90) -> str:
         ]
         return f"Decision outcomes (last {lookback_days}d):\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch outcomes context: %s", exc)
+        logger.warning("[iris] Failed to fetch outcomes context: %s", exc)
         return "Decision outcomes: unavailable."
 
 
@@ -277,7 +277,7 @@ def _fetch_live_performance_context() -> str:
 
 
 def _fetch_intel_context() -> str:
-    """Latest intel SITREP + flash alerts for Kronos context."""
+    """Latest intel SITREP + flash alerts for Iris context."""
     try:
         from apathis.intel.store import get_briefs
 
@@ -298,7 +298,7 @@ def _fetch_intel_context() -> str:
         parts = [p for p in [sitrep_text, alert_text] if p]
         return "\n\n".join(parts) if parts else "Intel: no briefs generated yet."
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch intel context: %s", exc)
+        logger.warning("[iris] Failed to fetch intel context: %s", exc)
         return "Intel: unavailable."
 
 
@@ -324,7 +324,7 @@ def _fetch_sector_health_context() -> str:
         header = f"Sector health ({len(rows)} sectors, {len(sick)} sick, {len(weak)} weak):"
         return header + "\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch sector health: %s", exc)
+        logger.warning("[iris] Failed to fetch sector health: %s", exc)
         return "Sector health: unavailable."
 
 
@@ -345,7 +345,7 @@ def _fetch_scorecard_context() -> str:
             f"  Date range: {report.date_range[0]} → {report.date_range[1]}"
         )
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch scorecard: %s", exc)
+        logger.warning("[iris] Failed to fetch scorecard: %s", exc)
         return "Assessment scorecard: unavailable."
 
 
@@ -368,7 +368,7 @@ def _fetch_pipeline_status_context() -> str:
         lines = [f"- {r[0]} {r[1]}: {r[2]} (updated {str(r[4])[11:19]})" for r in rows]
         return "Pipeline runs:\n" + "\n".join(lines)
     except Exception as exc:
-        logger.warning("[kronos] Failed to fetch pipeline status: %s", exc)
+        logger.warning("[iris] Failed to fetch pipeline status: %s", exc)
         return "Pipeline: unavailable."
 
 
@@ -392,8 +392,8 @@ def build_system_context() -> str:
 # ── Chat orchestration ───────────────────────────────────────────────
 
 
-# Tool-calling agent names for Kronos.
-_KRONOS_TOOLS = [
+# Tool-calling agent names for Iris.
+_IRIS_TOOLS = [
     "get_current_date",
     "search_web",
     "query_fred_data",
@@ -402,11 +402,11 @@ _KRONOS_TOOLS = [
 ]
 
 
-def kronos_chat(
+def iris_chat(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    """Run a Kronos chat turn.
+    """Run a Iris chat turn.
 
     Args:
         question: The user's question.
@@ -414,7 +414,7 @@ def kronos_chat(
 
     Returns:
         A dict with keys ``answer``, ``proposals``, ``sources`` matching
-        the ``KronosResponse`` schema.
+        the ``IrisResponse`` schema.
     """
     context_text = build_system_context()
 
@@ -432,16 +432,16 @@ def kronos_chat(
 
     messages.append({"role": "user", "content": question})
 
-    logger.info("[kronos] Sending %d messages to LLM (with tools)", len(messages))
+    logger.info("[iris] Sending %d messages to LLM (with tools)", len(messages))
 
     # Try tool-agent first; fall back to plain LLM if it fails.
     try:
         from apathis.llm.agent import create_agent
 
-        agent = create_agent(tool_names=_KRONOS_TOOLS, max_rounds=3)
+        agent = create_agent(tool_names=_IRIS_TOOLS, max_rounds=3)
         answer = agent.run(messages, temperature=0.4, max_tokens=2048)
     except Exception:
-        logger.warning("[kronos] Tool-agent failed, falling back to plain LLM")
+        logger.warning("[iris] Tool-agent failed, falling back to plain LLM")
         llm = get_llm()
         answer = llm.complete(messages, temperature=0.4, max_tokens=2048)
 

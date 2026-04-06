@@ -16,11 +16,11 @@ EnvironmentFile=/etc/sysconfig/prometheus-daemon
 # by systemd's init domain).
 Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apathis:/home/feanor/coding/prometheus
 
-# Market-aware daemon: polls every 60s, executes full DAG for US_EQ / KRONOS / INTEL
+# Market-aware daemon: polls every 60s, executes full DAG for US_EQ / IRIS / INTEL
 ExecStart=/usr/bin/python3.14 \
     -m prometheus.orchestration.market_aware_daemon \
     --market US_EQ \
-    --market KRONOS \
+    --market IRIS \
     --market INTEL \
     --options-mode paper \
     --poll-interval-seconds 60

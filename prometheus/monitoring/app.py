@@ -24,7 +24,7 @@ from prometheus.monitoring.control_api import router as control_router
 from prometheus.monitoring.intelligence_api import intelligence_router
 from prometheus.monitoring.log_buffer import install_buffer
 from prometheus.monitoring.logs_api import router as logs_router
-from prometheus.monitoring.meta_api import kronos_router, meta_router
+from prometheus.monitoring.meta_api import iris_router, meta_router
 from prometheus.monitoring.operations_api import router as operations_router
 from prometheus.monitoring.options_api import router as options_router
 from prometheus.monitoring.visualization_api import router as viz_router
@@ -83,8 +83,8 @@ app.include_router(backtests_router)
 # Meta endpoints (configs, performance)
 app.include_router(meta_router)
 
-# Kronos Chat endpoint
-app.include_router(kronos_router)
+# Iris Chat endpoint
+app.include_router(iris_router)
 
 # Intelligence endpoints (diagnostics, proposals)
 app.include_router(intelligence_router)

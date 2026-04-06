@@ -1,4 +1,4 @@
-"""Prometheus v2 – Meta/Kronos Proposal Generator.
+"""Prometheus v2 – Meta/Iris Proposal Generator.
 
 This module generates actionable configuration improvement proposals based on
 diagnostic analysis of backtest results. Proposals include confidence scoring,

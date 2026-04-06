@@ -20,7 +20,7 @@ Built on top of [Apathis](../apathis) (the intelligence/info layer) which provid
 │  Tier 1 Monitor (39 G-SIBs/CBs → SOP constraints)         │
 │  Sector Allocator (SHI → kill/reduce sick sectors)          │
 │  Options Overlay (7 strategies, regime-gated)               │
-│  Kronos Monitor (trade journal → weekly reports)            │
+│  Iris Monitor (trade journal → weekly reports)            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,7 +115,7 @@ sudo systemctl start prometheus-daemon
 
 # Manual (development)
 python -m prometheus.orchestration.market_aware_daemon \
-    --market US_EQ --market KRONOS --market INTEL \
+    --market US_EQ --market IRIS --market INTEL \
     --options-mode paper --poll-interval-seconds 60 \
     --morning-catchup-hour 9
 ```
@@ -154,7 +154,7 @@ FastAPI on port 8200. Docs at `http://localhost:8200/api/docs`.
 | Meta | `/api/meta/feedback`, `/api/meta/weekly_report`, `/api/meta/trade_journal` |
 | Control | `/api/control/schedule_dag`, `/api/control/sync_data` |
 | Logs | `/api/logs/daemon` (live tailing) |
-| Kronos | `/api/kronos/chat` |
+| Iris | `/api/iris/chat` |
 
 ## Tech Stack
 
@@ -163,4 +163,4 @@ FastAPI on port 8200. Docs at `http://localhost:8200/api/docs`.
 - **Database**: PostgreSQL 18, PgBouncer
 - **C++ Engine**: prom2_cpp (pybind11, C++20) for fast backtesting
 - **Broker**: Interactive Brokers via IB Gateway
-- **LLM**: Ollama (local, for Kronos chat + EDGAR extraction)
+- **LLM**: Ollama (local, for Iris chat + EDGAR extraction)

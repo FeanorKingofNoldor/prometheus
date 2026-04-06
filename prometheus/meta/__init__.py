@@ -1,4 +1,4 @@
-"""Prometheus v2 – Meta-Orchestrator (Kronos) package.
+"""Prometheus v2 – Meta-Orchestrator (Iris) package.
 
 This package contains the minimal Meta-Orchestrator implementation used
 for evaluating and selecting sleeves based on backtest results.

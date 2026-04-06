@@ -208,7 +208,7 @@ def compute_journal_analysis(
 ) -> Dict[str, Any]:
     """Analyze trade journal entries for systematic patterns.
 
-    Returns structured analysis for Kronos reporting.
+    Returns structured analysis for Iris reporting.
     """
     cutoff = date.today() - timedelta(days=lookback_days)
 

@@ -41,7 +41,7 @@ Apathis provides:
 - **Fragility scores** — entity/sector fragility
 - **Nation risk & intel** — geopolitical signals feeding the assessment engine
 - **Market data** — prices, returns, volatility, fundamentals, macro series via `prometheus_historical` DB
-- **LLM chat** — Kronos integration via `/api/chat`
+- **LLM chat** — Iris integration via `/api/chat`
 
 Both projects share the same two PostgreSQL databases (`prometheus_historical`, `prometheus_runtime`) accessed through PgBouncer on port 6432. Apathis owns the schema and ingestion; Prometheus reads from it. Apathis has its own CLAUDE.md at `../apathis/CLAUDE.md`.
 
@@ -56,7 +56,7 @@ The daily pipeline progresses through phases tracked in the `engine_runs` DB tab
 Each phase maps to tasks in `prometheus/pipeline/tasks.py`. State transitions live in `prometheus/pipeline/state.py`.
 
 ### Market-Aware Daemon (`prometheus/orchestration/`)
-The daemon (`market_aware_daemon.py`) polls every 60s, detects market state (PRE_OPEN, OPEN, POST_CLOSE, etc.), and executes DAG-defined jobs in dependency order with retry logic. Separate DAGs exist for `US_EQ`, `KRONOS`, and `INTEL` markets.
+The daemon (`market_aware_daemon.py`) polls every 60s, detects market state (PRE_OPEN, OPEN, POST_CLOSE, etc.), and executes DAG-defined jobs in dependency order with retry logic. Separate DAGs exist for `US_EQ`, `IRIS`, and `INTEL` markets.
 
 ### Engine Facades
 Each engine has an `api.py` (public interface) and `storage.py` (persistence):
@@ -82,7 +82,7 @@ REST API at port 8200. Docs at `/api/docs`. Endpoint groups:
 - `/api/status` — system overview, DAG status, regime, fragility, assessment, universe, portfolio
 - `/api/control` — trigger backtests, synthetic datasets, DAGs, config changes
 - `/api/logs` — daily logs and trading reports
-- `/api/kronos` — chat with meta-orchestrator
+- `/api/iris` — chat with meta-orchestrator
 - `/api/meta` — engine configs and performance metrics
 
 ### Database

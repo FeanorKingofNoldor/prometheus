@@ -330,7 +330,7 @@ def format_weekly_report(report: WeeklyReport) -> str:
     """Format the weekly report as human-readable text."""
     lines = [
         f"{'='*60}",
-        "KRONOS WEEKLY TRADE MONITOR",
+        "IRIS WEEKLY TRADE MONITOR",
         f"Period: {report.period_start} to {report.period_end}",
         f"{'='*60}",
         "",
@@ -389,7 +389,7 @@ def persist_weekly_report(
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO reports (report_type, report_date, content, metadata, created_at)
-                VALUES ('kronos_weekly_monitor', %s, %s, %s::jsonb, NOW())
+                VALUES ('iris_weekly_monitor', %s, %s, %s::jsonb, NOW())
             """, (
                 report.period_end,
                 text,
@@ -406,6 +406,6 @@ def persist_weekly_report(
         conn.commit()
 
     logger.info(
-        "Kronos weekly report saved: NAV=$%.0f positions=%d anomalies=%d",
+        "Iris weekly report saved: NAV=$%.0f positions=%d anomalies=%d",
         report.current_nav, report.n_positions, len(report.anomalies),
     )

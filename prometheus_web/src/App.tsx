@@ -31,7 +31,7 @@ export default function App() {
         <Route path="docs/:pageKey?" element={<Docs />} />
         <Route path="settings" element={<Settings />} />
         <Route path="settings/engine-parameters" element={<EngineParametersSettings />} />
-        <Route path="kronos" element={<Chat />} />
+        <Route path="iris" element={<Chat />} />
         <Route path="monitor" element={<TradeMonitor />} />
       </Route>
     </Routes>

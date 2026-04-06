@@ -120,9 +120,9 @@ function formatDuration(s: number | null): string {
 }
 
 function dagLabel(dagId: string): string {
-  // "US_EQ_2026-04-04" → "US_EQ", "intel_daily_2026-04-04" → "INTEL", "kronos_daily_..." → "KRONOS"
+  // "US_EQ_2026-04-04" → "US_EQ", "intel_daily_2026-04-04" → "INTEL", "iris_daily_..." → "IRIS"
   if (dagId.startsWith("intel_")) return "INTEL";
-  if (dagId.startsWith("kronos_")) return "KRONOS";
+  if (dagId.startsWith("iris_")) return "IRIS";
   return dagId.replace(/_\d{4}-\d{2}-\d{2}$/, "");
 }
 

@@ -1,6 +1,6 @@
-"""Prometheus v2 – Meta/Kronos Intelligence API.
+"""Prometheus v2 – Meta/Iris Intelligence API.
 
-This module provides REST API endpoints for the Meta/Kronos intelligence layer:
+This module provides REST API endpoints for the Meta/Iris intelligence layer:
 - Diagnostics: Performance analysis and insights
 - Proposals: Configuration improvement recommendations
 - Application: Apply and track changes
@@ -708,4 +708,4 @@ async def get_lambda_scorecard(
 @intelligence_router.get("/health")
 async def health_check() -> Dict[str, str]:
     """Intelligence API health check."""
-    return {"status": "healthy", "service": "meta-kronos-intelligence"}
+    return {"status": "healthy", "service": "meta-iris-intelligence"}

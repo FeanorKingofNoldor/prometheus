@@ -1,4 +1,4 @@
-"""Prometheus v2 – Meta/Kronos Diagnostics Engine.
+"""Prometheus v2 – Meta/Iris Diagnostics Engine.
 
 This module analyzes backtest results to identify performance patterns,
 strengths, and weaknesses across different regimes, strategies, and market

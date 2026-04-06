@@ -26,7 +26,7 @@ const links = [
   { to: "/logs", icon: ScrollText, label: "Logs & Reports" },
   { to: "/docs", icon: BookOpen, label: "Documentation" },
   { to: "/settings", icon: Settings, label: "Settings" },
-  { to: "/kronos", icon: MessageSquare, label: "Kronos" },
+  { to: "/iris", icon: MessageSquare, label: "Iris" },
 ];
 
 export function Sidebar() {

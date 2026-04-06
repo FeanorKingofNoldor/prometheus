@@ -184,8 +184,8 @@ export default function Settings() {
         </Panel>
       </div>
 
-      {/* LLM / Kronos Configuration */}
-      <Panel title="LLM / Kronos">
+      {/* LLM / Iris Configuration */}
+      <Panel title="LLM / Iris">
         <div className="space-y-3">
           {/* Current status */}
           <div className="flex items-center gap-2 text-xs">

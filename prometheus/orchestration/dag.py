@@ -584,38 +584,38 @@ def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
     return dag
 
 
-def build_kronos_dag(as_of_date: date) -> DAG:
-    """Build the Kronos meta-intelligence DAG.
+def build_iris_dag(as_of_date: date) -> DAG:
+    """Build the Iris meta-intelligence DAG.
 
-    Kronos evaluates the quality of all trading decisions at 5/21/63-day
+    Iris evaluates the quality of all trading decisions at 5/21/63-day
     horizons, builds prediction scorecards, runs diagnostics against
     backtest history, generates config-improvement proposals, and produces
     the daily operational log-health report.
 
     Jobs (all OPTIONAL, required_state=None — never block the pipeline):
 
-        kronos_outcome_eval   — OutcomeEvaluator: evaluate pending decisions
-        kronos_scorecard      — PredictionScorecard: assessment hit-rate / Sharpe IC
-        kronos_lambda_sc      — LambdaScorecard: lambda-hat direction accuracy
-        kronos_diagnostics    — DiagnosticsEngine: backtest performance analysis
-        kronos_proposals      — ProposalGenerator: generate config proposals
-        kronos_log_report     — Kronos log-health LLM report
+        iris_outcome_eval   — OutcomeEvaluator: evaluate pending decisions
+        iris_scorecard      — PredictionScorecard: assessment hit-rate / Sharpe IC
+        iris_lambda_sc      — LambdaScorecard: lambda-hat direction accuracy
+        iris_diagnostics    — DiagnosticsEngine: backtest performance analysis
+        iris_proposals      — ProposalGenerator: generate config proposals
+        iris_log_report     — Iris log-health LLM report
 
     Args:
         as_of_date: Date for this DAG.
 
     Returns:
-        DAG with Kronos intelligence jobs.
+        DAG with Iris intelligence jobs.
     """
-    dag_id = f"kronos_daily_{as_of_date.isoformat()}"
+    dag_id = f"iris_daily_{as_of_date.isoformat()}"
     date_str = as_of_date.isoformat()
 
     jobs: dict[str, JobMetadata] = {}
 
     # 1. Outcome evaluation — must run first; evaluates all pending decisions
-    jobs[f"kronos_outcome_eval_{date_str}"] = JobMetadata(
-        job_id=f"kronos_outcome_eval_{date_str}",
-        job_type="kronos_outcome_eval",
+    jobs[f"iris_outcome_eval_{date_str}"] = JobMetadata(
+        job_id=f"iris_outcome_eval_{date_str}",
+        job_type="iris_outcome_eval",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -627,12 +627,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
 
     # 2. Prediction scorecard — compares assessment scores vs realized returns
     #    63d horizon processes 250K+ evaluations and needs >10 min; no timeout.
-    jobs[f"kronos_scorecard_{date_str}"] = JobMetadata(
-        job_id=f"kronos_scorecard_{date_str}",
-        job_type="kronos_scorecard",
+    jobs[f"iris_scorecard_{date_str}"] = JobMetadata(
+        job_id=f"iris_scorecard_{date_str}",
+        job_type="iris_scorecard",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -640,12 +640,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 3. Lambda scorecard — evaluates lambda_hat directional accuracy
-    jobs[f"kronos_lambda_sc_{date_str}"] = JobMetadata(
-        job_id=f"kronos_lambda_sc_{date_str}",
-        job_type="kronos_lambda_scorecard",
+    jobs[f"iris_lambda_sc_{date_str}"] = JobMetadata(
+        job_id=f"iris_lambda_sc_{date_str}",
+        job_type="iris_lambda_scorecard",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -653,9 +653,9 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 4. Diagnostics — analyzes backtest performance (non-fatal if no data)
-    jobs[f"kronos_diagnostics_{date_str}"] = JobMetadata(
-        job_id=f"kronos_diagnostics_{date_str}",
-        job_type="kronos_diagnostics",
+    jobs[f"iris_diagnostics_{date_str}"] = JobMetadata(
+        job_id=f"iris_diagnostics_{date_str}",
+        job_type="iris_diagnostics",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -666,12 +666,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 5. Proposals — generates config-improvement proposals from diagnostics
-    jobs[f"kronos_proposals_{date_str}"] = JobMetadata(
-        job_id=f"kronos_proposals_{date_str}",
-        job_type="kronos_proposals",
+    jobs[f"iris_proposals_{date_str}"] = JobMetadata(
+        job_id=f"iris_proposals_{date_str}",
+        job_type="iris_proposals",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_diagnostics_{date_str}",),
+        dependencies=(f"iris_diagnostics_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=1,
         retry_delay_seconds=300,
@@ -679,9 +679,9 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 7. Live performance — rolling Sharpe/drawdown from live outcomes
-    jobs[f"kronos_live_perf_{date_str}"] = JobMetadata(
-        job_id=f"kronos_live_perf_{date_str}",
-        job_type="kronos_live_perf",
+    jobs[f"iris_live_perf_{date_str}"] = JobMetadata(
+        job_id=f"iris_live_perf_{date_str}",
+        job_type="iris_live_perf",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -692,12 +692,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 8. Regime-conditioned evaluation — depends on outcome_eval for fresh data
-    jobs[f"kronos_regime_eval_{date_str}"] = JobMetadata(
-        job_id=f"kronos_regime_eval_{date_str}",
-        job_type="kronos_regime_eval",
+    jobs[f"iris_regime_eval_{date_str}"] = JobMetadata(
+        job_id=f"iris_regime_eval_{date_str}",
+        job_type="iris_regime_eval",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -705,12 +705,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 9. Fragility signal check — depends on outcome_eval
-    jobs[f"kronos_fragility_check_{date_str}"] = JobMetadata(
-        job_id=f"kronos_fragility_check_{date_str}",
-        job_type="kronos_fragility_check",
+    jobs[f"iris_fragility_check_{date_str}"] = JobMetadata(
+        job_id=f"iris_fragility_check_{date_str}",
+        job_type="iris_fragility_check",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -718,12 +718,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 10. Hedge effectiveness — depends on outcome_eval
-    jobs[f"kronos_hedge_eval_{date_str}"] = JobMetadata(
-        job_id=f"kronos_hedge_eval_{date_str}",
-        job_type="kronos_hedge_eval",
+    jobs[f"iris_hedge_eval_{date_str}"] = JobMetadata(
+        job_id=f"iris_hedge_eval_{date_str}",
+        job_type="iris_hedge_eval",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -731,12 +731,12 @@ def build_kronos_dag(as_of_date: date) -> DAG:
     )
 
     # 6. Log-health LLM report — runs after outcome eval for fresh data
-    jobs[f"kronos_log_report_{date_str}"] = JobMetadata(
-        job_id=f"kronos_log_report_{date_str}",
-        job_type="kronos_log_report",
+    jobs[f"iris_log_report_{date_str}"] = JobMetadata(
+        job_id=f"iris_log_report_{date_str}",
+        job_type="iris_log_report",
         market_id=None,
         required_state=None,
-        dependencies=(f"kronos_outcome_eval_{date_str}",),
+        dependencies=(f"iris_outcome_eval_{date_str}",),
         priority=JobPriority.OPTIONAL,
         max_retries=2,
         retry_delay_seconds=120,
@@ -745,18 +745,18 @@ def build_kronos_dag(as_of_date: date) -> DAG:
 
     dag = DAG(
         dag_id=dag_id,
-        market_id="KRONOS",
+        market_id="IRIS",
         as_of_date=as_of_date,
         jobs=jobs,
     )
 
     errors = dag.validate()
     if errors:
-        logger.error("Kronos DAG validation failed: %s", errors)
-        raise ValueError(f"Invalid Kronos DAG: {errors}")
+        logger.error("Iris DAG validation failed: %s", errors)
+        raise ValueError(f"Invalid Iris DAG: {errors}")
 
     logger.info(
-        "Built Kronos DAG %s with %d jobs: %s",
+        "Built Iris DAG %s with %d jobs: %s",
         dag_id,
         len(jobs),
         ", ".join(job.job_type for job in jobs.values()),
