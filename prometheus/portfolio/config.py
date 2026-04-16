@@ -112,3 +112,11 @@ class PortfolioConfig(BaseModel):
     conviction_hard_stop_pct: float = 0.20
     conviction_scale_up_days: int = 3
     conviction_entry_weight_fraction: float = 0.50
+
+    # ── Assessment conviction scaling ────────────────────────────────
+    # When enabled, target weights are scaled by the assessment engine's
+    # confidence score (0-1).  High-confidence instruments get up to
+    # max_conviction_scale * base weight; low-confidence get min_conviction_scale.
+    conviction_scaling_enabled: bool = False
+    conviction_scaling_min: float = 0.5   # scale at confidence=0
+    conviction_scaling_max: float = 1.5   # scale at confidence=1

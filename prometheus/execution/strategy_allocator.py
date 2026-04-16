@@ -361,12 +361,215 @@ class StrategyAllocator:
         }
 
 
+    def allocate_with_probabilities(
+        self,
+        regime_probs: RegimeProbabilities,
+        signals: Dict[str, Any],
+        portfolio_greeks: Any = None,
+        existing_positions: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, AllocationDirective]:
+        """Allocate using probability-weighted blending across regimes.
+
+        Instead of picking a single regime and going all-or-nothing, this
+        method computes allocations for each regime scenario separately,
+        then blends them by probability.  A 30% crisis probability enables
+        hedge strategies at 30% of their crisis-mode allocation rather than
+        all-or-nothing.
+
+        Parameters
+        ----------
+        regime_probs : RegimeProbabilities
+            Probability distribution over market regimes.
+        signals : dict
+            Current market signals (VIX, FRAG, NAV, etc.).
+        portfolio_greeks : PortfolioGreeks, optional
+            Current aggregated greeks for budget checking.
+        existing_positions : list, optional
+            Currently open option positions.
+
+        Returns
+        -------
+        dict
+            strategy_name -> AllocationDirective (probability-blended)
+        """
+        # Map regime names to strategy allocator market situations.
+        regime_situation_map = {
+            "crisis": "CRISIS",
+            "contraction": "RISK_OFF",
+            "expansion": "RISK_ON",
+        }
+
+        prob_map = {
+            "crisis": regime_probs.crisis,
+            "contraction": regime_probs.contraction,
+            "expansion": regime_probs.expansion,
+        }
+
+        # Compute per-regime allocations.
+        regime_allocations: Dict[str, Dict[str, AllocationDirective]] = {}
+        for regime_name, probability in prob_map.items():
+            if probability < 0.01:
+                continue  # skip negligible probabilities
+            situation = regime_situation_map[regime_name]
+            allocs = self.allocate(
+                market_situation=situation,
+                signals=signals,
+                portfolio_greeks=portfolio_greeks,
+                existing_positions=existing_positions,
+            )
+            regime_allocations[regime_name] = allocs
+
+        # Blend allocations by probability weight.
+        all_strategy_names = set(STRATEGY_CATEGORIES.keys())
+        blended: Dict[str, AllocationDirective] = {}
+
+        nav = signals.get("nav", 0.0)
+
+        for strat_name in all_strategy_names:
+            weighted_capital_pct = 0.0
+            weighted_enabled = 0.0
+            weighted_priority = 0.0
+            weighted_delta = 0.0
+            weighted_gamma = 0.0
+            weighted_theta = 0.0
+            weighted_vega = 0.0
+            contributing_regimes: List[str] = []
+
+            for regime_name, probability in prob_map.items():
+                if probability < 0.01:
+                    continue
+                allocs = regime_allocations.get(regime_name, {})
+                alloc = allocs.get(strat_name)
+                if alloc is None:
+                    continue
+
+                if alloc.enabled:
+                    weighted_enabled += probability
+                    contributing_regimes.append(f"{regime_name}:{probability:.0%}")
+
+                weighted_capital_pct += alloc.capital_pct * probability
+                weighted_priority += alloc.priority * probability
+                weighted_delta += alloc.greeks_budget.max_delta * probability
+                weighted_gamma += alloc.greeks_budget.max_gamma * probability
+                weighted_theta += alloc.greeks_budget.min_theta * probability
+                weighted_vega += alloc.greeks_budget.max_vega * probability
+
+            # Strategy is enabled if blended probability of being enabled exceeds 10%.
+            is_enabled = weighted_enabled >= 0.10
+
+            reason_parts = []
+            if contributing_regimes:
+                reason_parts.append(f"Blended from {', '.join(contributing_regimes)}")
+            else:
+                reason_parts.append(
+                    f"Not enabled in any regime "
+                    f"(dominant={regime_probs.dominant})"
+                )
+
+            blended[strat_name] = AllocationDirective(
+                enabled=is_enabled,
+                capital_pct=round(weighted_capital_pct, 4),
+                priority=int(round(weighted_priority)),
+                greeks_budget=GreeksBudget(
+                    max_delta=round(weighted_delta, 2),
+                    max_gamma=round(weighted_gamma, 2),
+                    min_theta=round(weighted_theta, 2),
+                    max_vega=round(weighted_vega, 2),
+                ),
+                reason=" | ".join(reason_parts) if reason_parts else "No regime data",
+            )
+
+        # Log blended summary.
+        enabled_count = sum(1 for a in blended.values() if a.enabled)
+        logger.info(
+            "StrategyAllocator.allocate_with_probabilities: "
+            "dominant=%s (crisis=%.1f%% contraction=%.1f%% expansion=%.1f%%) "
+            "→ %d/%d strategies enabled",
+            regime_probs.dominant,
+            regime_probs.crisis * 100,
+            regime_probs.contraction * 100,
+            regime_probs.expansion * 100,
+            enabled_count,
+            len(blended),
+        )
+
+        return blended
+
+
+# ── Regime probabilities ────────────────────────────────────────────
+
+
+@dataclass
+class RegimeProbabilities:
+    """Probability distribution over market regimes."""
+
+    crisis: float = 0.0
+    contraction: float = 0.0
+    expansion: float = 0.0
+
+    def __post_init__(self) -> None:
+        total = self.crisis + self.contraction + self.expansion
+        # Normalise if values don't sum to ~1.0 (tolerance of 5%).
+        if total > 0 and abs(total - 1.0) > 0.05:
+            self.crisis = self.crisis / total
+            self.contraction = self.contraction / total
+            self.expansion = self.expansion / total
+
+    @property
+    def dominant(self) -> str:
+        """Return the most likely regime."""
+        return max(
+            [("crisis", self.crisis), ("contraction", self.contraction),
+             ("expansion", self.expansion)],
+            key=lambda x: x[1],
+        )[0]
+
+
+def estimate_regime_probabilities(signals: dict) -> RegimeProbabilities:
+    """Estimate regime probabilities from market signals.
+
+    Uses VIX level, fragility score, and market health index as inputs.
+    Simple logistic model -- not ML, just calibrated thresholds.
+
+    Parameters
+    ----------
+    signals : dict
+        Must contain some subset of: ``vix_level``, ``frag``, ``mhi``.
+
+    Returns
+    -------
+    RegimeProbabilities
+    """
+    vix = signals.get("vix_level", 20)
+    frag = signals.get("frag", 0.5)
+    mhi = signals.get("mhi", 0.5)
+
+    # Crisis probability increases with VIX and fragility.
+    crisis_raw = (vix - 20) / 30 * 0.5 + frag * 0.3 + (1 - mhi) * 0.2
+    crisis_p = max(0.0, min(1.0, crisis_raw))
+
+    # Expansion probability is inverse of crisis signals.
+    expansion_raw = (1 - frag) * 0.4 + mhi * 0.4 + max(0, (30 - vix) / 30) * 0.2
+    expansion_p = max(0.0, min(1.0, expansion_raw)) * (1 - crisis_p)
+
+    # Contraction is the remainder.
+    contraction_p = max(0.0, 1 - crisis_p - expansion_p)
+
+    return RegimeProbabilities(
+        crisis=round(crisis_p, 3),
+        contraction=round(contraction_p, 3),
+        expansion=round(expansion_p, 3),
+    )
+
+
 __all__ = [
     "StrategyCategory",
     "GreeksBudget",
     "AllocationDirective",
     "StrategyAllocatorConfig",
     "StrategyAllocator",
+    "RegimeProbabilities",
+    "estimate_regime_probabilities",
     "STRATEGY_CATEGORIES",
     "REGIME_STRATEGY_MAP",
     "REGIME_CAPITAL_TEMPLATES",

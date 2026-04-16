@@ -33,6 +33,68 @@ from .types import RiskReport, TargetPortfolio
 logger = get_logger(__name__)
 
 
+# ── Conviction scaling ───────────────────────────────────────────────
+
+def scale_weight_by_conviction(
+    base_weight: float,
+    conviction: float,
+    min_scale: float = 0.5,
+    max_scale: float = 1.5,
+) -> float:
+    """Scale a target position weight by its conviction score.
+
+    Linear interpolation: conviction 0 -> min_scale, conviction 1 -> max_scale.
+    Conviction 0.5 (neutral) -> 1.0x (unchanged).
+    """
+    scale = min_scale + (max_scale - min_scale) * conviction
+    return base_weight * scale
+
+
+def _load_assessment_confidences(
+    instrument_ids: list[str],
+    as_of_date: date,
+) -> Dict[str, float]:
+    """Load latest assessment confidence scores for instruments.
+
+    Queries the ``instrument_scores`` table for the most recent confidence
+    value per instrument on or before ``as_of_date``.  Returns a mapping
+    from instrument_id to confidence (0-1).
+    """
+    if not instrument_ids:
+        return {}
+
+    try:
+        db_manager = get_db_manager()
+    except Exception:
+        return {}
+
+    sql = """
+        SELECT DISTINCT ON (instrument_id)
+            instrument_id, confidence
+        FROM instrument_scores
+        WHERE instrument_id = ANY(%s)
+          AND as_of_date <= %s
+        ORDER BY instrument_id, as_of_date DESC, created_at DESC
+    """
+
+    try:
+        with db_manager.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(sql, (instrument_ids, as_of_date))
+                rows = cursor.fetchall()
+            finally:
+                cursor.close()
+    except Exception:
+        logger.debug(
+            "_load_assessment_confidences: failed to query instrument_scores; "
+            "conviction scaling will be skipped",
+        )
+        return {}
+
+    return {str(row[0]): float(row[1]) for row in rows if row[1] is not None}
+
+
 @dataclass
 class BasicLongOnlyPortfolioModel:
     """Basic long-only portfolio model built from universe members.
@@ -272,6 +334,54 @@ class BasicLongOnlyPortfolioModel:
             m.entity_id: float(w) for m, w in zip(members, final_weights)
         }
 
+        # ── Conviction scaling: adjust weights by assessment confidence ──
+        conviction_scaling_applied = False
+        conviction_scaling_enabled = getattr(self.config, "conviction_scaling_enabled", False)
+        if conviction_scaling_enabled:
+            min_scale = float(getattr(self.config, "conviction_scaling_min", 0.5))
+            max_scale = float(getattr(self.config, "conviction_scaling_max", 1.5))
+            confidences = _load_assessment_confidences(
+                list(weights.keys()), as_of_date,
+            )
+            if confidences:
+                scaled_weights: Dict[str, float] = {}
+                for inst_id, w in weights.items():
+                    conf = confidences.get(inst_id)
+                    if conf is not None:
+                        new_w = scale_weight_by_conviction(w, conf, min_scale, max_scale)
+                        scale_applied = new_w / w if w > 0 else 1.0
+                        if abs(scale_applied - 1.0) > 0.20:
+                            logger.info(
+                                "ConvictionScaling: %s weight %.4f -> %.4f "
+                                "(conviction=%.2f, scale=%.2fx)",
+                                inst_id, w, new_w, conf, scale_applied,
+                            )
+                        scaled_weights[inst_id] = new_w
+                    else:
+                        scaled_weights[inst_id] = w
+
+                # Re-normalise so total weight sums to original gross exposure.
+                original_total = sum(weights.values())
+                scaled_total = sum(scaled_weights.values())
+                if scaled_total > 0 and original_total > 0:
+                    norm_factor = original_total / scaled_total
+                    weights = {k: v * norm_factor for k, v in scaled_weights.items()}
+                else:
+                    weights = scaled_weights
+
+                conviction_scaling_applied = True
+                logger.info(
+                    "ConvictionScaling: applied to %d/%d instruments (min_scale=%.2f, max_scale=%.2f)",
+                    len(confidences), len(weights), min_scale, max_scale,
+                )
+
+                # Update final_weights list for downstream diagnostics.
+                member_id_to_idx = {m.entity_id: i for i, m in enumerate(members)}
+                for inst_id, w in weights.items():
+                    idx = member_id_to_idx.get(inst_id)
+                    if idx is not None:
+                        final_weights[idx] = w
+
         # Diagnostics: sector and fragility exposures.
         sector_exposures: Dict[str, float] = {}
         fragile_weight = 0.0
@@ -297,6 +407,7 @@ class BasicLongOnlyPortfolioModel:
             "portfolio_hysteresis_active": bool(hysteresis_active),
             "per_instrument_max_weight_binding": any_clipped,
             "fragility_exposure_within_limit": fragile_weight <= frag_limit,
+            "conviction_scaling_applied": conviction_scaling_applied,
         }
 
         risk_metrics = {
