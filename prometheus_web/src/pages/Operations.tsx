@@ -1,9 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Panel } from "../components/Panel";
 import { useOpsOverview, useOpsDay } from "../api/hooks";
 import {
-  CheckCircle2, XCircle, AlertTriangle, Clock, ChevronRight,
+  CheckCircle2, XCircle, AlertTriangle, Clock, ChevronRight, ChevronDown,
   Activity, FileText, Database,
 } from "lucide-react";
 
@@ -147,34 +147,6 @@ export default function Operations() {
     intel_briefs: IntelBrief[];
   } | undefined;
 
-  // Group jobs by DAG
-  const jobsByDag = useMemo(() => {
-    if (!detail?.jobs) return new Map<string, JobDetail[]>();
-    const m = new Map<string, JobDetail[]>();
-    for (const j of detail.jobs) {
-      const existing = m.get(j.dag_id) ?? [];
-      existing.push(j);
-      m.set(j.dag_id, existing);
-    }
-    return m;
-  }, [detail?.jobs]);
-
-  // Dedup jobs: show latest execution per job_id per dag
-  const dedupedByDag = useMemo(() => {
-    const result = new Map<string, JobDetail[]>();
-    for (const [dagId, jobs] of jobsByDag) {
-      const latest = new Map<string, JobDetail>();
-      for (const j of jobs) {
-        const existing = latest.get(j.job_id);
-        if (!existing || (j.created_at && existing.created_at && j.created_at > existing.created_at)) {
-          latest.set(j.job_id, j);
-        }
-      }
-      result.set(dagId, [...latest.values()]);
-    }
-    return result;
-  }, [jobsByDag]);
-
   return (
     <div className="space-y-4 p-4 overflow-y-auto h-[calc(100vh-3rem)]">
       <PageHeader
@@ -210,7 +182,7 @@ export default function Operations() {
       </div>
 
       {/* ── 14-Day History Grid ─────────────────────── */}
-      <Panel title="Execution History" tooltip="Click a day to see detailed breakdown. Green = all jobs succeeded. Orange = partial failures. Red = all failed.">
+      <Panel title="Execution History" tooltip="Click a day to expand its breakdown. Green = all jobs succeeded. Orange = partial failures. Red = all failed.">
         <div className="space-y-1.5">
           {data?.daily.map((day) => {
             const isSelected = day.date === selectedDate;
@@ -218,162 +190,354 @@ export default function Operations() {
             const isWeekend = dayOfWeek === "Sat" || dayOfWeek === "Sun";
 
             return (
-              <button
-                key={day.date}
-                onClick={() => setSelectedDate(day.date)}
-                className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
-                  isSelected
-                    ? "bg-accent/10 border border-accent/30"
-                    : "hover:bg-surface-overlay border border-transparent"
-                } ${isWeekend ? "opacity-60" : ""}`}
-              >
-                {/* Date */}
-                <div className="w-24 shrink-0">
-                  <div className="text-[11px] font-mono text-zinc-300">{day.date}</div>
-                  <div className="text-[9px] text-zinc-500">{dayOfWeek}</div>
-                </div>
+              <div key={day.date} className="space-y-0">
+                {/* Row header — clickable to expand */}
+                <button
+                  onClick={() => setSelectedDate(isSelected ? "" : day.date)}
+                  className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
+                    isSelected
+                      ? "bg-accent/10 border border-accent/30"
+                      : "hover:bg-surface-overlay border border-transparent"
+                  } ${isWeekend ? "opacity-60" : ""}`}
+                >
+                  {/* Expand chevron */}
+                  {isSelected ? (
+                    <ChevronDown size={12} className="shrink-0 text-accent" />
+                  ) : (
+                    <ChevronRight size={12} className="shrink-0 text-zinc-600" />
+                  )}
 
-                {/* Status badge */}
-                <div className={`w-16 shrink-0 rounded-full border px-2 py-0.5 text-center text-[9px] font-semibold ${STATUS_COLORS[day.status] ?? STATUS_COLORS.idle}`}>
-                  {day.status.toUpperCase()}
-                </div>
+                  {/* Date */}
+                  <div className="w-24 shrink-0">
+                    <div className="text-[11px] font-mono text-zinc-300">{day.date}</div>
+                    <div className="text-[9px] text-zinc-500">{dayOfWeek}</div>
+                  </div>
 
-                {/* Counts */}
-                <div className="flex gap-4 text-[10px] flex-1">
-                  {day.success > 0 && <span className="text-positive">{day.success} ok</span>}
-                  {day.failed > 0 && <span className="text-negative">{day.failed} failed</span>}
-                  {day.skipped > 0 && <span className="text-warning">{day.skipped} skipped</span>}
-                  {day.running > 0 && <span className="text-info">{day.running} running</span>}
-                  {day.total === 0 && <span className="text-zinc-600">No jobs</span>}
-                </div>
+                  {/* Status badge */}
+                  <div className={`w-16 shrink-0 rounded-full border px-2 py-0.5 text-center text-[9px] font-semibold ${STATUS_COLORS[day.status] ?? STATUS_COLORS.idle}`}>
+                    {day.status.toUpperCase()}
+                  </div>
 
-                {/* Per-DAG mini bars */}
-                <div className="flex gap-1.5 shrink-0">
-                  {Object.entries(day.dags).map(([dagId, dag]) => {
-                    const label = dagLabel(dagId);
-                    const allOk = dag.failed === 0 && dag.success > 0;
-                    const hasFail = dag.failed > 0;
-                    return (
-                      <div
-                        key={dagId}
-                        className={`rounded px-1.5 py-0.5 text-[8px] font-mono ${
-                          allOk ? "bg-positive/15 text-positive"
-                          : hasFail ? "bg-negative/15 text-negative"
-                          : "bg-zinc-800 text-zinc-500"
-                        }`}
-                        title={`${label}: ${dag.success}/${dag.total} ok`}
-                      >
-                        {label} {dag.success}/{dag.total}
-                      </div>
-                    );
-                  })}
-                </div>
+                  {/* Counts */}
+                  <div className="flex gap-4 text-[10px] flex-1">
+                    {day.success > 0 && <span className="text-positive">{day.success} ok</span>}
+                    {day.failed > 0 && <span className="text-negative">{day.failed} failed</span>}
+                    {day.skipped > 0 && <span className="text-warning">{day.skipped} skipped</span>}
+                    {day.running > 0 && <span className="text-info">{day.running} running</span>}
+                    {day.total === 0 && <span className="text-zinc-600">No jobs</span>}
+                  </div>
 
-                <ChevronRight size={12} className={`shrink-0 ${isSelected ? "text-accent" : "text-zinc-600"}`} />
-              </button>
+                  {/* Per-DAG mini bars */}
+                  <div className="flex gap-1.5 shrink-0">
+                    {Object.entries(day.dags).map(([dagId, dag]) => {
+                      const label = dagLabel(dagId);
+                      const allOk = dag.failed === 0 && dag.success > 0;
+                      const hasFail = dag.failed > 0;
+                      return (
+                        <div
+                          key={dagId}
+                          className={`rounded px-1.5 py-0.5 text-[8px] font-mono ${
+                            allOk ? "bg-positive/15 text-positive"
+                            : hasFail ? "bg-negative/15 text-negative"
+                            : "bg-zinc-800 text-zinc-500"
+                          }`}
+                          title={`${label}: ${dag.success}/${dag.total} ok`}
+                        >
+                          {label} {dag.success}/{dag.total}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </button>
+
+                {/* Inline expansion */}
+                {isSelected && (
+                  <div className="ml-6 mt-1 mb-2 rounded-lg border border-accent/20 bg-surface-base/50 overflow-hidden">
+                    <ExpandedDayDetail
+                      day={day}
+                      detail={detail}
+                      isLoading={dayDetail.isLoading}
+                    />
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
       </Panel>
 
-      {/* ── Day Detail ──────────────────────────────── */}
-      {selectedDate && (
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-zinc-300">
-            Detail: {selectedDate}
-            {dayDetail.isLoading && <span className="text-zinc-500 ml-2">Loading...</span>}
+    </div>
+  );
+}
+
+/* ── Expanded Day Detail (inline under each row) ──── */
+
+interface ExpandedDayDetailProps {
+  day: DaySummary;
+  detail: {
+    date: string;
+    jobs: JobDetail[];
+    engine_runs: EngineRun[];
+    intel_briefs: IntelBrief[];
+  } | undefined;
+  isLoading: boolean;
+}
+
+function ExpandedDayDetail({ day, detail, isLoading }: ExpandedDayDetailProps) {
+  if (isLoading) {
+    return (
+      <div className="px-4 py-3 text-[10px] text-zinc-500">
+        Loading {day.date}…
+      </div>
+    );
+  }
+  if (!detail) {
+    return (
+      <div className="px-4 py-3 text-[10px] text-zinc-500">
+        No data available for this day.
+      </div>
+    );
+  }
+
+  // Dedup jobs: latest execution per job_id
+  const latest = new Map<string, JobDetail>();
+  for (const j of detail.jobs) {
+    const existing = latest.get(j.job_id);
+    if (
+      !existing ||
+      (j.created_at && existing.created_at && j.created_at > existing.created_at)
+    ) {
+      latest.set(j.job_id, j);
+    }
+  }
+  const allJobs = [...latest.values()];
+
+  // Partition by status
+  const failed = allJobs.filter((j) => j.status === "FAILED");
+  const skipped = allJobs.filter((j) => j.status === "SKIPPED");
+  const running = allJobs.filter((j) => j.status === "RUNNING");
+  const succeeded = allJobs.filter((j) => j.status === "SUCCESS");
+
+  // Group jobs by DAG for the success summary
+  const byDag = new Map<string, JobDetail[]>();
+  for (const j of allJobs) {
+    const arr = byDag.get(j.dag_id) ?? [];
+    arr.push(j);
+    byDag.set(j.dag_id, arr);
+  }
+
+  return (
+    <div className="divide-y divide-border-dim">
+      {/* Summary line */}
+      <div className="px-4 py-2 bg-surface-overlay/30 flex items-center gap-4 text-[10px]">
+        <span className="font-semibold text-zinc-300">{detail.date}</span>
+        <span className="text-positive">{succeeded.length} succeeded</span>
+        {failed.length > 0 && <span className="text-negative">{failed.length} failed</span>}
+        {skipped.length > 0 && <span className="text-warning">{skipped.length} skipped</span>}
+        {running.length > 0 && <span className="text-info">{running.length} running</span>}
+        <span className="text-zinc-500 ml-auto">
+          {byDag.size} DAG{byDag.size !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Failed jobs section — most important */}
+      {failed.length > 0 && (
+        <div className="px-4 py-2">
+          <div className="text-[10px] font-semibold text-negative mb-1.5 flex items-center gap-1">
+            <XCircle size={11} /> FAILED ({failed.length})
           </div>
-
-          {/* Engine Runs */}
-          {detail?.engine_runs && detail.engine_runs.length > 0 && (
-            <Panel title="Engine Runs">
-              <div className="space-y-1">
-                {detail.engine_runs.map((run) => {
-                  const isComplete = run.phase === "COMPLETED";
-                  const isFailed = run.phase === "FAILED";
-                  return (
-                    <div key={run.run_id} className="flex items-center gap-3 rounded px-2 py-1.5 bg-surface-overlay/30">
-                      <Database size={12} className="text-zinc-500 shrink-0" />
-                      <span className="text-[10px] font-mono text-zinc-300 w-12">{run.region}</span>
-                      <span className={`text-[10px] font-semibold ${isComplete ? "text-positive" : isFailed ? "text-negative" : "text-info"}`}>
-                        {run.phase}
-                      </span>
-                      <span className="text-[9px] text-zinc-500 flex-1">
-                        {run.updated_at ? formatTime(run.updated_at) : ""}
-                      </span>
-                      {run.error && (
-                        <span className="text-[9px] text-negative truncate max-w-64">{JSON.stringify(run.error)}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </Panel>
-          )}
-
-          {/* Jobs by DAG */}
-          {[...dedupedByDag.entries()].map(([dagId, jobs]) => (
-            <Panel key={dagId} title={dagLabel(dagId) + " Pipeline"} tooltip={`DAG: ${dagId}`}>
-              <div className="space-y-0.5">
-                {jobs.map((job) => {
-                  const Icon = JOB_STATUS_ICONS[job.status] ?? Clock;
-                  const color = JOB_STATUS_COLORS[job.status] ?? "text-zinc-500";
-                  return (
-                    <div key={job.execution_id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-surface-overlay/30">
-                      <Icon size={12} className={`shrink-0 ${color}`} />
-                      <span className="text-[10px] font-mono text-zinc-300 w-44 truncate" title={job.job_type}>
-                        {job.job_type}
-                      </span>
-                      <span className={`text-[10px] font-semibold w-16 ${color}`}>{job.status}</span>
-                      <span className="text-[9px] text-zinc-500 w-16">{formatTime(job.started_at)}</span>
-                      <span className="text-[9px] text-zinc-500 w-16">{formatDuration(job.duration_s)}</span>
-                      {job.attempt > 1 && (
-                        <span className="text-[9px] text-warning">attempt {job.attempt}</span>
-                      )}
-                      {job.error && (
-                        <span className="text-[9px] text-negative truncate flex-1 max-w-96" title={job.error}>
-                          {job.error}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </Panel>
-          ))}
-
-          {/* Intel Briefs */}
-          {detail?.intel_briefs && detail.intel_briefs.length > 0 && (
-            <Panel title="Intelligence Reports">
-              <div className="space-y-0.5">
-                {detail.intel_briefs.map((brief) => {
-                  const sevColor = brief.severity === "critical" ? "text-negative"
-                    : brief.severity === "high" ? "text-warning"
-                    : brief.severity === "medium" ? "text-info"
-                    : "text-zinc-400";
-                  return (
-                    <div key={brief.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-surface-overlay/30">
-                      <FileText size={12} className="text-zinc-500 shrink-0" />
-                      <span className={`text-[9px] font-semibold uppercase w-14 ${sevColor}`}>{brief.severity}</span>
-                      <span className="text-[9px] text-zinc-500 w-20">{brief.type}</span>
-                      <span className="text-[9px] text-zinc-500 w-16">{brief.domain}</span>
-                      <span className="text-[10px] text-zinc-300 truncate flex-1">{brief.title}</span>
-                      <span className="text-[9px] text-zinc-500">{formatTime(brief.created_at)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </Panel>
-          )}
-
-          {/* Empty state */}
-          {detail && detail.jobs.length === 0 && detail.engine_runs.length === 0 && detail.intel_briefs.length === 0 && (
-            <div className="rounded-lg border border-border-dim bg-surface-raised p-8 text-center text-zinc-500 text-xs">
-              No activity recorded for {selectedDate}
-            </div>
-          )}
+          <div className="space-y-1">
+            {failed.map((j) => (
+              <JobLine key={j.execution_id} job={j} highlightError />
+            ))}
+          </div>
         </div>
       )}
+
+      {/* Skipped jobs section */}
+      {skipped.length > 0 && (
+        <div className="px-4 py-2">
+          <div className="text-[10px] font-semibold text-warning mb-1.5 flex items-center gap-1">
+            <AlertTriangle size={11} /> SKIPPED ({skipped.length})
+          </div>
+          <div className="space-y-1">
+            {skipped.map((j) => (
+              <JobLine key={j.execution_id} job={j} highlightError />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Running jobs section */}
+      {running.length > 0 && (
+        <div className="px-4 py-2">
+          <div className="text-[10px] font-semibold text-info mb-1.5 flex items-center gap-1">
+            <Activity size={11} /> RUNNING ({running.length})
+          </div>
+          <div className="space-y-1">
+            {running.map((j) => (
+              <JobLine key={j.execution_id} job={j} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Succeeded jobs — collapsed by default, click to expand */}
+      {succeeded.length > 0 && (
+        <details className="px-4 py-2">
+          <summary className="text-[10px] font-semibold text-positive cursor-pointer flex items-center gap-1">
+            <CheckCircle2 size={11} /> SUCCEEDED ({succeeded.length}) — click to expand
+          </summary>
+          <div className="space-y-1 mt-2">
+            {[...byDag.entries()].map(([dagId, jobs]) => {
+              const dagSucceeded = jobs.filter((j) => j.status === "SUCCESS");
+              if (dagSucceeded.length === 0) return null;
+              return (
+                <div key={dagId} className="mb-2">
+                  <div className="text-[9px] font-mono text-zinc-400 mb-0.5">
+                    {dagLabel(dagId)} ({dagSucceeded.length} jobs)
+                  </div>
+                  <div className="space-y-0.5 pl-2">
+                    {dagSucceeded.map((j) => (
+                      <JobLine key={j.execution_id} job={j} compact />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+
+      {/* Engine runs */}
+      {detail.engine_runs.length > 0 && (
+        <details className="px-4 py-2">
+          <summary className="text-[10px] font-semibold text-zinc-400 cursor-pointer flex items-center gap-1">
+            <Database size={11} /> Engine Runs ({detail.engine_runs.length})
+          </summary>
+          <div className="space-y-1 mt-2">
+            {detail.engine_runs.map((run) => {
+              const isComplete = run.phase === "COMPLETED";
+              const isFailed = run.phase === "FAILED";
+              return (
+                <div
+                  key={run.run_id}
+                  className="flex items-center gap-2 rounded px-2 py-1 bg-surface-overlay/30 text-[10px]"
+                >
+                  <span className="font-mono text-zinc-300 w-12">{run.region}</span>
+                  <span
+                    className={`font-semibold w-20 ${
+                      isComplete ? "text-positive" : isFailed ? "text-negative" : "text-info"
+                    }`}
+                  >
+                    {run.phase}
+                  </span>
+                  <span className="text-[9px] text-zinc-500">
+                    {run.updated_at ? formatTime(run.updated_at) : ""}
+                  </span>
+                  {run.error && (
+                    <span className="text-[9px] text-negative truncate flex-1">
+                      {JSON.stringify(run.error)}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+
+      {/* Intel briefs */}
+      {detail.intel_briefs.length > 0 && (
+        <details className="px-4 py-2">
+          <summary className="text-[10px] font-semibold text-zinc-400 cursor-pointer flex items-center gap-1">
+            <FileText size={11} /> Intelligence Briefs ({detail.intel_briefs.length})
+          </summary>
+          <div className="space-y-0.5 mt-2">
+            {detail.intel_briefs.map((brief) => {
+              const sevColor =
+                brief.severity === "critical"
+                  ? "text-negative"
+                  : brief.severity === "high"
+                  ? "text-warning"
+                  : brief.severity === "medium"
+                  ? "text-info"
+                  : "text-zinc-400";
+              return (
+                <div
+                  key={brief.id}
+                  className="flex items-center gap-2 rounded px-2 py-1 bg-surface-overlay/30 text-[10px]"
+                >
+                  <span className={`font-semibold uppercase w-14 ${sevColor}`}>
+                    {brief.severity}
+                  </span>
+                  <span className="text-zinc-500 w-20">{brief.type}</span>
+                  <span className="text-zinc-500 w-16">{brief.domain}</span>
+                  <span className="text-zinc-300 truncate flex-1">{brief.title}</span>
+                  <span className="text-[9px] text-zinc-500">{formatTime(brief.created_at)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+
+      {/* Empty state */}
+      {allJobs.length === 0 && detail.engine_runs.length === 0 && detail.intel_briefs.length === 0 && (
+        <div className="px-4 py-4 text-center text-[10px] text-zinc-500">
+          No activity recorded for {detail.date}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Single job line (used in expanded view) ─────── */
+
+function JobLine({
+  job,
+  highlightError = false,
+  compact = false,
+}: {
+  job: JobDetail;
+  highlightError?: boolean;
+  compact?: boolean;
+}) {
+  const Icon = JOB_STATUS_ICONS[job.status] ?? Clock;
+  const color = JOB_STATUS_COLORS[job.status] ?? "text-zinc-500";
+  return (
+    <div
+      className={`flex items-start gap-2 rounded px-2 py-1 text-[10px] ${
+        highlightError ? "bg-negative/5" : "hover:bg-surface-overlay/30"
+      }`}
+    >
+      <Icon size={11} className={`shrink-0 mt-0.5 ${color}`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-zinc-300 truncate" title={job.job_id}>
+            {job.job_type}
+          </span>
+          {!compact && (
+            <span className="text-[9px] text-zinc-600">
+              {dagLabel(job.dag_id)}
+            </span>
+          )}
+          <span className="text-[9px] text-zinc-500 ml-auto shrink-0">
+            {formatTime(job.started_at)}
+          </span>
+          <span className="text-[9px] text-zinc-500 w-12 text-right shrink-0">
+            {formatDuration(job.duration_s)}
+          </span>
+          {job.attempt > 1 && (
+            <span className="text-[9px] text-warning shrink-0">×{job.attempt}</span>
+          )}
+        </div>
+        {job.error && highlightError && (
+          <div className="text-[9px] text-negative mt-0.5 font-mono whitespace-pre-wrap break-all">
+            {job.error}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

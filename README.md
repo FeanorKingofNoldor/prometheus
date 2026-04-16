@@ -2,7 +2,7 @@
 
 Algorithmic trading system for US equities with options overlay. Runs a daily pipeline that scores instruments, constructs portfolios, and executes trades via Interactive Brokers. Backtested at **23% CAGR, 1.2 Sharpe, -25% MaxDD** over 29 years (1997-2025), beating the S&P 500 in 25 of 29 years.
 
-Built on top of [Apathis](../apathis) (the intelligence/info layer) which provides regime detection, stability scoring, entity graph, and geopolitical signals.
+Built on top of [Apatheon](../apathis) (the intelligence/info layer; Python package still named `apathis`) which provides regime detection, stability scoring, entity graph, and geopolitical signals.
 
 ## Architecture
 
@@ -84,7 +84,7 @@ docs/                    # Dev log, analysis docs
 ### Prerequisites
 - Python 3.14 with venv
 - PostgreSQL with PgBouncer (port 6432)
-- Apathis running on port 8100
+- Apatheon running on port 8100
 - IBKR Gateway (port 4002 for paper trading)
 
 ### Setup

@@ -21,7 +21,7 @@ ruff check --fix .
 # Type check
 mypy
 
-# Start full stack (Apathis API on :8100, Prometheus API on :8200, frontends on :5173/:5174)
+# Start full stack (Apatheon API on :8100, Prometheus API on :8200, frontends on :5173/:5174)
 ./start.sh
 
 # Start with catch-up pipeline
@@ -31,11 +31,11 @@ RUN_CATCHUP=1 ./start.sh
 NO_DAEMON=1 ./start.sh
 ```
 
-## Apathis (Info Layer)
+## Apatheon (Info Layer)
 
-Apathis (`../apathis`) is the intelligence layer that Prometheus depends on. It must be running at port 8100 before Prometheus starts (`start.sh` handles this). Run it with `APATHIS_MODE=private` (disables auth/rate-limiting for internal use).
+Apatheon (`../apathis` — Python package name unchanged) is the intelligence layer that Prometheus depends on. It must be running at port 8100 before Prometheus starts (`start.sh` handles this). Run it with `APATHEON_MODE=private` (or legacy `APATHIS_MODE=private`) to disable auth/rate-limiting for internal use.
 
-Apathis provides:
+Apatheon provides:
 - **Regime detection** — market regime (crisis/expansion/contraction) consumed by Prometheus engines
 - **Stability (STAB) scores** — market stability signals
 - **Fragility scores** — entity/sector fragility
@@ -43,7 +43,7 @@ Apathis provides:
 - **Market data** — prices, returns, volatility, fundamentals, macro series via `prometheus_historical` DB
 - **LLM chat** — Iris integration via `/api/chat`
 
-Both projects share the same two PostgreSQL databases (`prometheus_historical`, `prometheus_runtime`) accessed through PgBouncer on port 6432. Apathis owns the schema and ingestion; Prometheus reads from it. Apathis has its own CLAUDE.md at `../apathis/CLAUDE.md`.
+Both projects share the same two PostgreSQL databases (`prometheus_historical`, `prometheus_runtime`) accessed through PgBouncer on port 6432. Apatheon owns the schema and ingestion; Prometheus reads from it. Apatheon has its own CLAUDE.md at `../apathis/CLAUDE.md`.
 
 ## Architecture
 
