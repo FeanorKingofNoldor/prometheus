@@ -48,7 +48,7 @@ def _default_timestamp(as_of_date: date | None) -> datetime:
     """
 
     if as_of_date is None:
-        return datetime.utcnow().replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
     return datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 0, tzinfo=timezone.utc)
 
 
@@ -103,7 +103,7 @@ def record_orders(
     if mode_up == ExecutionMode.BACKTEST:
         ts_default = _default_timestamp(as_of_date)
     else:
-        ts_default = datetime.utcnow().replace(tzinfo=timezone.utc)
+        ts_default = datetime.now(timezone.utc)
 
     with db_manager.get_runtime_connection() as conn:
         cursor = conn.cursor()

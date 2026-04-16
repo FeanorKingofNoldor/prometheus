@@ -212,6 +212,56 @@ def create_paper_config(
     )
 
 
+def validate_credentials_at_startup(*, require_paper: bool = True, require_live: bool = False) -> None:
+    """Verify IBKR credentials are present in the environment at boot.
+
+    Daemon failures of the form "couldn't trade because creds missing" are
+    silent at 3am — operators only learn about them when the morning report
+    is empty. Calling this from the daemon entrypoint surfaces the problem
+    immediately, before the first market cycle.
+
+    Args:
+        require_paper: Fail boot if PAPER credentials are missing.
+        require_live: Fail boot if LIVE credentials are missing. Default
+            False because most deployments want paper only by default.
+
+    Raises:
+        ValueError: if any required credential is missing. Message lists
+            *every* missing variable in one shot, so operators don't have
+            to fix-redeploy-fix-redeploy one var at a time.
+    """
+    missing: list[str] = []
+    if require_paper:
+        for v in ("IBKR_PAPER_USERNAME", "IBKR_PAPER_ACCOUNT"):
+            if not os.getenv(v):
+                missing.append(v)
+    if require_live:
+        for v in ("IBKR_LIVE_USERNAME", "IBKR_LIVE_ACCOUNT"):
+            if not os.getenv(v):
+                missing.append(v)
+
+    if missing:
+        raise ValueError(
+            "IBKR credential preflight failed; the following env vars are "
+            f"required but unset: {', '.join(missing)}. Set them in the "
+            "systemd unit's EnvironmentFile (/etc/sysconfig/prometheus-daemon) "
+            "and restart."
+        )
+
+    # Soft warnings (do not fail boot) — passwords missing, or live mode
+    # not yet provisioned.
+    if require_paper and not os.getenv("IBKR_PAPER_PASSWORD"):
+        logger.warning(
+            "IBKR_PAPER_PASSWORD not set — IB Gateway must already be "
+            "logged in or the connection will hang on next paper trade.",
+        )
+    if require_live and not os.getenv("IBKR_LIVE_PASSWORD"):
+        logger.warning(
+            "IBKR_LIVE_PASSWORD not set — IB Gateway must already be "
+            "logged in or the connection will hang on next live trade.",
+        )
+
+
 __all__ = [
     "IbkrMode",
     "IbkrGatewayType",
@@ -220,4 +270,5 @@ __all__ = [
     "create_connection_config",
     "create_live_config",
     "create_paper_config",
+    "validate_credentials_at_startup",
 ]

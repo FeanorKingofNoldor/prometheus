@@ -22,6 +22,7 @@ Design goals:
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import signal
 import time
@@ -34,9 +35,14 @@ from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
 from apathis.core.market_state import MarketState, get_market_state
 from apathis.core.time import TradingCalendar, TradingCalendarConfig
-from apathis.data_ingestion.daily_orchestrator import is_data_ready_for_market, run_daily_ingestion
+from apathis.data_ingestion.daily_orchestrator import (
+    check_price_data_freshness,
+    is_data_ready_for_market,
+    run_daily_ingestion,
+)
 from psycopg2.extras import Json
 
+from prometheus.orchestration.clock import now_local
 from prometheus.orchestration.dag import (
     DAG,
     JobMetadata,
@@ -440,11 +446,25 @@ def execute_job(
 
             # Check if enough instruments got data (>= 95% coverage)
             if is_data_ready_for_market(db_manager, job.market_id, execution.as_of_date):
+                # Belt-and-suspenders: ingestion may report COMPLETE even
+                # when the upstream feed silently returned stale bars. Verify
+                # that the most recent prices_daily.trade_date is within the
+                # tolerated lag from the expected as_of_date before letting
+                # downstream signal/portfolio jobs run on stale prices.
+                fresh, freshness_msg = check_price_data_freshness(
+                    db_manager, execution.as_of_date,
+                )
+                if not fresh:
+                    logger.error(
+                        "ingest_prices: %s — refusing to advance to DATA_READY",
+                        freshness_msg,
+                    )
+                    return False, freshness_msg
                 if run.phase == RunPhase.WAITING_FOR_DATA:
                     update_phase(db_manager, run.run_id, RunPhase.DATA_READY)
                 logger.info(
-                    "ingest_prices: data ready for %s on %s",
-                    job.market_id, execution.as_of_date,
+                    "ingest_prices: data ready for %s on %s (%s)",
+                    job.market_id, execution.as_of_date, freshness_msg,
                 )
                 return True, None
             else:
@@ -700,7 +720,7 @@ def _execute_iris_job(
     execution: "JobExecution",
     db_manager: DatabaseManager | None = None,
 ) -> Tuple[bool, str | None]:
-    """Execute a Iris meta-intelligence job.
+    """Execute an Iris meta-intelligence job.
 
     Runs with no EngineRun.  All jobs are non-fatal — failures are logged
     but never propagate to the trading pipeline.
@@ -928,14 +948,42 @@ def _execute_iris_job(
 def calculate_retry_delay(
     job: JobMetadata,
     attempt_number: int,
+    *,
+    error_message: str | None = None,
 ) -> float:
-    """Calculate exponential backoff delay with jitter.
+    """Calculate exponential backoff delay with jitter and a hard cap.
+
+    Pure exponential growth (``base * 2**attempt``) was unbounded — a job
+    with a 600s base and a few retries pushed delays past 2 hours, well
+    past the daily window for most pipeline stages. We now cap at
+    ``PROMETHEUS_RETRY_MAX_DELAY_SECONDS`` (default 1h).
+
+    Detected rate-limit errors (``HTTP 429`` or "Too Many Requests" in
+    the message) bump to a longer minimum so we don't immediately
+    re-trigger the same throttle.
 
     Returns delay in seconds.
     """
     base_delay = job.retry_delay_seconds
+
+    # 429-aware: if the upstream is rate-limiting us, exponential
+    # back-off from the standard base risks immediately re-triggering
+    # the throttle. Lift the floor.
+    if error_message:
+        msg_lower = error_message.lower()
+        if "429" in msg_lower or "too many requests" in msg_lower or "rate limit" in msg_lower:
+            base_delay = max(base_delay, 900)  # at least 15 minutes
+
     # Exponential backoff: base * 2^(attempt - 1)
     delay = base_delay * (2 ** (attempt_number - 1))
+
+    # Hard cap so retries never starve the daily window.
+    try:
+        max_delay = float(os.environ.get("PROMETHEUS_RETRY_MAX_DELAY_SECONDS", "3600"))
+    except ValueError:
+        max_delay = 3600.0
+    delay = min(delay, max_delay)
+
     # Add jitter: ±25%
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return max(1.0, delay + jitter)
@@ -1000,6 +1048,10 @@ class MarketAwareDaemon:
         self.config = config
         self.db_manager = db_manager
         self.shutdown_requested = False
+        # Event-based shutdown signal so the main loop can wake from sleep
+        # immediately on SIGTERM instead of waiting up to poll_interval_seconds.
+        import threading as _threading
+        self._shutdown_event = _threading.Event()
 
         # Track active DAGs: {market_id: (DAG, dag_id)}
         self.active_dags: Dict[str, Tuple[DAG, str]] = {}
@@ -1010,6 +1062,13 @@ class MarketAwareDaemon:
         # Track retry backoff: {execution_id: retry_after_timestamp}
         self.retry_backoff: Dict[str, datetime] = {}
 
+        # Track threads orphaned by timeout. The thread keeps running
+        # because Python doesn't support thread cancellation; we reap
+        # them on later cycles to log late completions and to detect
+        # connection-pool leaks (the thread holds a DB conn until it
+        # exits).
+        self._orphaned_threads: List[Tuple[str, "threading.Thread", datetime]] = []
+
         # Cache TradingCalendar per market — loaded once, reused every cycle.
         # Avoids a DB round-trip (full holiday list) on every 60-second poll.
         self._calendars: Dict[str, TradingCalendar] = {}
@@ -1018,8 +1077,13 @@ class MarketAwareDaemon:
         """Setup graceful shutdown handlers."""
 
         def _signal_handler(signum, frame):
-            logger.info("MarketAwareDaemon: received signal %d, shutting down", signum)
+            logger.info(
+                "MarketAwareDaemon: received signal %d, requesting graceful shutdown",
+                signum,
+            )
             self.shutdown_requested = True
+            # Wake up the main loop's interruptible sleep immediately.
+            self._shutdown_event.set()
 
         signal.signal(signal.SIGTERM, _signal_handler)
         signal.signal(signal.SIGINT, _signal_handler)
@@ -1060,6 +1124,68 @@ class MarketAwareDaemon:
     def _get_running_job_ids(self) -> Set[str]:
         """Get set of currently running job IDs."""
         return {job.job_id for job, _ in self.running_jobs.values()}
+
+    def _maybe_reap_zombie_runs(self, as_of_date: date) -> None:
+        """Daily sweep of stuck (zombie) engine_runs rows.
+
+        Fires only when we're in the morning catch-up hour, so it runs
+        once per day at a known low-traffic window.
+        """
+        if now_local().hour != self.config.morning_catchup_hour:
+            return
+        zombie_key = f"zombie_reap_{as_of_date}"
+        if hasattr(self, "_zombie_reap_done") and zombie_key in self._zombie_reap_done:
+            return
+        try:
+            from prometheus.pipeline.state import reap_zombie_runs
+
+            reaped = reap_zombie_runs(self.db_manager, older_than_hours=24)
+            if reaped:
+                logger.warning(
+                    "_maybe_reap_zombie_runs: finalised %d stuck run(s): %s",
+                    len(reaped), ", ".join(reaped[:5]),
+                )
+            else:
+                logger.info("_maybe_reap_zombie_runs: no zombies found")
+        except Exception:
+            logger.exception("_maybe_reap_zombie_runs: sweep failed")
+            return
+        if not hasattr(self, "_zombie_reap_done"):
+            self._zombie_reap_done: set = set()
+        self._zombie_reap_done.add(zombie_key)
+
+    def _reap_orphaned_threads(self) -> None:
+        """Reap any orphaned (timed-out) threads that have finally exited.
+
+        Logs late completions so operators see when a leak resolves
+        itself, and warns when an orphan has been alive long enough to
+        constitute a pool-exhaustion risk.
+        """
+        if not self._orphaned_threads:
+            return
+        from datetime import timedelta as _timedelta
+
+        from prometheus.orchestration.clock import now_utc as _now_utc
+
+        still_running: List[Tuple[str, "threading.Thread", datetime]] = []
+        now_dt = _now_utc().replace(tzinfo=None)  # match naive datetime stored at orphan time
+        for job_id, thread, started_at in self._orphaned_threads:
+            if not thread.is_alive():
+                age = (now_dt - started_at).total_seconds()
+                logger.warning(
+                    "_reap_orphaned_threads: orphan job_id=%s finally exited after %.0fs",
+                    job_id, age,
+                )
+                continue
+            age = (now_dt - started_at).total_seconds()
+            if age > 7200:  # 2h
+                logger.error(
+                    "_reap_orphaned_threads: job_id=%s STILL alive after %.0fs "
+                    "(holding DB connection — pool exhaustion risk)",
+                    job_id, age,
+                )
+            still_running.append((job_id, thread, started_at))
+        self._orphaned_threads = still_running
 
     def _check_timeouts(self, now: datetime) -> None:
         """Check for timed-out jobs and mark them as failed."""
@@ -1192,11 +1318,18 @@ class MarketAwareDaemon:
             thread.join(timeout=timeout_sec)
 
             if thread.is_alive():
-                # Job exceeded timeout — can't kill the thread but mark it failed
+                # Job exceeded timeout — Python can't kill threads, so the
+                # thread keeps running and continues to hold whatever DB
+                # connection it took out of the pool. Track it so the next
+                # cycle can reap it (log late completion) instead of letting
+                # it disappear silently.
                 success, error_msg = False, f"job timed out after {timeout_sec}s"
+                self._orphaned_threads.append((job.job_id, thread, now))
                 logger.error(
-                    "_process_market: job_id=%s TIMED OUT after %ds",
-                    job.job_id, timeout_sec,
+                    "_process_market: job_id=%s TIMED OUT after %ds — "
+                    "thread orphaned (DB connection may leak until thread exits); "
+                    "%d orphaned thread(s) currently tracked",
+                    job.job_id, timeout_sec, len(self._orphaned_threads),
                 )
             elif _result:
                 success, error_msg = _result[0]
@@ -1231,7 +1364,9 @@ class MarketAwareDaemon:
 
                 # Schedule retry if applicable
                 if should_retry_job(job, execution):
-                    delay = calculate_retry_delay(job, execution.attempt_number)
+                    delay = calculate_retry_delay(
+                        job, execution.attempt_number, error_message=error_msg,
+                    )
                     retry_after = now + timedelta(seconds=delay)
                     self.retry_backoff[execution.execution_id] = retry_after
                     logger.info(
@@ -1259,10 +1394,13 @@ class MarketAwareDaemon:
 
         Only triggers once per day, at the configured hour (default: 08:00 local).
         """
-        now_local = datetime.now()
-        if now_local.hour != self.config.morning_catchup_hour:
+        # Use timezone-aware local clock so the catch-up window stays anchored
+        # to the configured PROMETHEUS_LOCAL_TZ (default Europe/Berlin) instead
+        # of whatever naive offset the host happens to have.
+        now_local_dt = now_local()
+        if now_local_dt.hour != self.config.morning_catchup_hour:
             return
-        if now_local.minute > 5:
+        if now_local_dt.minute > 5:
             # Only trigger in the first 5 minutes of the hour
             return
 
@@ -1296,12 +1434,15 @@ class MarketAwareDaemon:
             self._catchup_done.add(catchup_key)
             return
 
-        # Pipeline didn't run for the last trading day — force catch-up
+        # Pipeline didn't run for the last trading day — force catch-up.
+        # Bug fix: previously called ``now_local.strftime`` which referenced
+        # the imported function (always callable), not the captured value;
+        # use the actual datetime captured above.
         logger.info(
             "MarketAwareDaemon: MORNING CATCH-UP — last trading day %s has no completed run, "
             "forcing POST_CLOSE pipeline at %s local time",
             last_trading_day,
-            now_local.strftime("%H:%M"),
+            now_local_dt.strftime("%H:%M"),
         )
 
         # Build a SEPARATE DAG for the catchup date so we don't pollute
@@ -1311,11 +1452,36 @@ class MarketAwareDaemon:
         catchup_dag = build_market_dag("US_EQ", last_trading_day)
         catchup_dag_id = f"US_EQ_{last_trading_day.isoformat()}"
 
+        # Wall-clock budget for the catch-up loop. If individual jobs
+        # take 5 minutes each, we don't want catch-up to soak the daemon
+        # for two hours and miss the actual market open. Default 20
+        # minutes; configurable via PROMETHEUS_CATCHUP_BUDGET_SECONDS.
+        try:
+            catchup_budget_seconds = int(os.environ.get("PROMETHEUS_CATCHUP_BUDGET_SECONDS", "1200"))
+        except ValueError:
+            catchup_budget_seconds = 1200
+        catchup_started_at = time.monotonic()
+
         # Loop until all catchup jobs complete (or we hit a safety limit).
         # Each iteration runs one _process_market cycle, then sleeps for
         # poll_interval_seconds so retry backoffs can expire.
         max_iterations = 60  # 12 jobs * ~3 retries + margin
         for iteration in range(max_iterations):
+            elapsed = time.monotonic() - catchup_started_at
+            if elapsed > catchup_budget_seconds:
+                logger.error(
+                    "MarketAwareDaemon: MORNING CATCH-UP for %s exceeded wall-clock budget "
+                    "(%ds > %ds) after %d iterations (%d/%d jobs done) — aborting so the "
+                    "daemon can resume normal market processing",
+                    last_trading_day,
+                    int(elapsed),
+                    catchup_budget_seconds,
+                    iteration,
+                    len(self._get_completed_jobs(catchup_dag_id)),
+                    len(catchup_dag.jobs),
+                )
+                break
+
             now = datetime.now(timezone.utc)
             completed = self._get_completed_jobs(catchup_dag_id)
             running = self._get_running_job_ids()
@@ -1324,11 +1490,12 @@ class MarketAwareDaemon:
             if not runnable:
                 logger.info(
                     "MarketAwareDaemon: MORNING CATCH-UP complete for %s after %d iterations "
-                    "(%d/%d jobs done)",
+                    "(%d/%d jobs done, elapsed=%.0fs)",
                     last_trading_day,
                     iteration + 1,
                     len(completed),
                     len(catchup_dag.jobs),
+                    elapsed,
                 )
                 break
 
@@ -1342,9 +1509,10 @@ class MarketAwareDaemon:
             if self.shutdown_requested:
                 break
 
-            # Sleep between iterations to allow retry backoffs to expire
-            # and avoid busy-looping when jobs are in retry delay.
-            time.sleep(self.config.poll_interval_seconds)
+            # Interruptible sleep between iterations so SIGTERM exits
+            # promptly even mid-catch-up.
+            if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                break
         else:
             logger.warning(
                 "MarketAwareDaemon: MORNING CATCH-UP for %s exhausted %d iterations "
@@ -1372,8 +1540,9 @@ class MarketAwareDaemon:
                 continue
 
             dag, dag_id = self.active_dags[market_id]
-            # INTEL/IRIS are not real markets — their jobs use required_state=None
-            # so any state passes.  Use POST_CLOSE as a safe placeholder.
+            # INTEL/IRIS are not real markets — their jobs use
+            # required_state=None so any state passes.  Use POST_CLOSE
+            # as a safe placeholder.
             if market_id in ("INTEL", "IRIS"):
                 current_state = MarketState.POST_CLOSE
             else:
@@ -1449,14 +1618,49 @@ class MarketAwareDaemon:
                 # POST_CLOSE cycle so the pipeline runs with stale-but-available data.
                 self._maybe_morning_catchup(as_of_date)
 
+                # Reap any orphaned (timed-out) threads that have finally exited.
+                self._reap_orphaned_threads()
+
+                # Sweep zombie engine_runs once per day (rough — fires whenever
+                # we're in the catch-up hour, so it piggybacks on a known
+                # low-traffic window). Cheap query; safe to call repeatedly.
+                self._maybe_reap_zombie_runs(as_of_date)
+
                 self._run_cycle(as_of_date)
 
-                # Sleep until next cycle
-                time.sleep(self.config.poll_interval_seconds)
+                # Interruptible sleep: returns True if the event fires before
+                # the timeout, so SIGTERM exits the loop within one second
+                # instead of waiting the full poll_interval.
+                if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                    break
 
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("MarketAwareDaemon: cycle %d failed: %s", cycle_count, exc)
-                time.sleep(self.config.poll_interval_seconds)
+                if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                    break
+
+        # Mark any jobs that were mid-flight at shutdown as FAILED so they
+        # don't appear orphaned in RUNNING state on next startup. The actual
+        # work threads are daemon=True and will be killed by process exit.
+        if self.running_jobs:
+            logger.warning(
+                "MarketAwareDaemon: %d job(s) in-flight at shutdown — marking FAILED",
+                len(self.running_jobs),
+            )
+            for execution_id, (job, _) in list(self.running_jobs.items()):
+                try:
+                    update_job_execution_status(
+                        self.db_manager,
+                        execution_id,
+                        JobStatus.FAILED,
+                        error_message="daemon shutdown while job was running",
+                    )
+                except Exception:
+                    logger.exception(
+                        "MarketAwareDaemon: failed to mark execution %s as FAILED",
+                        execution_id,
+                    )
+            self.running_jobs.clear()
 
         logger.info("MarketAwareDaemon: shutdown complete after %d cycles", cycle_count)
 
@@ -1535,6 +1739,21 @@ def main(argv: Optional[List[str]] = None) -> None:
         options_mode=args.options_mode,
         morning_catchup_hour=args.morning_catchup_hour,
     )
+
+    # Preflight: surface missing IBKR credentials at boot rather than at
+    # 3am during the first POST_CLOSE cycle. Required vars depend on the
+    # configured options mode.
+    if args.options_mode in ("paper", "live"):
+        from prometheus.execution.ibkr_config import validate_credentials_at_startup
+
+        try:
+            validate_credentials_at_startup(
+                require_paper=args.options_mode == "paper",
+                require_live=args.options_mode == "live",
+            )
+        except ValueError as exc:
+            logger.error("IBKR preflight failed: %s", exc)
+            raise SystemExit(2)
 
     db_manager = get_db_manager()
     daemon = MarketAwareDaemon(config, db_manager)

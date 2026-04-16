@@ -42,7 +42,11 @@ class RunPhase(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
-    def __lt__(self, other: "RunPhase") -> bool:
+    # NOTE: these comparisons widen the supertype's str signature on purpose
+    # so phase ordering ("DATA_READY < SIGNALS_DONE") works without manual
+    # rank lookups. The override is safe because str inputs go through the
+    # isinstance gate and return NotImplemented.
+    def __lt__(self, other: "RunPhase") -> bool:  # type: ignore[override]
         """Compare phase ordering for pipeline progression."""
         if not isinstance(other, RunPhase):
             return NotImplemented
@@ -62,19 +66,19 @@ class RunPhase(str, Enum):
         except ValueError:
             return NotImplemented
 
-    def __le__(self, other: "RunPhase") -> bool:
+    def __le__(self, other: "RunPhase") -> bool:  # type: ignore[override]
         """Compare phase ordering (less than or equal)."""
         if not isinstance(other, RunPhase):
             return NotImplemented
         return self == other or self < other
 
-    def __gt__(self, other: "RunPhase") -> bool:
+    def __gt__(self, other: "RunPhase") -> bool:  # type: ignore[override]
         """Compare phase ordering (greater than)."""
         if not isinstance(other, RunPhase):
             return NotImplemented
         return not self <= other
 
-    def __ge__(self, other: "RunPhase") -> bool:
+    def __ge__(self, other: "RunPhase") -> bool:  # type: ignore[override]
         """Compare phase ordering (greater than or equal)."""
         if not isinstance(other, RunPhase):
             return NotImplemented
@@ -197,21 +201,13 @@ def get_or_create_run(
     New runs are created in the ``WAITING_FOR_DATA`` phase.
     """
 
-    select_sql = """
-        SELECT run_id,
-               as_of_date,
-               region,
-               phase,
-               error,
-               created_at,
-               updated_at,
-               phase_started_at,
-               phase_completed_at
-        FROM engine_runs
-        WHERE as_of_date = %s AND region = %s
-    """
-
-    insert_sql = """
+    # Single atomic upsert. The previous implementation did
+    # SELECT-then-INSERT in two round-trips with a commit in between, which
+    # was vulnerable to two daemon threads (or daemon + control_api) racing
+    # to create the same (as_of_date, region) row and producing inconsistent
+    # state. ``ON CONFLICT DO UPDATE ... RETURNING *`` collapses the SELECT
+    # and INSERT into one statement that always returns the surviving row.
+    upsert_sql = """
         INSERT INTO engine_runs (
             run_id,
             as_of_date,
@@ -223,35 +219,33 @@ def get_or_create_run(
             phase_started_at,
             phase_completed_at
         ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW(), NULL)
-        ON CONFLICT (as_of_date, region) DO NOTHING
+        ON CONFLICT (as_of_date, region) DO UPDATE
+            SET updated_at = engine_runs.updated_at  -- no-op; needed so RETURNING fires
+        RETURNING run_id,
+                  as_of_date,
+                  region,
+                  phase,
+                  error,
+                  created_at,
+                  updated_at,
+                  phase_started_at,
+                  phase_completed_at
     """
+
+    run_id = generate_uuid()
+    phase = RunPhase.WAITING_FOR_DATA.value
 
     with db_manager.get_runtime_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(select_sql, (as_of_date, region))
-            row = cursor.fetchone()
-            if row is not None:
-                return _row_to_engine_run(row)
-
-            run_id = generate_uuid()
-            phase = RunPhase.WAITING_FOR_DATA.value
             cursor.execute(
-                insert_sql,
-                (
-                    run_id,
-                    as_of_date,
-                    region,
-                    phase,
-                    Json({}),
-                ),
+                upsert_sql,
+                (run_id, as_of_date, region, phase, Json({})),
             )
-            conn.commit()
-
-            cursor.execute(select_sql, (as_of_date, region))
             row = cursor.fetchone()
+            conn.commit()
             if row is None:  # pragma: no cover - defensive
-                raise EngineRunStateError("Failed to create engine run row")
+                raise EngineRunStateError("Failed to upsert engine run row")
             return _row_to_engine_run(row)
         finally:
             cursor.close()
@@ -408,6 +402,59 @@ def list_active_runs(db_manager: DatabaseManager) -> list[EngineRun]:
             cursor.close()
 
     return [_row_to_engine_run(row) for row in rows]
+
+
+def reap_zombie_runs(
+    db_manager: DatabaseManager,
+    *,
+    older_than_hours: int = 24,
+) -> list[str]:
+    """Mark engine runs stuck in non-terminal phases as FAILED.
+
+    A "zombie" run is one whose ``updated_at`` is older than
+    ``older_than_hours`` and whose ``phase`` is neither COMPLETED nor
+    FAILED. These accumulate when the daemon crashes mid-pipeline or
+    when manual interventions leave runs orphaned. Left alone they
+    confuse next-run detection logic that walks back to the last
+    completed run.
+
+    Returns the list of ``run_id`` strings that were finalised.
+    """
+    select_sql = """
+        SELECT run_id, as_of_date, region, phase
+        FROM engine_runs
+        WHERE phase NOT IN ('COMPLETED', 'FAILED')
+          AND updated_at < NOW() - (%s * INTERVAL '1 hour')
+    """
+    update_sql = """
+        UPDATE engine_runs
+        SET phase = 'FAILED',
+            error = COALESCE(error, '{}'::jsonb) ||
+                    jsonb_build_object('reaped_reason', 'zombie cleanup',
+                                       'reaped_at', NOW()::text,
+                                       'previous_phase', phase),
+            updated_at = NOW(),
+            phase_completed_at = NOW()
+        WHERE run_id = ANY(%s)
+    """
+    with db_manager.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(select_sql, (older_than_hours,))
+            rows = cur.fetchall()
+            if not rows:
+                return []
+            run_ids = [r[0] for r in rows]
+            for r in rows:
+                logger.warning(
+                    "reap_zombie_runs: finalising stuck run %s as_of=%s region=%s phase=%s",
+                    r[0], r[1], r[2], r[3],
+                )
+            cur.execute(update_sql, (run_ids,))
+            conn.commit()
+        finally:
+            cur.close()
+    return run_ids
 
 
 def force_reset_run_to_waiting(

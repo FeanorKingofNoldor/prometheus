@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
+from prometheus.orchestration.clock import now_utc
+
 logger = logging.getLogger("prometheus.monitoring.job_runner")
 
 
@@ -51,7 +53,7 @@ def create_job(*, prefix: str, job_type: str, status: str = "PENDING", message: 
         job_id=job_id,
         type=job_type,
         status=status,
-        created_at=datetime.now(),
+        created_at=now_utc(),
         message=message,
     )
     with _lock:
@@ -110,7 +112,7 @@ def submit_job(
 
     def _run() -> None:
         logger.info("[job] Running job %s type=%s", rec.job_id, rec.type)
-        update_job(rec.job_id, status="RUNNING", started_at=datetime.now(), progress_pct=0.0)
+        update_job(rec.job_id, status="RUNNING", started_at=now_utc(), progress_pct=0.0)
         try:
             out = fn()
         except Exception as exc:  # pragma: no cover
@@ -118,7 +120,7 @@ def submit_job(
             update_job(
                 rec.job_id,
                 status="FAILED",
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 progress_pct=100.0,
                 error=str(exc),
             )
@@ -128,7 +130,7 @@ def submit_job(
         update_job(
             rec.job_id,
             status="COMPLETED",
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             progress_pct=100.0,
             result=out,
         )

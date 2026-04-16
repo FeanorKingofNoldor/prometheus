@@ -144,10 +144,13 @@ class TestValidateTransition:
                 continue
             _validate_transition(phase, RunPhase.FAILED)
 
-    def test_failed_cannot_transition(self):
-        """FAILED phase cannot transition to anything."""
+    def test_failed_can_only_retry_to_waiting(self):
+        """FAILED → WAITING_FOR_DATA is allowed (retry); all other targets forbidden."""
+        # Retry path is intentionally permitted so a stuck run can be re-driven.
+        _validate_transition(RunPhase.FAILED, RunPhase.WAITING_FOR_DATA)
+        # All other targets must raise.
         for phase in RunPhase:
-            if phase == RunPhase.FAILED:
+            if phase in (RunPhase.FAILED, RunPhase.WAITING_FOR_DATA):
                 continue
             with pytest.raises(EngineRunStateError, match="Cannot transition from FAILED"):
                 _validate_transition(RunPhase.FAILED, phase)
@@ -247,9 +250,17 @@ class TestLoadRun:
 
 
 class TestGetOrCreateRun:
-    """Tests for get_or_create_run with mocked DB."""
+    """Tests for get_or_create_run with mocked DB.
+
+    The implementation now uses a single ``INSERT ... ON CONFLICT DO
+    UPDATE ... RETURNING *`` upsert. The old SELECT-then-INSERT pattern
+    was vulnerable to two daemon threads racing on the same
+    (as_of_date, region) tuple.
+    """
 
     def test_returns_existing_run(self):
+        # When the row already exists, the upsert collapses to a no-op
+        # update and returns the existing row in one round trip.
         row = _make_row()
         cursor = MagicMock()
         cursor.fetchone.return_value = row
@@ -263,14 +274,14 @@ class TestGetOrCreateRun:
 
         run = get_or_create_run(db, date(2025, 6, 30), "US_EQ")
         assert run.run_id == "run-001"
-        # Should not have called insert (only one fetchone call path)
+        # One atomic upsert + commit — no separate SELECT round trip.
         assert cursor.execute.call_count == 1
+        conn.commit.assert_called_once()
 
     def test_creates_new_run_when_none_exists(self):
         row = _make_row(run_id="new-run-id")
         cursor = MagicMock()
-        # First fetchone returns None (no existing), second returns the new row
-        cursor.fetchone.side_effect = [None, row]
+        cursor.fetchone.return_value = row
         conn = MagicMock()
         conn.cursor.return_value = cursor
         conn.__enter__ = MagicMock(return_value=conn)
@@ -284,8 +295,8 @@ class TestGetOrCreateRun:
 
         assert run.run_id == "new-run-id"
         assert run.phase == RunPhase.WAITING_FOR_DATA
-        # Should have called: SELECT, INSERT, SELECT
-        assert cursor.execute.call_count == 3
+        # Single atomic upsert (no SELECT-then-INSERT).
+        assert cursor.execute.call_count == 1
         conn.commit.assert_called_once()
 
 

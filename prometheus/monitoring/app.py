@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import date, datetime
+from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
+
+from prometheus.orchestration.clock import now_local
 from typing import IO, Optional
 
 from apathis.core.logging import get_logger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from prometheus.monitoring.api import router as status_router
 from prometheus.monitoring.backtests_api import router as backtests_router
@@ -107,9 +110,12 @@ app.include_router(operations_router)
 # ============================================================================
 
 
-@app.get("/")
-async def root() -> dict[str, str]:
-    """Root endpoint with basic system info."""
+# The root path ("/") is reserved for the SPA (mounted at the end of
+# this module via StaticFiles). The service banner moves to /api/ so it
+# still answers uptime probes that expect structured JSON.
+@app.get("/api/")
+async def api_root() -> dict[str, str]:
+    """API root banner — basic service metadata."""
     return {
         "service": "Prometheus C2 Backend",
         "version": "0.1.0",
@@ -119,9 +125,96 @@ async def root() -> dict[str, str]:
 
 
 @app.get("/health")
-async def health_check() -> dict[str, str]:
-    """Health check endpoint for monitoring."""
-    return {"status": "healthy"}
+async def health_check() -> dict:
+    """Liveness + readiness check.
+
+    Returns HTTP 200 if every dependency the API needs is reachable, 503
+    otherwise. Used by load balancers, systemd watchdogs, and oncall
+    dashboards — must reflect actual state, not just "process is up".
+
+    Checks:
+      - PostgreSQL runtime database (executes ``SELECT 1``)
+      - PostgreSQL historical database (executes ``SELECT 1``)
+      - Most recent engine_runs row age (warns if stale > 36h)
+    """
+    from datetime import timedelta
+
+    from fastapi import HTTPException
+
+    from apathis.core.database import get_db_manager
+
+    from prometheus.orchestration.clock import now_utc
+
+    checks: dict[str, dict] = {}
+    overall_ok = True
+
+    db = get_db_manager()
+
+    # --- Runtime DB ---
+    try:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                cur.close()
+        checks["runtime_db"] = {"ok": True}
+    except Exception as exc:
+        overall_ok = False
+        checks["runtime_db"] = {"ok": False, "error": str(exc)[:200]}
+
+    # --- Historical DB ---
+    try:
+        with db.get_historical_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                cur.close()
+        checks["historical_db"] = {"ok": True}
+    except Exception as exc:
+        overall_ok = False
+        checks["historical_db"] = {"ok": False, "error": str(exc)[:200]}
+
+    # --- Pipeline freshness (warn-only; does NOT flip overall_ok) ---
+    pipeline_info: dict = {"ok": True}
+    try:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT MAX(updated_at) FROM engine_runs",
+                )
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        last_update = row[0] if row else None
+        if last_update is not None:
+            # last_update is tz-aware (TIMESTAMPTZ); coerce now to same kind
+            age = now_utc() - last_update
+            pipeline_info["last_update"] = last_update.isoformat()
+            pipeline_info["age_seconds"] = int(age.total_seconds())
+            if age > timedelta(hours=36):
+                pipeline_info["ok"] = False
+                pipeline_info["warning"] = "engine_runs stale > 36h"
+        else:
+            pipeline_info["ok"] = False
+            pipeline_info["warning"] = "no engine_runs rows"
+    except Exception as exc:
+        pipeline_info = {"ok": False, "error": str(exc)[:200]}
+    checks["pipeline"] = pipeline_info
+
+    body = {
+        "status": "healthy" if overall_ok else "unhealthy",
+        "checks": checks,
+        "timestamp": now_utc().isoformat(),
+    }
+    if not overall_ok:
+        # Fail closed: 503 so external monitors page on real outages.
+        raise HTTPException(status_code=503, detail=body)
+    return body
 
 
 # ============================================================================
@@ -222,7 +315,7 @@ async def _intel_weekly_scheduler() -> None:
     while True:
         try:
             await asyncio.sleep(60)  # check every minute
-            now = datetime.now()
+            now = now_local()  # tz-aware local clock; honors PROMETHEUS_LOCAL_TZ
 
             # Sunday = weekday 6
             if now.weekday() != 6:
@@ -269,7 +362,7 @@ async def _trading_report_scheduler() -> None:
     while True:
         try:
             await asyncio.sleep(60)
-            now = datetime.now()
+            now = now_local()  # tz-aware local clock for daily/weekly windows
 
             should_run = False
 
@@ -345,4 +438,32 @@ async def shutdown_event() -> None:
             except asyncio.CancelledError:
                 pass
     _release_scheduler_leader_lock()
+
+
+# ============================================================================
+# Static SPA Mount
+# ============================================================================
+# Serve the prebuilt prometheus_web bundle at "/". Must be declared LAST so
+# FastAPI route matching tries /api/*, /health, etc. first and falls through
+# to the SPA only when no API route matched. ``html=True`` makes StaticFiles
+# serve index.html for any unknown path — the canonical SPA fallback, so
+# deep links like /app/dashboard reload cleanly.
+#
+# Rebuild after frontend edits with:
+#   npm --prefix prometheus_web run build
+# Then refresh the browser (no server restart needed — StaticFiles stats
+# the filesystem on every request).
+_STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "static",
+)
+if os.path.isdir(_STATIC_DIR) and os.path.isfile(os.path.join(_STATIC_DIR, "index.html")):
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="app")
+    logger.info("Static SPA mounted from %s", _STATIC_DIR)
+else:
+    logger.warning(
+        "Static SPA not mounted — %s missing index.html. Run "
+        "`npm --prefix prometheus_web run build` to produce the bundle.",
+        _STATIC_DIR,
+    )
     print("Prometheus C2 Backend shutting down...")

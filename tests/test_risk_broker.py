@@ -87,13 +87,22 @@ def _make_config(
     max_order_notional: float = 0.0,
     max_position_notional: float = 0.0,
     max_leverage: float = 0.0,
+    max_drawdown_pct: float = 0.0,
+    max_sector_concentration_pct: float = 0.0,
 ):
-    """Build a lightweight ExecutionRiskConfig-like object."""
+    """Build a lightweight ExecutionRiskConfig-like object.
+
+    Keep this in sync with new ExecutionRiskConfig fields — using a
+    MagicMock with ``spec_set=False`` would let unset attributes return
+    a MagicMock, which fails ``> 0`` comparisons in the broker.
+    """
     cfg = MagicMock()
     cfg.enabled = enabled
     cfg.max_order_notional = max_order_notional
     cfg.max_position_notional = max_position_notional
     cfg.max_leverage = max_leverage
+    cfg.max_drawdown_pct = max_drawdown_pct
+    cfg.max_sector_concentration_pct = max_sector_concentration_pct
     return cfg
 
 

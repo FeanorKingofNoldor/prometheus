@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 import socket
-from datetime import date, datetime
+from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
+
+from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
 from apathis.core.database import get_db_manager
@@ -1161,6 +1163,6 @@ async def get_job_status(job_id: str = Path(..., description="Job identifier")) 
         job_id=job_id,
         type="UNKNOWN",
         status="NOT_FOUND",
-        created_at=datetime.now(),
+        created_at=now_utc(),
         message=f"Job {job_id} not found in registry",
     )

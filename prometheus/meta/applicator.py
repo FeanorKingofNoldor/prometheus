@@ -20,7 +20,9 @@ Version: v0.1.0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
+
+from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
 from apathis.core.database import DatabaseManager
@@ -127,7 +129,7 @@ class ProposalApplicator:
                 success=True,
                 change_id="DRY_RUN",
                 proposal_id=proposal_id,
-                applied_at=datetime.utcnow(),
+                applied_at=now_utc(),
             )
 
         try:
@@ -169,7 +171,7 @@ class ProposalApplicator:
                 success=True,
                 change_id=change_id,
                 proposal_id=proposal_id,
-                applied_at=datetime.utcnow(),
+                applied_at=now_utc(),
             )
 
         except Exception as e:
@@ -261,7 +263,7 @@ class ProposalApplicator:
             return ReversionResult(
                 success=True,
                 change_id=change_id,
-                reverted_at=datetime.utcnow(),
+                reverted_at=now_utc(),
             )
 
         try:
@@ -304,7 +306,7 @@ class ProposalApplicator:
             return ReversionResult(
                 success=True,
                 change_id=change_id,
-                reverted_at=datetime.utcnow(),
+                reverted_at=now_utc(),
             )
 
         except Exception as e:

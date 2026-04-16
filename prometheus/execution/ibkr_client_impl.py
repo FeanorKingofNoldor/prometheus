@@ -244,8 +244,27 @@ class IbkrClientImpl(IbkrClient):
             order.metadata = meta
             return order.order_id
 
-        # Translate Prometheus order to IBKR contract and order
-        contract = self._create_contract(order.instrument_id)
+        # Translate Prometheus order to IBKR contract and order.
+        # If the caller pre-built a Contract (e.g. options chain discovery
+        # produced an ad-hoc instrument_id that won't match the database),
+        # honour it rather than going through the DB-backed mapper.
+        prebuilt_contract = meta.get("contract") if isinstance(meta, dict) else None
+        if prebuilt_contract is not None:
+            try:
+                qualified = self._ib.qualifyContracts(prebuilt_contract)
+                contract = qualified[0] if qualified else prebuilt_contract
+            except Exception as exc:
+                logger.warning(
+                    "Pre-built contract qualify failed for %s: %s — submitting unqualified",
+                    order.order_id, exc,
+                )
+                contract = prebuilt_contract
+            # Strip the live Contract object from metadata before persistence
+            # (it is not JSON-serialisable for the orders table).
+            meta = {k: v for k, v in meta.items() if k != "contract"}
+            order.metadata = meta
+        else:
+            contract = self._create_contract(order.instrument_id)
         ib_order = self._create_ib_order(order)
 
         logger.info(
@@ -705,7 +724,7 @@ class IbkrClientImpl(IbkrClient):
 
     def _on_order_status(
         self,
-        trade: any,  # Trade object from ib_insync
+        trade: Any,  # Trade object from ib_insync
     ) -> None:
         """Handle order status updates."""
         order = trade.order
@@ -727,7 +746,7 @@ class IbkrClientImpl(IbkrClient):
 
     def _on_exec_details(
         self,
-        trade: any,  # Trade object
+        trade: Any,  # Trade object
         fill: IbFill,  # Fill from ib_insync
     ) -> None:
         """Handle execution (fill) events."""
@@ -754,7 +773,7 @@ class IbkrClientImpl(IbkrClient):
         prometheus_fill = Fill(
             fill_id=execution.execId,
             order_id=order_id,
-            instrument_id=self.contract_to_instrument_id(trade.contract),
+            instrument_id=self._contract_to_instrument_id(trade.contract),
             side=side,
             quantity=float(execution.shares),
             price=float(execution.price),

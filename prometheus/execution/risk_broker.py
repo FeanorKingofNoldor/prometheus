@@ -149,6 +149,43 @@ class RiskCheckingBroker(BrokerInterface):
                     )
                     self._block(order, reason)
 
+        # Drawdown circuit breaker — block ALL new orders when book is in
+        # excessive drawdown. Trailing peak is read from
+        # ``portfolio_equity_history`` if available; otherwise we fall back
+        # to the broker's reported ``high_water_mark`` field. If neither is
+        # available the check is skipped (operator should be alerted via
+        # missing-data check elsewhere).
+        if self.config.max_drawdown_pct > 0:
+            equity = float(account_state.get("equity") or account_state.get("NetLiquidation") or 0.0)
+            peak = float(account_state.get("high_water_mark") or 0.0)
+            if peak <= 0:
+                peak = self._lookup_trailing_peak(equity)
+            if equity > 0 and peak > 0:
+                drawdown = max(0.0, 1.0 - equity / peak)
+                if drawdown > self.config.max_drawdown_pct:
+                    reason = (
+                        f"drawdown circuit breaker tripped: equity={equity:.0f} "
+                        f"peak={peak:.0f} dd={drawdown:.2%} > "
+                        f"max_drawdown_pct={self.config.max_drawdown_pct:.2%}"
+                    )
+                    self._block(order, reason)
+
+        # Sector concentration cap
+        if self.config.max_sector_concentration_pct > 0:
+            equity = float(account_state.get("equity") or account_state.get("NetLiquidation") or 0.0)
+            if equity > 0:
+                sector = self._lookup_sector(order.instrument_id)
+                if sector:
+                    sector_gross = self._sector_gross_exposure(positions, sector) + est_notional
+                    sector_pct = sector_gross / equity
+                    if sector_pct > self.config.max_sector_concentration_pct:
+                        reason = (
+                            f"sector concentration {sector_pct:.2%} for sector "
+                            f"{sector!r} would exceed max_sector_concentration_pct "
+                            f"{self.config.max_sector_concentration_pct:.2%}"
+                        )
+                        self._block(order, reason)
+
     def _estimate_price(self, instrument_id: str, positions: Dict[str, Position]) -> float:
         """Best-effort price estimate for risk checks.
 
@@ -198,6 +235,87 @@ class RiskCheckingBroker(BrokerInterface):
     @staticmethod
     def _gross_exposure(positions: Dict[str, Position]) -> float:
         return float(sum(abs(p.market_value) for p in positions.values()))
+
+    def _lookup_trailing_peak(self, current_equity: float) -> float:
+        """Return the trailing peak NAV from runtime DB (last 252 trading days).
+
+        Returns ``0`` when the history table is missing or empty so the
+        caller can decide to skip the check rather than incorrectly trip
+        the drawdown breaker.
+        """
+        try:
+            db = get_db_manager()
+            with db.get_runtime_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT MAX(equity) FROM portfolio_equity_history "
+                        "WHERE as_of_date >= (CURRENT_DATE - INTERVAL '252 days')"
+                    )
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
+            peak = float(row[0]) if row and row[0] else 0.0
+            # If we observe a higher *current* equity than the recorded peak
+            # (e.g. fresh deploy with empty history), use current equity so
+            # the breaker doesn't trip from missing data.
+            return max(peak, current_equity)
+        except Exception:
+            logger.exception("RiskCheckingBroker: trailing-peak lookup failed")
+            return 0.0
+
+    def _lookup_sector(self, instrument_id: str) -> Optional[str]:
+        """Return the GICS sector for an instrument, or ``None`` if unknown."""
+        try:
+            db = get_db_manager()
+            with db.get_historical_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT sector FROM instruments "
+                        "WHERE instrument_id = %s AND sector IS NOT NULL "
+                        "LIMIT 1",
+                        (instrument_id,),
+                    )
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
+            return str(row[0]) if row and row[0] else None
+        except Exception:
+            logger.exception(
+                "RiskCheckingBroker: sector lookup failed for %s", instrument_id,
+            )
+            return None
+
+    def _sector_gross_exposure(
+        self, positions: Dict[str, Position], sector: str,
+    ) -> float:
+        """Sum absolute market values of positions in the given sector."""
+        if not positions:
+            return 0.0
+        instruments = list(positions.keys())
+        # Cheap single-query batch lookup; falls back to 0 on failure.
+        try:
+            db = get_db_manager()
+            with db.get_historical_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT instrument_id FROM instruments "
+                        "WHERE instrument_id = ANY(%s) AND sector = %s",
+                        (instruments, sector),
+                    )
+                    matching_ids = {row[0] for row in cur.fetchall()}
+                finally:
+                    cur.close()
+        except Exception:
+            logger.exception("RiskCheckingBroker: sector exposure lookup failed")
+            return 0.0
+        return float(sum(
+            abs(p.market_value)
+            for iid, p in positions.items()
+            if iid in matching_ids
+        ))
 
     def _block(self, order: Order, reason: str) -> None:
         logger.error("RiskCheckingBroker: blocking order %s: %s", order, reason)

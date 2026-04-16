@@ -3469,38 +3469,144 @@ def run_options_for_run(
             )
     else:
         # Live/paper execution via contract discovery + IBKR.
-        try:
-            from prometheus.execution.contract_discovery import ContractDiscoveryService
+        #
+        # Live submission is gated by the PROMETHEUS_OPTIONS_SUBMIT_LIVE env var.
+        # Paper mode submits unconditionally (that's what paper accounts are for).
+        # Without the flag, live mode logs the directive and emits a warning so
+        # operators see exactly what *would* have been submitted before flipping
+        # the switch.
+        import os
+        from prometheus.execution.broker_interface import (
+            Order,
+            OrderSide,
+            OrderTimeInForce,
+            OrderType,
+        )
+        from prometheus.execution.contract_discovery import ContractDiscoveryService
+        from prometheus.execution.instrument_mapper import InstrumentMapper
 
+        live_submit_enabled = os.environ.get("PROMETHEUS_OPTIONS_SUBMIT_LIVE", "").lower() in (
+            "1", "true", "yes",
+        )
+        will_submit = mode == "paper" or (mode == "live" and live_submit_enabled)
+        if mode == "live" and not live_submit_enabled:
+            logger.warning(
+                "run_options_for_run: LIVE mode but PROMETHEUS_OPTIONS_SUBMIT_LIVE not set — "
+                "logging %d directive(s) without submitting",
+                len(all_directives),
+            )
+
+        submitted = 0
+        skipped = 0
+        # Failure threshold: when *most* submissions fail something is
+        # systemically wrong (IBKR auth, contract discovery, market closed)
+        # and silently advancing to OPTIONS_DONE hides the problem.
+        # Configurable for paranoid / lenient deployments.
+        try:
+            failure_threshold_pct = float(os.environ.get("PROMETHEUS_OPTIONS_MAX_FAILURE_PCT", "50"))
+        except ValueError:
+            failure_threshold_pct = 50.0
+        try:
             discovery = ContractDiscoveryService(client._ib)
             for d in all_directives:
                 try:
-                    # Resolve contract via discovery.
+                    # Validate the underlying has a chain available before
+                    # constructing a contract — protects against typos and
+                    # delisted symbols.
                     chain = discovery.discover_option_chain(d.symbol)
-                    if chain is None:
+                    if not chain:
                         logger.warning(
-                            "run_options_for_run: no chain for %s; skipping", d.symbol,
+                            "run_options_for_run: no option chain for %s; skipping",
+                            d.symbol,
                         )
+                        skipped += 1
                         continue
+
                     logger.info(
                         "run_options_for_run [%s]: %s %s %s strike=%.1f qty=%d (%s)",
                         mode.upper(),
                         d.action.value, d.symbol, d.right,
                         d.strike, d.quantity, d.strategy,
                     )
-                    # TODO: submit order via broker once paper-tested
+
+                    if not will_submit:
+                        skipped += 1
+                        continue
+
+                    # Build a fresh contract directly from the directive (the
+                    # synthetic instrument_id won't be in the mapper's DB).
+                    contract = InstrumentMapper.build_option_contract(
+                        symbol=d.symbol,
+                        expiry=d.expiry,
+                        strike=d.strike,
+                        right=d.right,
+                    )
+
+                    # Compose the Prometheus Order. Prefer LIMIT when a
+                    # limit price is provided (recommended for options to
+                    # avoid pathological MARKET fills on illiquid strikes);
+                    # otherwise fall back to MARKET.
+                    side = OrderSide.BUY if d.quantity > 0 else OrderSide.SELL
+                    qty = abs(int(d.quantity))
+                    if d.limit_price and d.limit_price > 0:
+                        order_type = OrderType.LIMIT
+                    else:
+                        order_type = OrderType.MARKET
+                    exp_short = d.expiry[2:] if len(d.expiry) == 8 else d.expiry
+                    order = Order(
+                        order_id=generate_uuid(),
+                        instrument_id=f"{d.symbol}_{exp_short}_{d.strike:.0f}{d.right}.US",
+                        side=side,
+                        order_type=order_type,
+                        quantity=qty,
+                        limit_price=float(d.limit_price) if d.limit_price else None,
+                        tif=OrderTimeInForce.DAY,
+                        metadata={
+                            "contract": contract,
+                            "strategy": d.strategy,
+                            "trade_action": d.action.value,
+                            "reason": d.reason,
+                            "run_id": run.run_id,
+                        },
+                    )
+                    client.submit_order(order)
+                    submitted += 1
+
                 except Exception as exc:
                     logger.warning(
                         "run_options_for_run: failed to execute %s %s: %s",
                         d.action.value, d.symbol, exc,
+                        exc_info=True,
                     )
+                    skipped += 1
         except Exception:
             logger.exception("run_options_for_run: options execution failed")
         finally:
+            logger.info(
+                "run_options_for_run: %s submitted=%d skipped=%d (mode=%s)",
+                "LIVE" if will_submit else "LOG_ONLY",
+                submitted, skipped, mode,
+            )
             try:
                 client.disconnect()
             except Exception:
                 pass
+
+        # Hard-fail when failure rate is unacceptable. Only enforced when
+        # we *intended* to submit (will_submit==True); log-only mode skips
+        # everything by design and shouldn't be considered failed.
+        if will_submit and (submitted + skipped) > 0:
+            total_attempted = submitted + skipped
+            failure_pct = 100.0 * skipped / total_attempted
+            if failure_pct > failure_threshold_pct:
+                msg = (
+                    f"options submission failure rate {failure_pct:.0f}% "
+                    f"({skipped}/{total_attempted}) exceeds threshold "
+                    f"{failure_threshold_pct:.0f}% — escalating to FAILED so "
+                    f"the daemon retries and operators are alerted"
+                )
+                logger.error("run_options_for_run: %s", msg)
+                raise RuntimeError(msg)
 
     # ------------------------------------------------------------------
     # 6. Record options decision
