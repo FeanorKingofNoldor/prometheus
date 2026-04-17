@@ -2132,29 +2132,54 @@ async def get_portfolio_equity(
     db = get_db_manager()
     port_id = str(portfolio_id)
 
-    # 1) Portfolio daily equity from positions_snapshots
+    # 1) Portfolio daily NLV from portfolio_risk_reports (preferred — gives
+    #    true net liquidation value accounting for cash, margin, and hedges).
+    #    Falls back to SUM(market_value) from positions_snapshots if no risk
+    #    reports exist (e.g. backtest portfolios without IBKR sync).
     with db.get_runtime_connection() as conn:
         cursor = conn.cursor()
         try:
             cursor.execute(
                 """
-                SELECT as_of_date, SUM(market_value) AS total_mv
-                FROM (
-                    SELECT DISTINCT ON (as_of_date, instrument_id)
-                           as_of_date, instrument_id, market_value
-                    FROM positions_snapshots
-                    WHERE portfolio_id = %s
-                      AND as_of_date IS NOT NULL
-                    ORDER BY as_of_date, instrument_id, timestamp DESC
-                ) latest
-                GROUP BY as_of_date
-                ORDER BY as_of_date ASC
+                SELECT DISTINCT ON (as_of_date)
+                       as_of_date, portfolio_value
+                FROM portfolio_risk_reports
+                WHERE portfolio_id = %s
+                  AND as_of_date IS NOT NULL
+                  AND portfolio_value IS NOT NULL
+                  AND portfolio_value > 0
+                ORDER BY as_of_date, created_at DESC
                 """,
                 (port_id,),
             )
             port_rows = cursor.fetchall()
         finally:
             cursor.close()
+
+    # Fallback: if no risk reports, use gross market value from snapshots
+    if not port_rows:
+        with db.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT as_of_date, SUM(market_value) AS total_mv
+                    FROM (
+                        SELECT DISTINCT ON (as_of_date, instrument_id)
+                               as_of_date, instrument_id, market_value
+                        FROM positions_snapshots
+                        WHERE portfolio_id = %s
+                          AND as_of_date IS NOT NULL
+                        ORDER BY as_of_date, instrument_id, timestamp DESC
+                    ) latest
+                    GROUP BY as_of_date
+                    ORDER BY as_of_date ASC
+                    """,
+                    (port_id,),
+                )
+                port_rows = cursor.fetchall()
+            finally:
+                cursor.close()
 
     if not port_rows:
         return []
