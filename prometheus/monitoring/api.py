@@ -2239,13 +2239,17 @@ async def get_portfolio_equity(
 
     out: List[EquityPoint] = []
     last_bench: float | None = None
+    last_port: float | None = None
     for d in merged_dates:
         bench_val = bench_by_date.get(d)
         if bench_val is not None:
             last_bench = bench_val
+        port_val = port_by_date.get(d)
+        if port_val is not None:
+            last_port = port_val
         out.append(EquityPoint(
             date=d,
-            portfolio=port_by_date.get(d),
+            portfolio=port_val if port_val is not None else last_port,
             benchmark=bench_val if bench_val is not None else last_bench,
         ))
 
