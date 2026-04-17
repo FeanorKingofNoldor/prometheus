@@ -199,7 +199,9 @@ def _call_llm(system_prompt: str, context: str, max_tokens: int = 2048) -> str:
             {"role": "system", "content": system_prompt + context},
             {"role": "user", "content": "Generate the system health report now."},
         ]
-        return llm.complete(messages, temperature=0.3, max_tokens=max_tokens)
+        from apathis.llm.model_routing import get_model
+
+        return llm.complete(messages, model=get_model("health_report"), temperature=0.3, max_tokens=max_tokens)
     except Exception as exc:
         logger.error("LLM report generation failed: %s", exc)
         return f"*Report generation failed: {exc}*\n\n---\n\nRaw data:\n\n{context}"

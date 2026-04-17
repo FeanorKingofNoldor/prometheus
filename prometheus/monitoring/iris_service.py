@@ -437,13 +437,16 @@ def iris_chat(
     # Try tool-agent first; fall back to plain LLM if it fails.
     try:
         from apathis.llm.agent import create_agent
+        from apathis.llm.model_routing import get_model
 
-        agent = create_agent(tool_names=_IRIS_TOOLS, max_rounds=3)
+        iris_model = get_model("iris_chat")
+        agent = create_agent(tool_names=_IRIS_TOOLS, max_rounds=3, model=iris_model)
         answer = agent.run(messages, temperature=0.4, max_tokens=2048)
     except Exception:
         logger.warning("[iris] Tool-agent failed, falling back to plain LLM")
+        from apathis.llm.model_routing import get_model as _get_model
         llm = get_llm()
-        answer = llm.complete(messages, temperature=0.4, max_tokens=2048)
+        answer = llm.complete(messages, model=_get_model("iris_chat"), temperature=0.4, max_tokens=2048)
 
     # Derive sources from which context sections had data
     sources: List[str] = []
