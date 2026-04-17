@@ -399,9 +399,27 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     )
 
     # ========================================================================
+    # Phase 6b: Snapshot positions — daily IBKR position snapshot for the
+    # equity curve chart. Runs after options, before finalize. Non-blocking:
+    # if IBKR is down, snapshot fails silently and finalize still runs.
+    # ========================================================================
+
+    jobs[job_id("snapshot_positions")] = JobMetadata(
+        job_id=job_id("snapshot_positions"),
+        job_type="snapshot_positions",
+        market_id=market_id,
+        required_state=MarketState.POST_CLOSE,
+        dependencies=(job_id("run_options"),),
+        run_phase=RunPhase.OPTIONS_DONE,
+        priority=JobPriority.LOW,
+        timeout_seconds=120,
+        max_retries=1,
+        retry_delay_seconds=60,
+    )
+
+    # ========================================================================
     # Phase 7: Finalize — marks run COMPLETED regardless of whether options
-    # succeeded or were skipped.  Depends on run_options so it runs after
-    # options (or after options is marked SKIPPED on retry exhaustion).
+    # or snapshot succeeded or were skipped.
     # ========================================================================
 
     jobs[job_id("finalize")] = JobMetadata(
@@ -409,7 +427,7 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         job_type="finalize",
         market_id=market_id,
         required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("run_options"),),
+        dependencies=(job_id("snapshot_positions"),),
         run_phase=RunPhase.COMPLETED,
         priority=JobPriority.CRITICAL,
         timeout_seconds=60,

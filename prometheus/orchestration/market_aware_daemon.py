@@ -567,6 +567,59 @@ def execute_job(
                 update_phase(db_manager, run.run_id, RunPhase.OPTIONS_DONE)
             return True, None
 
+        elif job.job_type == "snapshot_positions":
+            # Daily IBKR position snapshot — fills the equity curve chart.
+            # Runs after execution/options regardless of whether orders were
+            # placed. Connects to IBKR, reads current positions, persists to
+            # positions_snapshots. Non-blocking: failure doesn't prevent finalize.
+            if options_mode == "dry_run":
+                return True, None  # no IBKR in dry_run
+            try:
+                import asyncio
+
+                from prometheus.execution.ibkr_client_impl import IbkrClientImpl
+                from prometheus.execution.ibkr_config import IbkrGatewayType, IbkrMode, create_connection_config
+                from prometheus.execution.live_broker import LiveBroker
+                from prometheus.execution.storage import record_positions_snapshot
+
+                ibkr_mode = IbkrMode.PAPER if options_mode == "paper" else IbkrMode.LIVE
+                conn_config = create_connection_config(
+                    mode=ibkr_mode, gateway_type=IbkrGatewayType.GATEWAY, client_id=12,
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                client = IbkrClientImpl(config=conn_config)
+                client.connect()
+                broker = LiveBroker(account_id=conn_config.account_id, client=client)
+                positions = broker.get_positions()
+                if positions:
+                    from datetime import datetime as _dt
+                    from datetime import timezone as _tz
+
+                    portfolio_id = "IBKR_PAPER" if options_mode == "paper" else "IBKR_LIVE"
+                    record_positions_snapshot(
+                        db_manager,
+                        portfolio_id=portfolio_id,
+                        positions=positions,
+                        as_of_date=execution.as_of_date,
+                        mode=options_mode.upper(),
+                        timestamp=_dt.now(_tz.utc),
+                    )
+                    logger.info(
+                        "snapshot_positions: persisted %d positions for %s on %s",
+                        len(positions), portfolio_id, execution.as_of_date,
+                    )
+                else:
+                    logger.warning("snapshot_positions: no positions returned from IBKR")
+                client.disconnect()
+            except Exception as exc:
+                logger.warning("snapshot_positions: failed (non-blocking): %s", exc)
+            return True, None
+
         elif job.job_type == "finalize":
             # Mark the run COMPLETED.  Handles all terminal predecessor phases:
             # OPTIONS_DONE (normal), EXECUTION_DONE (options skipped/failed),

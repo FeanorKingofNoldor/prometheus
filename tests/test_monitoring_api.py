@@ -669,7 +669,8 @@ class TestHealthEndpoints:
 
     def test_root(self, client_and_db):
         client, _ = client_and_db
-        resp = client.get("/")
+        # Root path serves SPA when static bundle exists; API banner at /api/
+        resp = client.get("/api/")
         assert resp.status_code == 200
         data = resp.json()
         assert data["service"] == "Prometheus C2 Backend"
