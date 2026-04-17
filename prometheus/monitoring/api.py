@@ -2136,6 +2136,10 @@ async def get_portfolio_equity(
     #    true net liquidation value accounting for cash, margin, and hedges).
     #    Falls back to SUM(market_value) from positions_snapshots if no risk
     #    reports exist (e.g. backtest portfolios without IBKR sync).
+    #
+    #    Outlier filter: skip values that jump >60% from the previous day.
+    #    This catches account-switchover artifacts (e.g. old live $911K data
+    #    mixed with new paper $249K data in the same portfolio_id).
     with db.get_runtime_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -2152,9 +2156,29 @@ async def get_portfolio_equity(
                 """,
                 (port_id,),
             )
-            port_rows = cursor.fetchall()
+            raw_rows = cursor.fetchall()
         finally:
             cursor.close()
+
+    # Detect and trim account switchover: find where NLV jumps >60% between
+    # consecutive days — everything before the last such jump is stale data
+    # from a different account era.
+    port_rows = list(raw_rows)
+    if len(port_rows) > 2:
+        last_jump_idx = 0
+        for i in range(1, len(port_rows)):
+            prev_val = port_rows[i - 1][1]
+            curr_val = port_rows[i][1]
+            if prev_val > 0:
+                change = abs(curr_val - prev_val) / prev_val
+                if change > 0.60:  # >60% jump = account switchover
+                    last_jump_idx = i
+        if last_jump_idx > 0:
+            logger.info(
+                "[api/portfolio_equity] trimming %d pre-switchover rows (jump at %s)",
+                last_jump_idx, port_rows[last_jump_idx][0],
+            )
+            port_rows = port_rows[last_jump_idx:]
 
     # Fallback: if no risk reports, use gross market value from snapshots
     if not port_rows:
