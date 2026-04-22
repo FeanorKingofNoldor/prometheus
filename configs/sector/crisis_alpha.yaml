@@ -1,0 +1,40 @@
+# Prometheus - Crisis Alpha Strategy Configuration
+#
+# These values are loaded by load_crisis_alpha_config() and override the
+# dataclass defaults in prometheus.sector.crisis_alpha.CrisisAlphaConfig.
+#
+# Environment variable overrides (highest priority):
+#   PROMETHEUS_CRISIS_SHI_THRESHOLD
+#   PROMETHEUS_CRISIS_SUSTAINED_COUNT
+#   PROMETHEUS_CRISIS_SUSTAINED_NAV_PCT
+#   PROMETHEUS_CRISIS_FLASH_NAV_PCT
+#   PROMETHEUS_CRISIS_PROFIT_TARGET
+#   PROMETHEUS_CRISIS_COOLDOWN_DAYS
+
+# -- SHI threshold for counting "sick" sectors --
+shi_threshold: 0.25
+
+# -- Sustained signal --
+sustained_engage_count: 5
+sustained_days: 3
+sustained_nav_pct: 0.07
+
+# -- Flash override (mega crisis) --
+flash_sector_count: 5
+flash_drop_threshold: 0.10
+flash_min_sick: 3
+flash_nav_pct: 0.10
+
+# -- Put parameters --
+target_dte_min: 45
+target_dte_max: 60
+otm_pct: 0.05
+profit_target_multiple: 2.5
+min_hold_days: 10
+
+# -- Exit & risk management --
+exit_sick_count: 2
+cooldown_days: 30
+
+# -- Instrument --
+underlying: SPY

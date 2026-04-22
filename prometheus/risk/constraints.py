@@ -15,6 +15,7 @@ planning documents.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
@@ -63,17 +64,42 @@ _DEFAULT_CONFIGS: Dict[str, StrategyRiskConfig] = {
 }
 
 
+def _env_max_weight_per_name() -> float | None:
+    """Read ``PROMETHEUS_MAX_WEIGHT_PER_NAME`` env var override.
+
+    Returns the float value if set and valid, otherwise ``None`` so the
+    caller falls back to the per-strategy default.
+    """
+    raw = os.environ.get("PROMETHEUS_MAX_WEIGHT_PER_NAME")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def get_strategy_risk_config(strategy_id: str) -> StrategyRiskConfig:
     """Return a :class:`StrategyRiskConfig` for ``strategy_id``.
 
     For now this looks up a small in-code mapping and falls back to a
     generic configuration if no specific entry is found.
+
+    If the ``PROMETHEUS_MAX_WEIGHT_PER_NAME`` environment variable is set,
+    it overrides the ``max_abs_weight_per_name`` for **all** strategies.
     """
 
     cfg = _DEFAULT_CONFIGS.get(strategy_id)
-    if cfg is not None:
-        return cfg
-    return StrategyRiskConfig(strategy_id=strategy_id)
+    if cfg is None:
+        cfg = StrategyRiskConfig(strategy_id=strategy_id)
+
+    env_cap = _env_max_weight_per_name()
+    if env_cap is not None:
+        cfg = StrategyRiskConfig(
+            strategy_id=cfg.strategy_id,
+            max_abs_weight_per_name=env_cap,
+        )
+    return cfg
 
 
 def apply_per_name_limit(

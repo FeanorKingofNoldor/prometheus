@@ -46,6 +46,7 @@ Version: v0.1.0
 from __future__ import annotations
 
 import fcntl
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -94,8 +95,35 @@ class LambdaClusterRow:
     sector_health_score: float = 0.0
 
 
+# Compiled defaults.
+_COMPILED_STAB_LOOKBACK_DAYS = 10
+_COMPILED_LAMBDA_LOOKBACK_DAYS = 20
+
+
+def _resolve_stab_lookback_days() -> int:
+    """Return STAB lookback from env var or compiled default (10)."""
+    raw = os.environ.get("PROMETHEUS_STAB_LOOKBACK_DAYS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    return _COMPILED_STAB_LOOKBACK_DAYS
+
+
+def _resolve_lambda_lookback_days() -> int:
+    """Return lambda lookback from env var or compiled default (20)."""
+    raw = os.environ.get("PROMETHEUS_LAMBDA_LOOKBACK_DAYS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    return _COMPILED_LAMBDA_LOOKBACK_DAYS
+
+
 # Maximum staleness (in days) for STAB lookback in the daily lambda query.
-_STAB_LOOKBACK_DAYS = 10
+_STAB_LOOKBACK_DAYS = _COMPILED_STAB_LOOKBACK_DAYS
 
 
 def _load_instruments_with_stab(
@@ -103,7 +131,7 @@ def _load_instruments_with_stab(
     *,
     as_of_date: date,
     market_ids: Sequence[str],
-    stab_lookback_days: int = _STAB_LOOKBACK_DAYS,
+    stab_lookback_days: int | None = None,
 ) -> pd.DataFrame:
     """Load active equity instruments with sector and STAB state.
 
@@ -117,6 +145,8 @@ def _load_instruments_with_stab(
     Returns DataFrame with columns:
         instrument_id, issuer_id, sector, market_id, soft_target_class
     """
+    if stab_lookback_days is None:
+        stab_lookback_days = _resolve_stab_lookback_days()
     stab_start = as_of_date - timedelta(days=stab_lookback_days)
 
     sql = """
@@ -174,7 +204,7 @@ def compute_lambda_for_date(
     *,
     as_of_date: date,
     market_ids: Sequence[str],
-    lookback_days: int = 20,
+    lookback_days: int | None = None,
     min_cluster_size: int = 3,
 ) -> List[LambdaClusterRow]:
     """Compute raw lambda_t(x) for all clusters on a single date.
@@ -191,6 +221,9 @@ def compute_lambda_for_date(
     Returns:
         List of LambdaClusterRow observations.
     """
+    if lookback_days is None:
+        lookback_days = _resolve_lambda_lookback_days()
+
     inst_df = _load_instruments_with_stab(
         db_manager, as_of_date=as_of_date, market_ids=market_ids,
     )
@@ -324,7 +357,7 @@ def run_daily_lambda(
     model_path: str | Path | None = None,
     predictions_csv: str | Path | None = None,
     experiment_id: str = "US_EQ_GL_POLY2_V0",
-    lookback_days: int = 20,
+    lookback_days: int | None = None,
     min_cluster_size: int = 3,
 ) -> DailyLambdaResult:
     """Compute and predict daily lambda for a market.
@@ -350,6 +383,9 @@ def run_daily_lambda(
     Returns:
         DailyLambdaResult with status and counts.
     """
+    if lookback_days is None:
+        lookback_days = _resolve_lambda_lookback_days()
+
     # Resolve default paths.
     if model_path is None:
         model_path = PROJECT_ROOT / DEFAULT_MODEL_PATH.format(market_id=market_id)

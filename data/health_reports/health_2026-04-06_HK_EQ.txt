@@ -1,0 +1,12 @@
+Pipeline Health Report: HK_EQ 2026-04-06
+Run ID: b19a96c4-c411-4e43-ab91-58071782f159
+Final Phase: EXECUTION_DONE
+Prices: 0
+Targets: 0
+Orders: 0
+Sector Health: 0
+
+ISSUES:
+  - LOW PRICE COVERAGE: only 0 instruments (expected ~660)
+  - NO TARGET PORTFOLIO: books phase produced no targets
+  - NO SECTOR HEALTH: SHI not computed for this date

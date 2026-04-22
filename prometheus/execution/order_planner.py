@@ -13,6 +13,7 @@ Key features:
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from apathis.core.ids import generate_uuid
@@ -26,15 +27,45 @@ logger = get_logger(__name__)
 # Minimum absolute quantity before an order is emitted.
 MIN_ABS_QUANTITY: float = 1e-6
 
+# Compiled defaults — kept as constants for backward compatibility.
+_COMPILED_MIN_REBALANCE_PCT: float = 0.02
+_COMPILED_LIMIT_BUFFER_PCT: float = 0.001
+
 # Default minimum rebalance threshold as a fraction of position size.
 # Orders where |delta| / max(current, target) < this threshold are
 # suppressed to reduce churn.  2% means a 100-share position won't
 # generate an order for < 2 shares of delta.
-DEFAULT_MIN_REBALANCE_PCT: float = 0.02
+DEFAULT_MIN_REBALANCE_PCT: float = _COMPILED_MIN_REBALANCE_PCT
 
 # Default limit order buffer: how far above/below the reference price
 # to place limit orders.  0.001 = 0.1% (10 bps).
-DEFAULT_LIMIT_BUFFER_PCT: float = 0.001
+DEFAULT_LIMIT_BUFFER_PCT: float = _COMPILED_LIMIT_BUFFER_PCT
+
+
+def _resolve_min_rebalance_pct() -> float:
+    """Return min rebalance pct from env var or compiled default (0.02)."""
+    raw = os.environ.get("PROMETHEUS_MIN_REBALANCE_PCT")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
+    return _COMPILED_MIN_REBALANCE_PCT
+
+
+def _resolve_limit_buffer_pct() -> float:
+    """Return limit buffer pct from env var or compiled default (0.001)."""
+    raw = os.environ.get("PROMETHEUS_LIMIT_BUFFER_PCT")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
+    return _COMPILED_LIMIT_BUFFER_PCT
+
+
+# Sentinel to signal "use env-var-aware default at call time".
+_USE_ENV_DEFAULT = object()
 
 
 def plan_orders(
@@ -43,10 +74,11 @@ def plan_orders(
     order_type: OrderType = OrderType.MARKET,
     min_abs_quantity: float = MIN_ABS_QUANTITY,
     *,
-    min_rebalance_pct: float = DEFAULT_MIN_REBALANCE_PCT,
+    min_rebalance_pct: float | object = _USE_ENV_DEFAULT,
     prices: Optional[Dict[str, float]] = None,
-    limit_buffer_pct: float = DEFAULT_LIMIT_BUFFER_PCT,
+    limit_buffer_pct: float | object = _USE_ENV_DEFAULT,
     sells_first: bool = True,
+    long_only: bool = False,
 ) -> List[Order]:
     """Compute orders required to move from current to target positions.
 
@@ -70,6 +102,14 @@ def plan_orders(
     Returns:
         A list of :class:`Order` objects representing the required trades.
     """
+
+    # Resolve env-var-aware defaults at call time.
+    if min_rebalance_pct is _USE_ENV_DEFAULT:
+        min_rebalance_pct = _resolve_min_rebalance_pct()
+    if limit_buffer_pct is _USE_ENV_DEFAULT:
+        limit_buffer_pct = _resolve_limit_buffer_pct()
+    min_rebalance_pct = float(min_rebalance_pct)  # type: ignore[arg-type]
+    limit_buffer_pct = float(limit_buffer_pct)  # type: ignore[arg-type]
 
     orders: List[Order] = []
     suppressed = 0
@@ -133,6 +173,23 @@ def plan_orders(
         orders.sort(
             key=lambda o: (0 if o.side == OrderSide.SELL else 1, o.instrument_id),
         )
+
+    # Validate: long-only strategies must not have SELL orders that would
+    # create short positions.
+    if long_only:
+        for order in orders:
+            if order.side == OrderSide.SELL:
+                current_qty = float(
+                    current_positions[order.instrument_id].quantity
+                ) if order.instrument_id in current_positions else 0.0
+                if order.quantity > current_qty:
+                    logger.error(
+                        "Long-only violation: SELL %s qty=%f exceeds position %f — clamping",
+                        order.instrument_id, order.quantity, current_qty,
+                    )
+                    order.quantity = max(0.0, current_qty)
+        # Remove orders with zero quantity after clamping
+        orders = [o for o in orders if o.quantity > min_abs_quantity]
 
     if orders or suppressed:
         logger.info(

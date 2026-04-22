@@ -1,0 +1,12 @@
+Pipeline Health Report: AU_EQ 2026-04-13
+Run ID: 7752fe2d-7593-403a-afe9-e71fee26c5f5
+Final Phase: EXECUTION_DONE
+Prices: 0
+Targets: 0
+Orders: 0
+Sector Health: 0
+
+ISSUES:
+  - LOW PRICE COVERAGE: only 0 instruments (expected ~660)
+  - NO TARGET PORTFOLIO: books phase produced no targets
+  - NO SECTOR HEALTH: SHI not computed for this date

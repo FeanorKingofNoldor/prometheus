@@ -1364,6 +1364,18 @@ class MarketAwareDaemon:
                     _result.append(r)
                 except Exception as exc:
                     _result.append((False, f"unhandled exception: {exc}"))
+                finally:
+                    # Best-effort: close any DB connection pools that may
+                    # have been left open if execute_job raised outside a
+                    # context manager. The pool's getconn/putconn pattern
+                    # should handle normal cases, but unhandled exceptions
+                    # in nested helpers could leak connections. Log so we
+                    # can trace pool exhaustion back to a specific job.
+                    logger.debug(
+                        "_run_job: job_id=%s thread exiting (result=%s)",
+                        job.job_id,
+                        "ok" if _result and _result[0][0] else "fail",
+                    )
 
             timeout_sec = job.timeout_seconds or 3600  # default 1h
             thread = threading.Thread(target=_run_job, daemon=True)
@@ -1447,6 +1459,12 @@ class MarketAwareDaemon:
 
         Only triggers once per day, at the configured hour (default: 08:00 local).
         """
+        # Guard: prevent re-entry if a catch-up is already in progress.
+        # This prevents duplication when midnight date rollover fires while
+        # a catch-up loop is still running.
+        if hasattr(self, '_catchup_in_progress') and self._catchup_in_progress:
+            return
+
         # Use timezone-aware local clock so the catch-up window stays anchored
         # to the configured PROMETHEUS_LOCAL_TZ (default Europe/Berlin) instead
         # of whatever naive offset the host happens to have.
@@ -1455,6 +1473,11 @@ class MarketAwareDaemon:
             return
         if now_local_dt.minute > 5:
             # Only trigger in the first 5 minutes of the hour
+            return
+
+        # If as_of_date has already been rolled forward to today (e.g. by the
+        # midnight date-change detection), there is nothing to catch up.
+        if as_of_date == date.today():
             return
 
         # Check if we already did a catch-up today
@@ -1498,83 +1521,97 @@ class MarketAwareDaemon:
             now_local_dt.strftime("%H:%M"),
         )
 
-        # Build a SEPARATE DAG for the catchup date so we don't pollute
-        # today's DAG with yesterday's job state. This avoids the date
-        # mismatch where ingest runs for yesterday but compute_returns
-        # tries to use today's (empty) EngineRun.
-        catchup_dag = build_market_dag("US_EQ", last_trading_day)
-        catchup_dag_id = f"US_EQ_{last_trading_day.isoformat()}"
-
-        # Wall-clock budget for the catch-up loop. If individual jobs
-        # take 5 minutes each, we don't want catch-up to soak the daemon
-        # for two hours and miss the actual market open. Default 20
-        # minutes; configurable via PROMETHEUS_CATCHUP_BUDGET_SECONDS.
+        # Set the in-progress flag to prevent re-entry from concurrent calls
+        # (e.g. midnight date rollover firing while catch-up is running).
+        self._catchup_in_progress = True
         try:
-            catchup_budget_seconds = int(os.environ.get("PROMETHEUS_CATCHUP_BUDGET_SECONDS", "1200"))
-        except ValueError:
-            catchup_budget_seconds = 1200
-        catchup_started_at = time.monotonic()
+            # Build a SEPARATE DAG for the catchup date so we don't pollute
+            # today's DAG with yesterday's job state. This avoids the date
+            # mismatch where ingest runs for yesterday but compute_returns
+            # tries to use today's (empty) EngineRun.
+            catchup_dag = build_market_dag("US_EQ", last_trading_day)
+            catchup_dag_id = f"US_EQ_{last_trading_day.isoformat()}"
 
-        # Loop until all catchup jobs complete (or we hit a safety limit).
-        # Each iteration runs one _process_market cycle, then sleeps for
-        # poll_interval_seconds so retry backoffs can expire.
-        max_iterations = 60  # 12 jobs * ~3 retries + margin
-        for iteration in range(max_iterations):
-            elapsed = time.monotonic() - catchup_started_at
-            if elapsed > catchup_budget_seconds:
-                logger.error(
-                    "MarketAwareDaemon: MORNING CATCH-UP for %s exceeded wall-clock budget "
-                    "(%ds > %ds) after %d iterations (%d/%d jobs done) — aborting so the "
-                    "daemon can resume normal market processing",
-                    last_trading_day,
-                    int(elapsed),
+            # Wall-clock budget for the catch-up loop. If individual jobs
+            # take 5 minutes each, we don't want catch-up to soak the daemon
+            # for two hours and miss the actual market open. Default 20
+            # minutes; configurable via PROMETHEUS_CATCHUP_BUDGET_SECONDS.
+            try:
+                catchup_budget_seconds = int(os.environ.get("PROMETHEUS_CATCHUP_BUDGET_SECONDS", "1200"))
+            except ValueError:
+                catchup_budget_seconds = 1200
+            catchup_started_at = time.monotonic()
+
+            # Check budget BEFORE entering the loop — if budget is already
+            # exhausted (e.g. misconfigured to 0), skip immediately.
+            if catchup_budget_seconds <= 0:
+                logger.warning(
+                    "MarketAwareDaemon: MORNING CATCH-UP budget is %ds — skipping",
                     catchup_budget_seconds,
-                    iteration,
-                    len(self._get_completed_jobs(catchup_dag_id)),
-                    len(catchup_dag.jobs),
                 )
-                break
+            else:
+                # Loop until all catchup jobs complete (or we hit a safety limit).
+                # Each iteration runs one _process_market cycle, then sleeps for
+                # poll_interval_seconds so retry backoffs can expire.
+                max_iterations = 60  # 12 jobs * ~3 retries + margin
+                for iteration in range(max_iterations):
+                    elapsed = time.monotonic() - catchup_started_at
+                    if elapsed > catchup_budget_seconds:
+                        logger.error(
+                            "MarketAwareDaemon: MORNING CATCH-UP for %s exceeded wall-clock budget "
+                            "(%ds > %ds) after %d iterations (%d/%d jobs done) — aborting so the "
+                            "daemon can resume normal market processing",
+                            last_trading_day,
+                            int(elapsed),
+                            catchup_budget_seconds,
+                            iteration,
+                            len(self._get_completed_jobs(catchup_dag_id)),
+                            len(catchup_dag.jobs),
+                        )
+                        break
 
-            now = datetime.now(timezone.utc)
-            completed = self._get_completed_jobs(catchup_dag_id)
-            running = self._get_running_job_ids()
-            runnable = catchup_dag.get_runnable_jobs(completed, running, MarketState.POST_CLOSE)
+                    now = datetime.now(timezone.utc)
+                    completed = self._get_completed_jobs(catchup_dag_id)
+                    running = self._get_running_job_ids()
+                    runnable = catchup_dag.get_runnable_jobs(completed, running, MarketState.POST_CLOSE)
 
-            if not runnable:
-                logger.info(
-                    "MarketAwareDaemon: MORNING CATCH-UP complete for %s after %d iterations "
-                    "(%d/%d jobs done, elapsed=%.0fs)",
-                    last_trading_day,
-                    iteration + 1,
-                    len(completed),
-                    len(catchup_dag.jobs),
-                    elapsed,
-                )
-                break
+                    if not runnable:
+                        logger.info(
+                            "MarketAwareDaemon: MORNING CATCH-UP complete for %s after %d iterations "
+                            "(%d/%d jobs done, elapsed=%.0fs)",
+                            last_trading_day,
+                            iteration + 1,
+                            len(completed),
+                            len(catchup_dag.jobs),
+                            elapsed,
+                        )
+                        break
 
-            self._process_market(
-                "US_EQ", catchup_dag, catchup_dag_id,
-                MarketState.POST_CLOSE,
-                last_trading_day,
-                now,
-            )
+                    self._process_market(
+                        "US_EQ", catchup_dag, catchup_dag_id,
+                        MarketState.POST_CLOSE,
+                        last_trading_day,
+                        now,
+                    )
 
-            if self.shutdown_requested:
-                break
+                    if self.shutdown_requested:
+                        break
 
-            # Interruptible sleep between iterations so SIGTERM exits
-            # promptly even mid-catch-up.
-            if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
-                break
-        else:
-            logger.warning(
-                "MarketAwareDaemon: MORNING CATCH-UP for %s exhausted %d iterations "
-                "(%d/%d jobs done) — some jobs may not have completed",
-                last_trading_day,
-                max_iterations,
-                len(self._get_completed_jobs(catchup_dag_id)),
-                len(catchup_dag.jobs),
-            )
+                    # Interruptible sleep between iterations so SIGTERM exits
+                    # promptly even mid-catch-up.
+                    if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                        break
+                else:
+                    logger.warning(
+                        "MarketAwareDaemon: MORNING CATCH-UP for %s exhausted %d iterations "
+                        "(%d/%d jobs done) — some jobs may not have completed",
+                        last_trading_day,
+                        max_iterations,
+                        len(self._get_completed_jobs(catchup_dag_id)),
+                        len(catchup_dag.jobs),
+                    )
+        finally:
+            self._catchup_in_progress = False
 
         if not hasattr(self, "_catchup_done"):
             self._catchup_done = set()
@@ -1637,27 +1674,88 @@ class MarketAwareDaemon:
                             as_of_date,
                             today,
                         )
-                        # Finalize any incomplete runs from yesterday before
-                        # clearing state — mark them as FAILED so they don't
-                        # accumulate as stale intermediate-state runs.
+                        # Finalize any incomplete runs from yesterday.
+                        # If the DAG's jobs all succeeded, the run was just
+                        # orphaned (created at market-close time after jobs
+                        # already finished) — mark it COMPLETED, not FAILED.
+                        # Only mark FAILED if there were actual job failures.
                         try:
                             from prometheus.pipeline.state import list_active_runs
 
                             stale_runs = list_active_runs(self.db_manager)
                             for stale_run in stale_runs:
-                                if stale_run.phase not in (
+                                if stale_run.phase in (
                                     RunPhase.COMPLETED,
                                     RunPhase.FAILED,
                                 ):
-                                    logger.warning(
-                                        "MarketAwareDaemon: finalizing stale run %s (phase=%s) from %s",
+                                    continue
+                                # Check if the DAG for this run's market
+                                # actually had failures before deciding the
+                                # terminal phase.
+                                dag_id = f"{stale_run.region}_EQ_{as_of_date.isoformat()}"
+                                dag_execs = get_dag_executions(
+                                    self.db_manager, dag_id,
+                                )
+                                has_failures = any(
+                                    e.status == JobStatus.FAILED
+                                    for e in dag_execs
+                                )
+                                all_succeeded = (
+                                    len(dag_execs) > 0
+                                    and all(
+                                        e.status
+                                        in {JobStatus.SUCCESS, JobStatus.SKIPPED}
+                                        for e in dag_execs
+                                    )
+                                )
+                                if all_succeeded:
+                                    # Orphaned run — DAG completed fine, the
+                                    # EngineRun just wasn't updated.
+                                    logger.info(
+                                        "MarketAwareDaemon: stale run %s (phase=%s) "
+                                        "— DAG %s all succeeded, marking COMPLETED",
                                         stale_run.run_id,
                                         stale_run.phase.value,
+                                        dag_id,
+                                    )
+                                    update_phase(
+                                        self.db_manager,
+                                        stale_run.run_id,
+                                        RunPhase.COMPLETED,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "MarketAwareDaemon: finalizing stale run %s "
+                                        "(phase=%s, has_failures=%s) from %s",
+                                        stale_run.run_id,
+                                        stale_run.phase.value,
+                                        has_failures,
                                         as_of_date,
                                     )
-                                    update_phase(self.db_manager, stale_run.run_id, RunPhase.FAILED)
+                                    update_phase(
+                                        self.db_manager,
+                                        stale_run.run_id,
+                                        RunPhase.FAILED,
+                                    )
                         except Exception:
                             logger.exception("MarketAwareDaemon: failed to finalize stale runs")
+
+                        # Finalize in-flight jobs BEFORE clearing the
+                        # running_jobs dict so their DB status is updated
+                        # to FAILED (not left as RUNNING forever).
+                        for exec_id, (rj, _) in list(self.running_jobs.items()):
+                            try:
+                                update_job_execution_status(
+                                    self.db_manager,
+                                    exec_id,
+                                    JobStatus.FAILED,
+                                    error_message="date rollover while job was running",
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "MarketAwareDaemon: failed to finalize running job %s on date rollover",
+                                    exec_id,
+                                )
 
                         as_of_date = today
                         self.active_dags.clear()

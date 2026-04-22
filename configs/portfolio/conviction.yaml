@@ -1,0 +1,39 @@
+# Prometheus - Conviction Mechanics Configuration
+#
+# These values are loaded by load_conviction_config() and override the
+# dataclass defaults in prometheus.portfolio.config.ConvictionDefaults.
+#
+# Environment variable overrides (highest priority):
+#   PROMETHEUS_CONVICTION_ENTRY_CREDIT
+#   PROMETHEUS_CONVICTION_BUILD_RATE
+#   PROMETHEUS_CONVICTION_DECAY_RATE
+#   PROMETHEUS_CONVICTION_SCORE_CAP
+#   PROMETHEUS_CONVICTION_SELL_THRESHOLD
+#   PROMETHEUS_CONVICTION_HARD_STOP_PCT
+#   PROMETHEUS_CONVICTION_SCALE_UP_DAYS
+#   PROMETHEUS_CONVICTION_ENTRY_WEIGHT_FRACTION
+
+# Initial conviction credit awarded when a new position is entered.
+entry_credit: 5.0
+
+# Daily conviction score increment when instrument remains in selection.
+build_rate: 1.0
+
+# Daily conviction score decay when instrument drops out of selection.
+# Multiplied by regime-specific decay multipliers (e.g. 1.5x in SECTOR_STRESS).
+decay_rate: 2.0
+
+# Maximum conviction score (hard cap).
+score_cap: 20.0
+
+# Conviction score below which a position is sold.
+sell_threshold: 0.0
+
+# Hard stop loss percentage from average entry price (catastrophic protection).
+hard_stop_pct: 0.20
+
+# Consecutive days in selection before scaling from entry weight to full weight.
+scale_up_days: 3
+
+# Fraction of target weight used at entry (before scale-up confirmation).
+entry_weight_fraction: 0.50

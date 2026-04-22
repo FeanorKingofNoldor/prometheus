@@ -11,7 +11,8 @@ engines:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol, Sequence
 
@@ -28,6 +29,17 @@ from apathis.stability.types import SoftTargetClass
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)
+
+
+def _default_assessment_horizon_days() -> int:
+    """Return assessment horizon from env var or compiled default (21)."""
+    raw = os.environ.get("PROMETHEUS_ASSESSMENT_HORIZON_DAYS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    return 21
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +344,7 @@ class BasicUniverseModel:
     # incorporate them into the ranking score.
     use_assessment_scores: bool = False
     assessment_strategy_id: str | None = None
-    assessment_horizon_days: int = 21
+    assessment_horizon_days: int = field(default_factory=lambda: _default_assessment_horizon_days())
     assessment_score_weight: float = 50.0
 
     # Optional global regime risk integration. When ``regime_forecaster``

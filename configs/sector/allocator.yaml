@@ -1,0 +1,42 @@
+# Prometheus - Sector Allocator Configuration
+#
+# These values are loaded by load_allocator_config() and override the
+# dataclass defaults in prometheus.sector.allocator.SectorAllocatorConfig.
+#
+# Environment variable overrides (highest priority):
+#   PROMETHEUS_SECTOR_KILL_THRESHOLD
+#   PROMETHEUS_SECTOR_REDUCE_THRESHOLD
+#   PROMETHEUS_SECTOR_MAX_CONCENTRATION
+#   PROMETHEUS_MHI_BROAD_STRESS_THRESHOLD
+#   PROMETHEUS_MHI_SYSTEMIC_CRISIS_THRESHOLD
+#   PROMETHEUS_EQUITY_MULT_SYSTEMIC_CRISIS
+
+# -- Sector-level thresholds --
+sector_kill_threshold: 0.25
+sector_reduce_threshold: 0.40
+sector_max_concentration: 0.30
+
+# -- Stress level escalation --
+sector_stress_count: 1
+broad_stress_count: 3
+systemic_crisis_count: 6
+
+# -- Market MHI overrides --
+mhi_broad_stress_threshold: -0.20
+mhi_systemic_crisis_threshold: -0.50
+
+# -- Response multipliers --
+equity_multiplier_normal: 1.0
+equity_multiplier_sector_stress: 0.85
+equity_multiplier_broad_stress: 0.50
+equity_multiplier_systemic_crisis: 0.0
+
+# -- Hedge allocation --
+hedge_allocation_normal: 0.0
+hedge_allocation_sector_stress: 0.10
+hedge_allocation_broad_stress: 0.40
+hedge_allocation_systemic_crisis: 1.0
+
+# -- Redistribution --
+redistribute_killed_weight: true
+healthy_sector_threshold: 0.55

@@ -1,0 +1,12 @@
+Pipeline Health Report: JP_EQ 2026-04-07
+Run ID: ec83831a-82aa-4d39-b973-8c877b8136af
+Final Phase: EXECUTION_DONE
+Prices: 175
+Targets: 0
+Orders: 0
+Sector Health: 0
+
+ISSUES:
+  - LOW PRICE COVERAGE: only 175 instruments (expected ~660)
+  - NO TARGET PORTFOLIO: books phase produced no targets
+  - NO SECTOR HEALTH: SHI not computed for this date

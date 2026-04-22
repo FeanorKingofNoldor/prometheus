@@ -176,19 +176,95 @@ def _install_apathis_stubs() -> None:
         sys.modules["psycopg2"] = pg2
         sys.modules["psycopg2.extras"] = pg2_extras
 
+    # -- apathis.sector --
+    sector = types.ModuleType("apathis.sector")
+
+    # -- apathis.sector.health --
+    sector_health = types.ModuleType("apathis.sector.health")
+
+    class _StubSectorHealthResult:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            self.scores: Dict[str, Any] = kw.get("scores", {})
+
+    sector_health.SectorHealthResult = _StubSectorHealthResult  # type: ignore[attr-defined]
+    sector_health.SECTOR_ETF_MAP = {}  # type: ignore[attr-defined]
+
+    # -- apathis.sector.mapper --
+    sector_mapper = types.ModuleType("apathis.sector.mapper")
+
+    class _StubSectorMapper:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+        def get_sector(self, iid: str) -> Optional[str]:
+            return None
+        def get_sector_weights(self, weights: Dict[str, float]) -> Dict[str, float]:
+            return {}
+        def load(self, *a: Any, **kw: Any) -> None: ...
+
+    sector_mapper.SectorMapper = _StubSectorMapper  # type: ignore[attr-defined]
+
+    # -- apathis.core.markets --
+    markets_mod = types.ModuleType("apathis.core.markets")
+    markets_mod.infer_region_from_market_id = lambda mid: "US"  # type: ignore[attr-defined]
+
+    # -- apathis.regime --
+    regime = types.ModuleType("apathis.regime")
+
+    # -- apathis.regime.types --
+    regime_types = types.ModuleType("apathis.regime.types")
+
+    class _RegimeLabel(str, Enum):
+        CARRY = "CARRY"
+        NEUTRAL = "NEUTRAL"
+        RISK_OFF = "RISK_OFF"
+        CRISIS = "CRISIS"
+
+    regime_types.RegimeLabel = _RegimeLabel  # type: ignore[attr-defined]
+
+    # -- apathis.regime.storage --
+    regime_storage = types.ModuleType("apathis.regime.storage")
+
+    class _StubRegimeStorage:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+        def get_latest_regime(self, *a: Any, **kw: Any) -> None:
+            return None
+
+    regime_storage.RegimeStorage = _StubRegimeStorage  # type: ignore[attr-defined]
+
+    # -- apathis.fragility --
+    fragility = types.ModuleType("apathis.fragility")
+
+    # -- apathis.fragility.storage --
+    fragility_storage = types.ModuleType("apathis.fragility.storage")
+
+    class _StubFragilityStorage:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+        def get_latest_measure(self, *a: Any, **kw: Any) -> None:
+            return None
+
+    fragility_storage.FragilityStorage = _StubFragilityStorage  # type: ignore[attr-defined]
+
     # Wire parent/child relationships
     apathis.core = core  # type: ignore[attr-defined]
     apathis.data = data  # type: ignore[attr-defined]
     apathis.stability = stability  # type: ignore[attr-defined]
+    apathis.sector = sector  # type: ignore[attr-defined]
+    apathis.regime = regime  # type: ignore[attr-defined]
+    apathis.fragility = fragility  # type: ignore[attr-defined]
     core.database = db  # type: ignore[attr-defined]
     core.logging = logging_mod  # type: ignore[attr-defined]
     core.ids = ids_mod  # type: ignore[attr-defined]
     core.types = types_mod  # type: ignore[attr-defined]
     core.time = time_mod  # type: ignore[attr-defined]
     core.config = config_mod  # type: ignore[attr-defined]
+    core.markets = markets_mod  # type: ignore[attr-defined]
     data.reader = reader  # type: ignore[attr-defined]
     stability.storage = stab_storage  # type: ignore[attr-defined]
     stability.types = stab_types  # type: ignore[attr-defined]
+    sector.health = sector_health  # type: ignore[attr-defined]
+    sector.mapper = sector_mapper  # type: ignore[attr-defined]
+    regime.types = regime_types  # type: ignore[attr-defined]
+    regime.storage = regime_storage  # type: ignore[attr-defined]
+    fragility.storage = fragility_storage  # type: ignore[attr-defined]
 
     # Register in sys.modules
     for name, mod in [
@@ -200,11 +276,20 @@ def _install_apathis_stubs() -> None:
         ("apathis.core.types", types_mod),
         ("apathis.core.time", time_mod),
         ("apathis.core.config", config_mod),
+        ("apathis.core.markets", markets_mod),
         ("apathis.data", data),
         ("apathis.data.reader", reader),
         ("apathis.stability", stability),
         ("apathis.stability.storage", stab_storage),
         ("apathis.stability.types", stab_types),
+        ("apathis.sector", sector),
+        ("apathis.sector.health", sector_health),
+        ("apathis.sector.mapper", sector_mapper),
+        ("apathis.regime", regime),
+        ("apathis.regime.types", regime_types),
+        ("apathis.regime.storage", regime_storage),
+        ("apathis.fragility", fragility),
+        ("apathis.fragility.storage", fragility_storage),
     ]:
         sys.modules[name] = mod
 

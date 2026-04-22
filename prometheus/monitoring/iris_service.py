@@ -6,6 +6,8 @@ conversation for the Iris chat endpoint.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional
 
 from apathis.core.database import get_db_manager
@@ -16,11 +18,11 @@ logger = get_logger(__name__)
 
 # ── System prompt ────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are **Iris**, the meta-orchestrator of the Prometheus trading system.
 
 ## System Architecture
-- **Alpha engine**: US_EQ_LONG_V12/K25 (lambda-driven, 25 names, 12-17% CAGR, 0.9 Sharpe)
+- **Alpha engine**: {alpha_engine_description}
 - **Sector overlay**: SectorAllocator kills sick sectors (SHI<0.25), reduces weak (SHI<0.40), sizes SH.US hedge by fragility
 - **Crisis alpha**: Offensive SPY puts when ≥5 sectors deteriorate (flash: instant, sustained: 3-day filter)
 - **16 options strategies**: regime-adaptive (RISK_ON: income, CRISIS: hedges + crisis alpha)
@@ -39,6 +41,71 @@ You are **Iris**, the meta-orchestrator of the Prometheus trading system.
 - Ground answers in the system context below — if data is missing, say so
 - Be concise and quantitative — cite numbers, not vague assessments
 """
+
+_FALLBACK_ALPHA_DESCRIPTION = "US_EQ_LONG_V12 (lambda-driven equity strategy)"
+
+
+def _fetch_alpha_engine_description() -> str:
+    """Build the alpha engine description from live scorecard data.
+
+    Queries the decision_outcomes / engine_decisions tables for the latest
+    performance summary.  Falls back to a generic description if the DB is
+    unreachable or empty.
+    """
+    try:
+        db = get_db_manager()
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            # Fetch latest strategy performance summary.
+            cur.execute("""
+                SELECT ed.engine_name,
+                       COUNT(DISTINCT ed.instrument_id) AS n_names,
+                       COUNT(*) AS n_decisions,
+                       ROUND(AVG(dout.realized_return)::numeric, 4) AS avg_return,
+                       ROUND(
+                           SUM(CASE WHEN dout.realized_return > 0 THEN 1 ELSE 0 END)::numeric
+                           / NULLIF(COUNT(*), 0), 3
+                       ) AS hit_rate,
+                       MAX(ed.as_of_date) AS latest_date
+                FROM decision_outcomes dout
+                JOIN engine_decisions ed ON dout.decision_id = ed.decision_id
+                WHERE dout.horizon_days = 21
+                  AND ed.engine_name LIKE 'PORTFOLIO%%'
+                GROUP BY ed.engine_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            cur.close()
+
+        if row is None:
+            return _FALLBACK_ALPHA_DESCRIPTION
+
+        engine_name, n_names, n_decisions, avg_return, hit_rate, latest_date = row
+        parts = [f"US_EQ_LONG_V12 ({n_names} names"]
+        if hit_rate is not None:
+            parts.append(f", {float(hit_rate):.0%} hit rate")
+        if avg_return is not None:
+            parts.append(f", avg 21d return {float(avg_return):+.2%}")
+        parts.append(f" as of {latest_date})")
+        return "".join(parts)
+
+    except Exception as exc:
+        logger.debug("[iris] Could not fetch alpha engine stats: %s", exc)
+        return _FALLBACK_ALPHA_DESCRIPTION
+
+
+def build_system_prompt() -> str:
+    """Assemble the Iris system prompt at call time with live data."""
+    alpha_desc = _fetch_alpha_engine_description()
+    return _SYSTEM_PROMPT_TEMPLATE.format(alpha_engine_description=alpha_desc)
+
+
+# Keep a module-level SYSTEM_PROMPT for backward compatibility, but it
+# will be the fallback version.  Callers should use build_system_prompt().
+SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
+    alpha_engine_description=_FALLBACK_ALPHA_DESCRIPTION,
+)
 
 
 # ── Context assembly ─────────────────────────────────────────────────
@@ -372,6 +439,15 @@ def _fetch_pipeline_status_context() -> str:
         return "Pipeline: unavailable."
 
 
+def _sanitize_nan(text: str) -> str:
+    """Replace NaN/nan/inf tokens with N/A to avoid confusing the LLM."""
+    import re
+    # Replace standalone NaN, nan, inf, -inf (not part of a larger word)
+    text = re.sub(r'\bnan\b', 'N/A', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b-?inf\b', 'N/A', text, flags=re.IGNORECASE)
+    return text
+
+
 def build_system_context() -> str:
     """Assemble a combined context string from all sources."""
     sections = [
@@ -386,20 +462,38 @@ def build_system_context() -> str:
         _fetch_pipeline_status_context(),
         _fetch_intel_context(),
     ]
-    return "\n\n".join(sections)
+    return _sanitize_nan("\n\n".join(sections))
 
 
 # ── Chat orchestration ───────────────────────────────────────────────
 
 
-# Tool-calling agent names for Iris.
-_IRIS_TOOLS = [
+# Compiled default tool-calling agent names for Iris.
+_IRIS_TOOLS_DEFAULT = [
     "get_current_date",
     "search_web",
     "query_fred_data",
     "get_nation_indicators",
     "search_wikipedia",
 ]
+
+# Keep the module-level constant for backward compatibility (import-time).
+_IRIS_TOOLS = _IRIS_TOOLS_DEFAULT
+
+
+def _resolve_iris_tools() -> List[str]:
+    """Return Iris tool list from env var or compiled default.
+
+    If ``PROMETHEUS_IRIS_TOOLS`` is set, it is interpreted as a
+    comma-separated list of tool names.  Whitespace around each name
+    is stripped and empty entries are discarded.
+    """
+    raw = os.environ.get("PROMETHEUS_IRIS_TOOLS")
+    if raw is not None:
+        tools = [t.strip() for t in raw.split(",") if t.strip()]
+        if tools:
+            return tools
+    return list(_IRIS_TOOLS_DEFAULT)
 
 
 def iris_chat(
@@ -418,9 +512,10 @@ def iris_chat(
     """
     context_text = build_system_context()
 
-    # Build message list
+    # Build message list — prompt is assembled at call time with live data.
+    system_prompt = build_system_prompt()
     messages: List[Dict[str, str]] = [
-        {"role": "system", "content": SYSTEM_PROMPT + "\n\n---\n\n" + context_text},
+        {"role": "system", "content": system_prompt + "\n\n---\n\n" + context_text},
     ]
 
     # Append conversation history
@@ -434,19 +529,34 @@ def iris_chat(
 
     logger.info("[iris] Sending %d messages to LLM (with tools)", len(messages))
 
+    # LLM timeout (seconds). Prevents hanging forever on slow models.
+    _LLM_TIMEOUT = 45.0
+
     # Try tool-agent first; fall back to plain LLM if it fails.
     try:
         from apathis.llm.agent import create_agent
         from apathis.llm.model_routing import get_model
 
         iris_model = get_model("iris_chat")
-        agent = create_agent(tool_names=_IRIS_TOOLS, max_rounds=3, model=iris_model)
-        answer = agent.run(messages, temperature=0.4, max_tokens=2048)
+        agent = create_agent(tool_names=_resolve_iris_tools(), max_rounds=3, model=iris_model)
+        with ThreadPoolExecutor(1) as pool:
+            future = pool.submit(agent.run, messages, temperature=0.4, max_tokens=2048)
+            try:
+                answer = future.result(timeout=_LLM_TIMEOUT)
+            except FuturesTimeout:
+                logger.error("[iris] Tool-agent timed out after %.0fs", _LLM_TIMEOUT)
+                answer = "I'm sorry, my response timed out. Please try a simpler question."
     except Exception:
         logger.warning("[iris] Tool-agent failed, falling back to plain LLM")
         from apathis.llm.model_routing import get_model as _get_model
         llm = get_llm()
-        answer = llm.complete(messages, model=_get_model("iris_chat"), temperature=0.4, max_tokens=2048)
+        with ThreadPoolExecutor(1) as pool:
+            future = pool.submit(llm.complete, messages, model=_get_model("iris_chat"), temperature=0.4, max_tokens=2048)
+            try:
+                answer = future.result(timeout=_LLM_TIMEOUT)
+            except FuturesTimeout:
+                logger.error("[iris] Plain LLM timed out after %.0fs", _LLM_TIMEOUT)
+                answer = "I'm sorry, my response timed out. Please try a simpler question."
 
     # Derive sources from which context sections had data
     sources: List[str] = []

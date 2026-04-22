@@ -8,7 +8,20 @@ analytics options as described in the backtesting design docs.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import os
+
+from pydantic import BaseModel, Field
+
+
+def _default_assessment_horizon_days() -> int:
+    """Return assessment horizon from env var or compiled default (21)."""
+    raw = os.environ.get("PROMETHEUS_ASSESSMENT_HORIZON_DAYS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    return 21
 
 
 class SleeveConfig(BaseModel):
@@ -94,7 +107,7 @@ class SleeveConfig(BaseModel):
     universe_id: str
     portfolio_id: str
     assessment_strategy_id: str
-    assessment_horizon_days: int = 21
+    assessment_horizon_days: int = Field(default_factory=_default_assessment_horizon_days)
 
     # Assessment engine configuration for this sleeve.
     assessment_backend: str = "basic"

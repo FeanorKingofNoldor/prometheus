@@ -27,14 +27,21 @@ Why outright puts instead of SH.US:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-from typing import Dict, List
+from pathlib import Path
+from typing import Any, Dict, List
+
+import yaml
 
 from apathis.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CRISIS_ALPHA_CONFIG_PATH = PROJECT_ROOT / "configs" / "sector" / "crisis_alpha.yaml"
 
 
 class CrisisSignal(str, Enum):
@@ -88,6 +95,85 @@ class CrisisAlphaConfig:
     underlying: str = "SPY"
 
 
+# ── Environment variable mapping for the most critical parameters ────
+_CRISIS_ALPHA_ENV_OVERRIDES: Dict[str, tuple[str, type]] = {
+    "shi_threshold": ("PROMETHEUS_CRISIS_SHI_THRESHOLD", float),
+    "sustained_engage_count": ("PROMETHEUS_CRISIS_SUSTAINED_COUNT", int),
+    "sustained_nav_pct": ("PROMETHEUS_CRISIS_SUSTAINED_NAV_PCT", float),
+    "flash_nav_pct": ("PROMETHEUS_CRISIS_FLASH_NAV_PCT", float),
+    "profit_target_multiple": ("PROMETHEUS_CRISIS_PROFIT_TARGET", float),
+    "cooldown_days": ("PROMETHEUS_CRISIS_COOLDOWN_DAYS", int),
+}
+
+
+def load_crisis_alpha_config(
+    path: str | Path | None = None,
+) -> CrisisAlphaConfig:
+    """Load a :class:`CrisisAlphaConfig` from YAML + env overrides.
+
+    Resolution order (last wins):
+    1. Dataclass defaults
+    2. YAML file at *path* (or ``configs/sector/crisis_alpha.yaml`` if exists)
+    3. Environment variable overrides for critical parameters
+
+    If the YAML file does not exist or is malformed, the dataclass defaults
+    are used without error.
+    """
+    cfg_path = Path(path) if path is not None else DEFAULT_CRISIS_ALPHA_CONFIG_PATH
+    kwargs: Dict[str, Any] = {}
+
+    # ── Step 1: Load from YAML if available ──────────────────────────
+    if cfg_path.exists():
+        try:
+            raw = yaml.safe_load(cfg_path.read_text())
+            if isinstance(raw, dict):
+                valid_fields = {f.name for f in CrisisAlphaConfig.__dataclass_fields__.values()}
+                for key, value in raw.items():
+                    if key in valid_fields and value is not None:
+                        kwargs[key] = value
+                logger.info("Loaded crisis alpha config from %s (%d fields)", cfg_path, len(kwargs))
+        except Exception as exc:
+            logger.warning("Failed to load crisis alpha config from %s: %s", cfg_path, exc)
+    elif path is not None:
+        # Explicit path was given but doesn't exist — warn loudly.
+        import sys
+        msg = f"WARNING: crisis alpha config file not found: {cfg_path}"
+        print(msg, file=sys.stderr)
+        logger.warning(msg)
+
+    # ── Step 2: Environment variable overrides ───────────────────────
+    for field_name, (env_var, field_type) in _CRISIS_ALPHA_ENV_OVERRIDES.items():
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            try:
+                kwargs[field_name] = field_type(env_val)
+                logger.info("Crisis alpha config override: %s=%s (from %s)", field_name, kwargs[field_name], env_var)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid env override %s=%r: %s", env_var, env_val, exc)
+
+    config = CrisisAlphaConfig(**kwargs)
+
+    # ── Step 3: Range validation for key parameters ─────────────────
+    _range_checks = {
+        "shi_threshold": (0.0, 1.0),
+        "sustained_nav_pct": (0.0, 1.0),
+        "flash_nav_pct": (0.0, 1.0),
+        "flash_drop_threshold": (0.0, 1.0),
+        "otm_pct": (0.0, 0.50),
+        "profit_target_multiple": (1.0, 20.0),
+    }
+    for field_name, (lo, hi) in _range_checks.items():
+        val = getattr(config, field_name)
+        if val < lo or val > hi:
+            logger.warning(
+                "Crisis alpha config: %s=%s out of range [%s, %s], clamping",
+                field_name, val, lo, hi,
+            )
+            object.__setattr__(config, field_name, max(lo, min(hi, val)))
+
+    return config
+
+
 @dataclass
 class CrisisAlphaSignalResult:
     """Output of crisis signal evaluation."""
@@ -138,12 +224,17 @@ def evaluate_crisis_signal(
     n_sick = len(sick)
 
     # ── Flash detection: sharp single-day multi-sector drop ───────
+    # Require BOTH a sharp drop (delta) AND the sector being below the
+    # sick threshold (absolute floor). This prevents false flash signals
+    # when sectors drop sharply but from a high starting level (e.g.
+    # 0.90 -> 0.78 is a large drop but the sector is still healthy).
     flash_drops = 0
     if prev_sector_scores:
         for sector in sector_scores:
             prev = prev_sector_scores.get(sector, 1.0)
             curr = sector_scores[sector]
-            if prev - curr > config.flash_drop_threshold:
+            if (prev - curr > config.flash_drop_threshold
+                    and curr < config.shi_threshold):
                 flash_drops += 1
 
     is_flash = (
@@ -199,7 +290,7 @@ def generate_crisis_trades(
                 logger.info(
                     "Crisis alpha: FULL_CRISIS with existing position — "
                     "consider scaling up to %.1f%% NAV",
-                    config.full_crisis_nav_pct * 100,
+                    config.flash_nav_pct * 100,
                 )
             return trades  # Hold existing position
 

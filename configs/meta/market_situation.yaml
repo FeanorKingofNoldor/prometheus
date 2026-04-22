@@ -1,0 +1,20 @@
+# Prometheus - Market Situation Classification Configuration
+#
+# These values are loaded by load_market_situation_config() and override
+# the dataclass defaults in prometheus.meta.market_situation.MarketSituationConfig.
+#
+# Environment variable overrides (highest priority):
+#   PROMETHEUS_RECOVERY_FRAGILITY_THRESHOLD
+#   PROMETHEUS_CRISIS_FRAGILITY_OVERRIDE_THRESHOLD
+
+# When market fragility is above this threshold *and* the regime is not
+# explicitly RISK_OFF/CRISIS, treat the environment as RECOVERY.
+recovery_fragility_threshold: 0.30
+
+# Extremely high fragility forces CRISIS even if the regime detector
+# has not flipped yet.
+crisis_fragility_override_threshold: 0.75
+
+# If true, RECOVERY only applies when transitioning out of a stressed
+# regime (RISK_OFF/CRISIS) into NEUTRAL/CARRY and fragility remains elevated.
+recovery_requires_stress_transition: false

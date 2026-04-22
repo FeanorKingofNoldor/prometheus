@@ -47,6 +47,7 @@ class JobPriority(int, Enum):
     CRITICAL = 1
     STANDARD = 2
     OPTIONAL = 3
+    LOW = 4
 
 
 class JobStatus(str, Enum):

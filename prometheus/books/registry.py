@@ -14,15 +14,29 @@ missing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
+from apathis.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "configs" / "meta" / "books.yaml"
+
+
+# ── Environment variable mapping for allocator risk controls ────────
+# These override BookSpec fields on ALLOCATOR-kind books after YAML load.
+_ALLOCATOR_RISK_ENV_OVERRIDES: dict[str, tuple[str, type]] = {
+    "max_turnover_one_way": ("PROMETHEUS_MAX_TURNOVER", float),
+    "drawdown_brake_threshold": ("PROMETHEUS_DRAWDOWN_BRAKE_THRESHOLD", float),
+    "vol_target_annual": ("PROMETHEUS_VOL_TARGET_ANNUAL", float),
+}
 
 
 class BookKind(str, Enum):
@@ -43,6 +57,14 @@ class LongEquitySleeveSpec:
 
     # Conviction-based position lifecycle.
     conviction_enabled: bool = False
+    conviction_entry_credit: float | None = None
+    conviction_build_rate: float | None = None
+    conviction_decay_rate: float | None = None
+    conviction_score_cap: float | None = None
+    conviction_sell_threshold: float | None = None
+    conviction_hard_stop_pct: float | None = None
+    conviction_scale_up_days: int | None = None
+    conviction_entry_weight_fraction: float | None = None
 
     # Score concentration: raise raw scores to this power before
     # normalising into weights. 1.0 = linear, 2.5 = strong concentration.
@@ -363,6 +385,15 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
                         portfolio_per_instrument_max_weight=_coerce_float(
                             s.get("portfolio_per_instrument_max_weight")
                         ),
+                        conviction_enabled=bool(s.get("conviction_enabled", False)),
+                        conviction_entry_credit=_coerce_float(s.get("conviction_entry_credit")),
+                        conviction_build_rate=_coerce_float(s.get("conviction_build_rate")),
+                        conviction_decay_rate=_coerce_float(s.get("conviction_decay_rate")),
+                        conviction_score_cap=_coerce_float(s.get("conviction_score_cap")),
+                        conviction_sell_threshold=_coerce_float(s.get("conviction_sell_threshold")),
+                        conviction_hard_stop_pct=_coerce_float(s.get("conviction_hard_stop_pct")),
+                        conviction_scale_up_days=_coerce_int(s.get("conviction_scale_up_days")),
+                        conviction_entry_weight_fraction=_coerce_float(s.get("conviction_entry_weight_fraction")),
                         score_concentration_power=float(
                             _coerce_float(s.get("score_concentration_power")) or 1.0
                         ),
@@ -461,7 +492,45 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
             gate_csv_path=gate_csv_path_s,
         )
 
-    return out or _default_registry()
+    result = out or _default_registry()
+
+    # ── Apply env var overrides for allocator risk controls ──────────
+    result = _apply_allocator_env_overrides(result)
+
+    return result
+
+
+def _apply_allocator_env_overrides(
+    registry: dict[str, BookSpec],
+) -> dict[str, BookSpec]:
+    """Apply environment variable overrides to ALLOCATOR-kind books.
+
+    Only fields listed in ``_ALLOCATOR_RISK_ENV_OVERRIDES`` are affected.
+    Non-ALLOCATOR books are passed through unchanged.
+    """
+    overrides: dict[str, Any] = {}
+    for field_name, (env_var, field_type) in _ALLOCATOR_RISK_ENV_OVERRIDES.items():
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            try:
+                overrides[field_name] = field_type(env_val)
+                logger.info(
+                    "Allocator risk control override: %s=%s (from %s)",
+                    field_name, overrides[field_name], env_var,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid env override %s=%r: %s", env_var, env_val, exc)
+
+    if not overrides:
+        return registry
+
+    out: dict[str, BookSpec] = {}
+    for book_id, spec in registry.items():
+        if spec.kind == BookKind.ALLOCATOR:
+            out[book_id] = replace(spec, **overrides)
+        else:
+            out[book_id] = spec
+    return out
 
 
 def _coerce_int(value: Any) -> int | None:

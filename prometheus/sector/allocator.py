@@ -29,16 +29,23 @@ Usage
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 from apathis.core.logging import get_logger
 from apathis.sector.health import SectorHealthResult
 from apathis.sector.mapper import SectorMapper
 
 logger = get_logger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ALLOCATOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sector" / "allocator.yaml"
 
 
 class StressLevel(str, Enum):
@@ -99,6 +106,94 @@ class SectorAllocatorConfig:
     redistribute_killed_weight: bool = True
     # Minimum SHI to be considered "healthy" for redistribution target.
     healthy_sector_threshold: float = 0.55
+
+
+# ── Environment variable mapping for the most critical parameters ────
+_ALLOCATOR_ENV_OVERRIDES: Dict[str, tuple[str, type]] = {
+    "sector_kill_threshold": ("PROMETHEUS_SECTOR_KILL_THRESHOLD", float),
+    "sector_reduce_threshold": ("PROMETHEUS_SECTOR_REDUCE_THRESHOLD", float),
+    "sector_max_concentration": ("PROMETHEUS_SECTOR_MAX_CONCENTRATION", float),
+    "mhi_broad_stress_threshold": ("PROMETHEUS_MHI_BROAD_STRESS_THRESHOLD", float),
+    "mhi_systemic_crisis_threshold": ("PROMETHEUS_MHI_SYSTEMIC_CRISIS_THRESHOLD", float),
+    "equity_multiplier_systemic_crisis": ("PROMETHEUS_EQUITY_MULT_SYSTEMIC_CRISIS", float),
+}
+
+
+def load_allocator_config(
+    path: str | Path | None = None,
+) -> SectorAllocatorConfig:
+    """Load a :class:`SectorAllocatorConfig` from YAML + env overrides.
+
+    Resolution order (last wins):
+    1. Dataclass defaults
+    2. YAML file at *path* (or ``configs/sector/allocator.yaml`` if exists)
+    3. Environment variable overrides for critical parameters
+
+    If the YAML file does not exist or is malformed, the dataclass defaults
+    are used without error.
+    """
+    cfg_path = Path(path) if path is not None else DEFAULT_ALLOCATOR_CONFIG_PATH
+    kwargs: Dict[str, Any] = {}
+
+    # ── Step 1: Load from YAML if available ──────────────────────────
+    if cfg_path.exists():
+        try:
+            raw = yaml.safe_load(cfg_path.read_text())
+            if isinstance(raw, dict):
+                # Only accept keys that are valid dataclass fields.
+                valid_fields = {f.name for f in SectorAllocatorConfig.__dataclass_fields__.values()}
+                for key, value in raw.items():
+                    if key in valid_fields and value is not None:
+                        kwargs[key] = value
+                logger.info("Loaded allocator config from %s (%d fields)", cfg_path, len(kwargs))
+        except Exception as exc:
+            logger.warning("Failed to load allocator config from %s: %s", cfg_path, exc)
+    elif path is not None:
+        # Explicit path was given but doesn't exist — warn loudly.
+        import sys
+        msg = f"WARNING: allocator config file not found: {cfg_path}"
+        print(msg, file=sys.stderr)
+        logger.warning(msg)
+
+    # ── Step 2: Environment variable overrides ───────────────────────
+    for field_name, (env_var, field_type) in _ALLOCATOR_ENV_OVERRIDES.items():
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            try:
+                kwargs[field_name] = field_type(env_val)
+                logger.info("Allocator config override: %s=%s (from %s)", field_name, kwargs[field_name], env_var)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid env override %s=%r: %s", env_var, env_val, exc)
+
+    config = SectorAllocatorConfig(**kwargs)
+
+    # ── Step 3: Range validation for thresholds ─────────────────────
+    _range_checks = {
+        "sector_kill_threshold": (0.0, 1.0),
+        "sector_reduce_threshold": (0.0, 1.0),
+        "sector_max_concentration": (0.0, 1.0),
+        "healthy_sector_threshold": (0.0, 1.0),
+        "equity_multiplier_normal": (0.0, 1.0),
+        "equity_multiplier_sector_stress": (0.0, 1.0),
+        "equity_multiplier_broad_stress": (0.0, 1.0),
+        "equity_multiplier_systemic_crisis": (0.0, 1.0),
+        "hedge_allocation_normal": (0.0, 1.0),
+        "hedge_allocation_sector_stress": (0.0, 1.0),
+        "hedge_allocation_broad_stress": (0.0, 1.0),
+        "hedge_allocation_systemic_crisis": (0.0, 1.0),
+        "mhi_broad_stress_threshold": (-1.0, 1.0),
+        "mhi_systemic_crisis_threshold": (-1.0, 1.0),
+    }
+    for field_name, (lo, hi) in _range_checks.items():
+        val = getattr(config, field_name)
+        if val < lo or val > hi:
+            logger.warning(
+                "Allocator config: %s=%s out of range [%s, %s], clamping",
+                field_name, val, lo, hi,
+            )
+            object.__setattr__(config, field_name, max(lo, min(hi, val)))
+
+    return config
 
 
 @dataclass
@@ -181,7 +276,20 @@ class SectorAllocator:
         weak: List[str] = []
         healthy: List[str] = []
 
-        for sector, score in sector_scores.items():
+        for sector, raw_score in sector_scores.items():
+            # Validate and clamp: SHI must be in [0, 1].
+            import math as _math
+            if _math.isnan(raw_score):
+                logger.warning("classify_stress: sector %s has NaN score, clamping to 0.0", sector)
+                score = 0.0
+            elif _math.isinf(raw_score):
+                logger.warning("classify_stress: sector %s has inf score, clamping to %s",
+                               sector, "1.0" if raw_score > 0 else "0.0")
+                score = 1.0 if raw_score > 0 else 0.0
+            else:
+                score = max(0.0, min(1.0, raw_score))
+            sector_scores[sector] = score
+
             if score < cfg.sector_kill_threshold:
                 sick.append(sector)
             elif score < cfg.sector_reduce_threshold:
@@ -290,10 +398,13 @@ class SectorAllocator:
             }
             total_healthy_weight = sum(healthy_instruments.values())
 
-            if total_healthy_weight > 0:
+            if total_healthy_weight > 1e-8:  # Use epsilon for float comparison
                 for iid in healthy_instruments:
                     share = healthy_instruments[iid] / total_healthy_weight
                     adjusted[iid] += share * weight_killed
+            else:
+                # No healthy sectors to redistribute to — weight is lost (intentional derisking)
+                logger.warning("No healthy sectors for redistribution — %f weight unallocated", weight_killed)
 
         # ── Step 3: Apply sector concentration limits ────────────────
         adjusted = self._apply_concentration_limits(adjusted)
@@ -348,6 +459,8 @@ class SectorAllocator:
 
         adjusted = dict(weights)
         for sector, total_w in sectors_over.items():
+            if total_w <= 1e-8:
+                continue  # Avoid division by zero
             scale = cap / total_w
             for iid in adjusted:
                 if (self._mapper.get_sector(iid) or "UNKNOWN") == sector:

@@ -427,11 +427,18 @@ class BasicLongOnlyPortfolioModel:
         risk_window_days: int = 0
 
         try:
-            factor_exposures, expected_volatility, risk_window_days = self._compute_factor_risk(
+            factor_risk_result = self._compute_factor_risk(
                 as_of_date=as_of_date,
                 members=members,
                 weights_vector=final_weights,
             )
+            if factor_risk_result is None:
+                # _compute_factor_risk signalled insufficient data — use placeholders.
+                factor_exposures = {}
+                expected_volatility = 0.0
+                risk_window_days = 0
+            else:
+                factor_exposures, expected_volatility, risk_window_days = factor_risk_result
         except Exception:  # pragma: no cover - defensive
             # Factor-risk computation is best-effort; failures should not
             # break portfolio construction.
@@ -772,7 +779,8 @@ class BasicLongOnlyPortfolioModel:
             variance += contribution * contribution
 
         if variance <= 0.0:
-            return {}, 0.0, 0
+            logger.warning("Factor risk computation failed: variance=%s", variance)
+            return None  # Signal failure to caller
 
         window_days = (end_date - start_date).days + 1
         volatility = math.sqrt(variance)

@@ -19,15 +19,26 @@ signals (breadth, volatility term structure, credit, etc.) later.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict
+
+import yaml
 
 from apathis.core.database import DatabaseManager
+from apathis.core.logging import get_logger
 from apathis.core.markets import infer_region_from_market_id
 from apathis.fragility.storage import FragilityStorage
 from apathis.regime.storage import RegimeStorage
 from apathis.regime.types import RegimeLabel
+
+logger = get_logger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_SITUATION_CONFIG_PATH = PROJECT_ROOT / "configs" / "meta" / "market_situation.yaml"
 
 
 class MarketSituation(str, Enum):
@@ -52,6 +63,55 @@ class MarketSituationConfig:
     # stressed regime (RISK_OFF/CRISIS) into NEUTRAL/CARRY, *and* fragility
     # remains elevated.
     recovery_requires_stress_transition: bool = False
+
+
+# ── Environment variable mapping for the most critical parameters ────
+_MARKET_SITUATION_ENV_OVERRIDES: Dict[str, tuple[str, type]] = {
+    "recovery_fragility_threshold": ("PROMETHEUS_RECOVERY_FRAGILITY_THRESHOLD", float),
+    "crisis_fragility_override_threshold": ("PROMETHEUS_CRISIS_FRAGILITY_OVERRIDE_THRESHOLD", float),
+}
+
+
+def load_market_situation_config(
+    path: str | Path | None = None,
+) -> MarketSituationConfig:
+    """Load a :class:`MarketSituationConfig` from YAML + env overrides.
+
+    Resolution order (last wins):
+    1. Dataclass defaults
+    2. YAML file at *path* (or ``configs/meta/market_situation.yaml`` if exists)
+    3. Environment variable overrides for critical parameters
+
+    If the YAML file does not exist or is malformed, the dataclass defaults
+    are used without error.
+    """
+    cfg_path = Path(path) if path is not None else DEFAULT_MARKET_SITUATION_CONFIG_PATH
+    kwargs: Dict[str, Any] = {}
+
+    # ── Step 1: Load from YAML if available ──────────────────────────
+    if cfg_path.exists():
+        try:
+            raw = yaml.safe_load(cfg_path.read_text())
+            if isinstance(raw, dict):
+                valid_fields = {f.name for f in MarketSituationConfig.__dataclass_fields__.values()}
+                for key, value in raw.items():
+                    if key in valid_fields and value is not None:
+                        kwargs[key] = value
+                logger.info("Loaded market situation config from %s (%d fields)", cfg_path, len(kwargs))
+        except Exception as exc:
+            logger.warning("Failed to load market situation config from %s: %s", cfg_path, exc)
+
+    # ── Step 2: Environment variable overrides ───────────────────────
+    for field_name, (env_var, field_type) in _MARKET_SITUATION_ENV_OVERRIDES.items():
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            try:
+                kwargs[field_name] = field_type(env_val)
+                logger.info("Market situation config override: %s=%s (from %s)", field_name, kwargs[field_name], env_var)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid env override %s=%r: %s", env_var, env_val, exc)
+
+    return MarketSituationConfig(**kwargs)
 
 
 @dataclass(frozen=True)

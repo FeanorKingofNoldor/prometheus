@@ -19,11 +19,13 @@ from fastapi import APIRouter, Query
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/ops", tags=["operations"])
 
-# Services to monitor
+# Services to monitor.
+# ``name`` is the systemd unit name (used for status queries).
+# ``display_name`` overrides what the frontend shows (defaults to ``name``).
 SERVICES = [
     {"name": "prometheus-daemon", "description": "Market-Aware Orchestration Daemon"},
     {"name": "prometheus-api", "description": "Prometheus Monitoring API (port 8200)"},
-    {"name": "apathis-api", "description": "Apathis Intelligence API (port 8100)"},
+    {"name": "apathis-api", "display_name": "apatheon-api", "description": "Apatheon Intelligence API (port 8100)"},
     {"name": "postgresql", "description": "PostgreSQL Database"},
 ]
 
@@ -297,10 +299,15 @@ async def get_operations_overview(
     days: int = Query(14, ge=1, le=60, description="Number of days of history"),
 ):
     """System-wide operations overview: services + daily summaries."""
-    services = [
-        {**svc, **_service_status(svc["name"])}
-        for svc in SERVICES
-    ]
+    services = []
+    for svc in SERVICES:
+        status = _service_status(svc["name"])
+        merged = {**svc, **status}
+        # Use display_name as the frontend-facing name if set,
+        # overriding the systemd unit name returned by _service_status.
+        if "display_name" in svc:
+            merged["name"] = svc["display_name"]
+        services.append(merged)
     try:
         summaries = _daily_summaries(days)
     except Exception:
