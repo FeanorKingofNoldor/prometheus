@@ -351,26 +351,52 @@ def update_phase(
                 )
             conn.commit()
 
-            cursor.execute(
-                """
-                SELECT run_id,
-                       as_of_date,
-                       region,
-                       phase,
-                       error,
-                       created_at,
-                       updated_at,
-                       phase_started_at,
-                       phase_completed_at
-                FROM engine_runs
-                WHERE run_id = %s
-                """,
-                (run_id,),
-            )
-            new_row = cursor.fetchone()
-            if new_row is None:  # pragma: no cover - defensive
-                raise EngineRunStateError(f"Engine run {run_id!r} disappeared after update")
-            return _row_to_engine_run(new_row)
+            # Re-read the updated row. If this SELECT fails, the UPDATE
+            # already committed — log the error and return a synthetic
+            # snapshot so callers aren't confused by an exception after a
+            # successful phase transition.
+            try:
+                cursor.execute(
+                    """
+                    SELECT run_id,
+                           as_of_date,
+                           region,
+                           phase,
+                           error,
+                           created_at,
+                           updated_at,
+                           phase_started_at,
+                           phase_completed_at
+                    FROM engine_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                new_row = cursor.fetchone()
+                if new_row is None:  # pragma: no cover - defensive
+                    raise EngineRunStateError(f"Engine run {run_id!r} disappeared after update")
+                return _row_to_engine_run(new_row)
+            except EngineRunStateError:
+                raise
+            except Exception:
+                logger.exception(
+                    "update_phase: UPDATE committed but re-read failed for run_id=%s new_phase=%s",
+                    run_id, new_phase.value,
+                )
+                # Return a best-effort snapshot reflecting what we wrote.
+                from datetime import datetime as _dt
+                now = _dt.now()
+                return EngineRun(
+                    run_id=current.run_id,
+                    as_of_date=current.as_of_date,
+                    region=current.region,
+                    phase=new_phase,
+                    error=error or {},
+                    created_at=current.created_at,
+                    updated_at=now,
+                    phase_started_at=now,
+                    phase_completed_at=now if new_phase in {RunPhase.COMPLETED, RunPhase.FAILED} else None,
+                )
         finally:
             cursor.close()
 

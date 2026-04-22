@@ -212,4 +212,29 @@ def load_conviction_config(
             except (ValueError, TypeError) as exc:
                 logger.warning("Invalid env override %s=%r: %s", env_var, env_val, exc)
 
-    return ConvictionDefaults(**kwargs)
+    result = ConvictionDefaults(**kwargs)
+
+    # ── Step 3: Range validation ────────────────────────────────────
+    errors: list[str] = []
+    if not (0.0 <= result.hard_stop_pct <= 1.0):
+        errors.append(f"hard_stop_pct must be in [0, 1], got {result.hard_stop_pct}")
+    if result.build_rate <= 0:
+        errors.append(f"build_rate must be positive, got {result.build_rate}")
+    if result.decay_rate <= 0:
+        errors.append(f"decay_rate must be positive, got {result.decay_rate}")
+    if result.entry_credit < 0:
+        errors.append(f"entry_credit must be non-negative, got {result.entry_credit}")
+    if result.score_cap <= 0:
+        errors.append(f"score_cap must be positive, got {result.score_cap}")
+    if result.scale_up_days < 1:
+        errors.append(f"scale_up_days must be >= 1, got {result.scale_up_days}")
+    if not (0.0 <= result.entry_weight_fraction <= 1.0):
+        errors.append(f"entry_weight_fraction must be in [0, 1], got {result.entry_weight_fraction}")
+    if errors:
+        for err in errors:
+            logger.error("ConvictionDefaults validation error: %s", err)
+        raise ValueError(
+            f"ConvictionDefaults validation failed: {'; '.join(errors)}"
+        )
+
+    return result

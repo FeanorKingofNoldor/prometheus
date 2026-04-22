@@ -13,8 +13,10 @@ Key features:
 
 from __future__ import annotations
 
+import math
 import os
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
@@ -26,6 +28,15 @@ logger = get_logger(__name__)
 
 # Minimum absolute quantity before an order is emitted.
 MIN_ABS_QUANTITY: float = 1e-6
+
+# Duplicate order prevention: if the same (instrument_id, side) was
+# ordered within this window (seconds), the order is suppressed.
+_DEDUP_WINDOW_SECONDS: float = 60.0
+
+# Module-level dedup ledger: {(instrument_id, side): timestamp}.
+# Stored as a mutable attribute on plan_orders so tests can reliably
+# clear it regardless of how many module copies exist.
+_recent_orders: Dict[Tuple[str, str], float] = {}
 
 # Compiled defaults — kept as constants for backward compatibility.
 _COMPILED_MIN_REBALANCE_PCT: float = 0.02
@@ -131,6 +142,14 @@ def plan_orders(
         target_qty = float(target_positions.get(instrument_id, 0.0))
         delta = target_qty - current_qty
 
+        # Reject NaN/inf deltas that would produce invalid orders.
+        if math.isnan(delta) or math.isinf(delta):
+            logger.warning(
+                "OrderPlanner: skipping instrument %s — delta is %s (current=%s, target=%s)",
+                instrument_id, delta, current_qty, target_qty,
+            )
+            continue
+
         if abs(delta) < min_abs_quantity:
             continue
 
@@ -158,6 +177,30 @@ def plan_orders(
                 # No price available — fall back to MARKET.
                 effective_type = OrderType.MARKET
 
+        # Guard against NaN or non-positive limit prices from bad inputs.
+        if limit_price is not None and (math.isnan(limit_price) or limit_price <= 0):
+            logger.warning(
+                "OrderPlanner: invalid limit_price=%s for %s — falling back to MARKET",
+                limit_price, instrument_id,
+            )
+            effective_type = OrderType.MARKET
+            limit_price = None
+
+        # Duplicate order prevention: skip if the same (instrument, side)
+        # was ordered within the dedup window. The dedup state is stored
+        # as a function attribute so it travels with the function reference
+        # even if the module is reloaded.
+        dedup_key = (instrument_id, side.value)
+        now_ts = time.monotonic()
+        dedup_ledger = plan_orders._dedup_ledger  # type: ignore[attr-defined]
+        last_ts = dedup_ledger.get(dedup_key)
+        if last_ts is not None and (now_ts - last_ts) < _DEDUP_WINDOW_SECONDS:
+            logger.warning(
+                "OrderPlanner: suppressing duplicate order for %s %s (last ordered %.1fs ago)",
+                instrument_id, side.value, now_ts - last_ts,
+            )
+            continue
+
         order = Order(
             order_id=generate_uuid(),
             instrument_id=instrument_id,
@@ -167,6 +210,7 @@ def plan_orders(
             limit_price=limit_price,
         )
         orders.append(order)
+        dedup_ledger[dedup_key] = now_ts
 
     # Sort: sells before buys to free cash first.
     if sells_first:
@@ -200,3 +244,8 @@ def plan_orders(
         )
 
     return orders
+
+
+# Attach the dedup ledger as a function attribute so it can be reliably
+# cleared in tests regardless of module reloading.
+plan_orders._dedup_ledger = _recent_orders  # type: ignore[attr-defined]

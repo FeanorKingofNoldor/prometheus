@@ -53,7 +53,6 @@ export function TopBar() {
   useEffect(() => {
     if (sync.isSuccess && sync.data) {
       const d = sync.data as SyncResult;
-      console.log("[prometheus/sync] Sync response:", d);
       const parts: string[] = [];
       if (d.job_id) parts.push(`Job: ${d.job_id}`);
       if (lastSyncTarget) parts.push(`Target: ${lastSyncTarget}`);
@@ -150,11 +149,6 @@ export function TopBar() {
               ? requestedTarget
               : DEFAULT_SYNC_PORTFOLIO_ID;
 
-            console.log("[prometheus/sync] Triggering sync...", {
-              requestedTarget,
-              syncTarget,
-              sources: SYNC_SOURCES,
-            });
             setLastSyncTarget(syncTarget);
             if (syncTarget !== requestedTarget) {
               setSyncDetail(`Syncing ${syncTarget} (active ${requestedTarget} is non-IBKR)`);

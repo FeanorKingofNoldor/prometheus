@@ -128,12 +128,9 @@ class PredictionScorecard:
         params.append(max_decisions)
 
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, tuple(params))
                 decisions = cursor.fetchall()
-            finally:
-                cursor.close()
 
         logger.info(
             "Scorecard: loaded %d ASSESSMENT decisions (horizon=%dd)",
@@ -278,12 +275,9 @@ class PredictionScorecard:
               AND i.instrument_id NOT LIKE 'SYNTH_%%'
         """
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 cursor.execute(sql)
                 return {str(r[0]): str(r[1]) for r in cursor.fetchall()}
-            finally:
-                cursor.close()
 
     def _compute_forward_returns(
         self,
@@ -321,13 +315,10 @@ class PredictionScorecard:
             batch: Dict[str, tuple] = {}
             try:
                 with self.db_manager.get_historical_connection() as conn:
-                    cursor = conn.cursor()
-                    try:
+                    with conn.cursor() as cursor:
                         cursor.execute(sql, (instrument_ids, entry_date, exit_date))
                         for inst_id, entry_px, exit_px in cursor.fetchall():
                             batch[str(inst_id)] = (float(entry_px), float(exit_px))
-                    finally:
-                        cursor.close()
             except Exception:
                 pass
             self._price_cache[cache_key] = batch

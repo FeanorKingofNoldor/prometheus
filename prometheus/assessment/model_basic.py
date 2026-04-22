@@ -457,7 +457,7 @@ class BasicAssessmentModel(AssessmentModel):
                         for inst_id, sector in cur.fetchall():
                             self._instrument_sectors[inst_id] = sector
             except Exception:
-                pass
+                logger.debug("Failed to load instrument sectors", exc_info=True)
 
         # ── Load sector guidance breadth (corporate guidance signal) ──
         self._sector_guidance: Dict[str, float] = {}  # sector → pct_lowered
@@ -481,7 +481,7 @@ class BasicAssessmentModel(AssessmentModel):
                             if total >= 3:  # Need at least 3 data points
                                 self._sector_guidance[sector] = counts["lowered"] / total
             except Exception:
-                pass  # Table may not exist yet
+                logger.debug("Failed to load sector guidance (table may not exist yet)", exc_info=True)
 
         # ── Load cross-sectional embedding scores (if available) ────
         self._embedding_scores: Dict[str, object] = {}
@@ -500,7 +500,7 @@ class BasicAssessmentModel(AssessmentModel):
                         sum(s.cosine_distance for s in self._embedding_scores.values()) / len(self._embedding_scores),
                     )
             except Exception:
-                pass  # Embeddings not available — skip silently
+                logger.debug("Failed to load cross-sectional embedding scores", exc_info=True)
 
         # ── Score each instrument from cache ────────────────────────
         scores: Dict[str, InstrumentScore] = {}

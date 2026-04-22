@@ -296,3 +296,44 @@ def _install_apathis_stubs() -> None:
 
 # Install stubs at import time (before test module collection).
 _install_apathis_stubs()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_order_dedup_state():
+    """Clear the order planner's dedup ledger before each test.
+
+    The dedup state is stored as a function attribute (_dedup_ledger) on
+    plan_orders. We must clear it on ALL copies of the function — both the
+    one in the current sys.modules entry and any stale references held by
+    other test modules that imported plan_orders before a module reload.
+    """
+    import gc
+    import sys
+
+    def _clear():
+        # Clear via module-level dict (primary location)
+        for _name, mod in list(sys.modules.items()):
+            r = getattr(mod, "_recent_orders", None)
+            if isinstance(r, dict):
+                r.clear()
+
+        # Clear _dedup_ledger on ALL plan_orders function objects. This
+        # handles the case where test_execution_api_persistence pops and
+        # reimports the order_planner module, creating a second function
+        # object with its own _dedup_ledger. Other test files still hold
+        # a reference to the original function.
+        for obj in gc.get_objects():
+            try:
+                if callable(obj) and getattr(obj, "__name__", None) == "plan_orders":
+                    ledger = getattr(obj, "_dedup_ledger", None)
+                    if isinstance(ledger, dict):
+                        ledger.clear()
+            except (TypeError, ReferenceError):
+                pass
+
+    _clear()
+    yield
+    _clear()

@@ -1338,6 +1338,8 @@ class MarketAwareDaemon:
                             f"{latest_exec.error_message}"
                         ),
                     )
+                    # Clean up retry_backoff entry to avoid memory leak.
+                    self.retry_backoff.pop(latest_exec.execution_id, None)
                     continue
                 # Retry: increment attempt counter on the existing record
                 increment_job_execution_attempt(self.db_manager, latest_exec.execution_id)
@@ -1624,6 +1626,8 @@ class MarketAwareDaemon:
 
     def _run_cycle(self, as_of_date: date) -> None:
         """Execute one orchestration cycle across all markets."""
+        if self._shutdown_event.is_set():
+            return
         now = datetime.now(timezone.utc)
 
         # Check for timeouts

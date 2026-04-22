@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from apathis.core.ids import generate_uuid
 from apathis.core.logging import get_logger
@@ -116,7 +116,7 @@ def main() -> int:
                 quantity=test_quantity,
                 metadata={
                     "source": "test_ibkr_paper",
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )
 

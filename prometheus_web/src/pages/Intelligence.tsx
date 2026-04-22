@@ -157,7 +157,6 @@ export default function Intelligence() {
   useEffect(() => {
     if (briefId) {
       // Brief ID from dashboard click — could be used for a detail modal in the future
-      console.log("[Intelligence] brief param:", briefId);
     }
   }, [briefId]);
 

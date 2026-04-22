@@ -499,8 +499,7 @@ class BacktestRunner:
         """
 
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 cursor.execute(
                     sql,
                     (
@@ -513,8 +512,6 @@ class BacktestRunner:
                     ),
                 )
                 conn.commit()
-            finally:
-                cursor.close()
 
     def _insert_daily_equity(
         self,
@@ -537,8 +534,7 @@ class BacktestRunner:
         """
 
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 cursor.execute(
                     sql,
                     (
@@ -550,8 +546,6 @@ class BacktestRunner:
                     ),
                 )
                 conn.commit()
-            finally:
-                cursor.close()
 
     def _insert_trades_for_fills(
         self,
@@ -580,8 +574,7 @@ class BacktestRunner:
         """
 
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 for fill in fills:
                     metadata = Json(
                         {
@@ -605,8 +598,6 @@ class BacktestRunner:
                         ),
                     )
                 conn.commit()
-            finally:
-                cursor.close()
 
     def _update_backtest_run_metrics(self, run_id: str, metrics: Dict[str, float]) -> None:
         """Update ``backtest_runs.metrics_json`` for ``run_id``."""
@@ -618,12 +609,9 @@ class BacktestRunner:
         """
 
         with self.db_manager.get_runtime_connection() as conn:
-            cursor = conn.cursor()
-            try:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, (Json(metrics), run_id))
                 conn.commit()
-            finally:
-                cursor.close()
 
     def _compute_exposure_aggregates(
         self,

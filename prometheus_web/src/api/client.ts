@@ -3,7 +3,7 @@ const BASE = "/api";
 /* ── Logging helpers ────────────────────────────────────── */
 
 const LOG_PREFIX = "[prometheus/api]";
-const LOG_ENABLED = true; // flip to false to silence
+const LOG_ENABLED = import.meta.env.DEV;
 
 function logReq(method: string, path: string, body?: unknown) {
   if (!LOG_ENABLED) return;

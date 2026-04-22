@@ -66,6 +66,7 @@ def _load_assessment_confidences(
     try:
         db_manager = get_db_manager()
     except Exception:
+        logger.debug("_load_assessment_confidences: failed to get db_manager", exc_info=True)
         return {}
 
     sql = """

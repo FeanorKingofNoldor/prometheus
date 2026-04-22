@@ -32,7 +32,7 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -323,13 +323,13 @@ def run_equity_grid(
 
     # Save results
     if output_path is None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_path = f"results/grid_search/equity_grid_{ts}.json"
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "n_configs": len(results),
         "best": {
             "cagr": round(results[0].cagr, 6) if results else 0,
@@ -519,13 +519,13 @@ def run_options_grid(
 
     # Save results
     if output_path is None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_path = f"results/grid_search/options_grid_{ts}.json"
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "equity_nav_path": equity_nav_path,
         "n_configs": len(results),
         "best": {
