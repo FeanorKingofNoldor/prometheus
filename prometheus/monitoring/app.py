@@ -3,8 +3,13 @@
 FastAPI application that serves all monitoring, visualization, control,
 and meta-orchestration APIs for the Prometheus C2 UI.
 
+**SECURITY NOTE**: This API has NO authentication or authorization layer.
+It is designed for localhost-only access by the operator and by the
+Prometheus C2 UI. Do NOT expose it to the public internet without placing
+a reverse proxy (e.g., Caddy, nginx) with authentication in front.
+
 Run with:
-    uvicorn prometheus.monitoring.app:app --reload --host 0.0.0.0 --port 8000
+    uvicorn prometheus.monitoring.app:app --reload --host 127.0.0.1 --port 8000
 """
 
 from __future__ import annotations
@@ -53,14 +58,23 @@ app = FastAPI(
 # CORS Configuration
 # ============================================================================
 
-# Allow Godot client to connect from localhost during development
+# Allow Godot client to connect from localhost during development.
+# Origins can be overridden via PROMETHEUS_CORS_ORIGINS (comma-separated).
+_DEFAULT_ORIGINS = [
+    "http://localhost:8000",
+    "http://localhost:8100",
+    "http://localhost:8200",
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:8100",
+    "http://127.0.0.1:8200",
+    "godot://",
+]
+_cors_origins_raw = os.environ.get("PROMETHEUS_CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] if _cors_origins_raw else _DEFAULT_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:*",
-        "http://127.0.0.1:*",
-        "godot://",  # For Godot client
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -205,6 +219,22 @@ async def health_check() -> dict:
     except Exception as exc:
         pipeline_info = {"ok": False, "error": str(exc)[:200]}
     checks["pipeline"] = pipeline_info
+
+    # --- Apatheon (Apathis API) probe — advisory, does not flip overall_ok ---
+    apatheon_info: dict = {"ok": True}
+    try:
+        import httpx
+
+        r = httpx.get("http://127.0.0.1:8100/health", timeout=2)
+        if r.status_code == 200:
+            apatheon_info["status"] = "ok"
+        else:
+            apatheon_info["ok"] = False
+            apatheon_info["status"] = f"http {r.status_code}"
+    except Exception as exc:
+        apatheon_info["ok"] = False
+        apatheon_info["status"] = f"unreachable: {str(exc)[:120]}"
+    checks["apatheon"] = apatheon_info
 
     body = {
         "status": "healthy" if overall_ok else "unhealthy",
@@ -406,6 +436,13 @@ async def startup_event() -> None:
     """Initialize connections and resources on startup."""
     global _intel_scheduler_task, _trading_scheduler_task
     install_buffer()
+
+    # Security boundary warning
+    logger.warning(
+        "Prometheus API has NO authentication — intended for localhost-only access. "
+        "Do NOT bind to 0.0.0.0 in production without a reverse proxy with auth."
+    )
+
     enable_schedulers = _env_bool("PROMETHEUS_ENABLE_INTERNAL_SCHEDULERS", default=True)
 
     if not enable_schedulers:

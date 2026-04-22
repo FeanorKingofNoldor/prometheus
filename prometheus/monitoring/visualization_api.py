@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from apathis.core.database import get_db_manager
 from fastapi import APIRouter, HTTPException, Path, Query
+from psycopg2 import sql as psql
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api", tags=["visualization"])
@@ -381,8 +382,11 @@ async def get_runtime_table(
         try:
             # Basic snapshot; for now we do not apply as_of_date filtering
             # generically as not all tables have an as_of_date column.
-            sql = f"SELECT * FROM {table} LIMIT %s"
-            cursor.execute(sql, (limit,))
+            # NOTE: `table` is already validated against RUNTIME_TABLE_WHITELIST
+            # above, so f-string interpolation is safe. We additionally use
+            # psycopg2 sql.Identifier for defense-in-depth.
+            stmt = psql.SQL("SELECT * FROM {} LIMIT %s").format(psql.Identifier(table))
+            cursor.execute(stmt, (limit,))
             fetched = cursor.fetchall()
             if not fetched:
                 return DBTableData(table_name=table, rows=[], total_count=0)
@@ -420,8 +424,10 @@ async def get_historical_table(
         try:
             # Naive implementation: simple LIMIT query. Later we can add
             # table-specific WHERE clauses based on schema knowledge.
-            sql = f"SELECT * FROM {table} LIMIT %s"
-            cursor.execute(sql, (limit,))
+            # NOTE: `table` is already validated against HISTORICAL_TABLE_WHITELIST
+            # above. psycopg2 sql.Identifier used for defense-in-depth.
+            stmt = psql.SQL("SELECT * FROM {} LIMIT %s").format(psql.Identifier(table))
+            cursor.execute(stmt, (limit,))
             fetched = cursor.fetchall()
             if not fetched:
                 return DBTableData(table_name=table, rows=[], total_count=0)

@@ -700,7 +700,12 @@ def _run_health_check(
                 logger.warning("HEALTH CHECK [%s %s]: %s", market_id, as_of_date, issue)
 
             # Write health report file
-            report_dir = Path("/home/feanor/coding/prometheus/data/health_reports")
+            report_dir = Path(
+                os.environ.get(
+                    "PROMETHEUS_HEALTH_REPORT_DIR",
+                    str(Path(__file__).resolve().parents[2] / "data" / "health_reports"),
+                )
+            )
             report_dir.mkdir(parents=True, exist_ok=True)
             report_path = report_dir / f"health_{as_of_date}_{market_id}.txt"
             report_path.write_text(

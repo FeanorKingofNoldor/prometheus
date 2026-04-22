@@ -13,9 +13,11 @@ EnvironmentFile=/etc/sysconfig/prometheus-daemon
 
 Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apathis:/home/feanor/coding/prometheus
 
+# SECURITY: Bind to 127.0.0.1 only — the API has no authentication.
+# If you need external access, put a reverse proxy with auth in front.
 ExecStart=/usr/bin/python3.14 \
     -m uvicorn prometheus.monitoring.app:app \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port 8200 \
     --workers 2
 
