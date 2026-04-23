@@ -91,8 +91,18 @@ class CrisisAlphaConfig:
     exit_sick_count: int = 2           # Close when sick count drops below this
     cooldown_days: int = 30            # Don't re-enter within 30 days
 
-    # Instrument
+    # Instruments
     underlying: str = "SPY"
+
+    # ── Sector-specific puts (targeted on weakest sectors) ────────
+    # Instead of only buying broad SPY puts, also buy puts on the
+    # individual sector ETFs with the worst SHI scores. This gives
+    # concentrated exposure where the damage is actually happening.
+    sector_puts_enabled: bool = True
+    sector_puts_max_sectors: int = 3          # target the N weakest sectors
+    sector_puts_shi_threshold: float = 0.20   # only sectors below this
+    sector_puts_nav_pct_per_sector: float = 0.025  # 2.5% NAV each
+    sector_puts_otm_pct: float = 0.05         # 5% OTM
 
 
 # ── Environment variable mapping for the most critical parameters ────
@@ -103,6 +113,9 @@ _CRISIS_ALPHA_ENV_OVERRIDES: Dict[str, tuple[str, type]] = {
     "flash_nav_pct": ("PROMETHEUS_CRISIS_FLASH_NAV_PCT", float),
     "profit_target_multiple": ("PROMETHEUS_CRISIS_PROFIT_TARGET", float),
     "cooldown_days": ("PROMETHEUS_CRISIS_COOLDOWN_DAYS", int),
+    "sector_puts_enabled": ("PROMETHEUS_CRISIS_SECTOR_PUTS_ENABLED", lambda v: v.lower() in ("1", "true", "yes")),
+    "sector_puts_max_sectors": ("PROMETHEUS_CRISIS_SECTOR_PUTS_MAX", int),
+    "sector_puts_nav_pct_per_sector": ("PROMETHEUS_CRISIS_SECTOR_PUTS_NAV_PCT", float),
 }
 
 
@@ -161,6 +174,9 @@ def load_crisis_alpha_config(
         "flash_drop_threshold": (0.0, 1.0),
         "otm_pct": (0.0, 0.50),
         "profit_target_multiple": (1.0, 20.0),
+        "sector_puts_nav_pct_per_sector": (0.0, 0.10),
+        "sector_puts_otm_pct": (0.0, 0.30),
+        "sector_puts_shi_threshold": (0.0, 1.0),
     }
     for field_name, (lo, hi) in _range_checks.items():
         val = getattr(config, field_name)
@@ -272,6 +288,7 @@ def generate_crisis_trades(
     nav: float,
     existing_crisis_position: bool = False,
     config: CrisisAlphaConfig | None = None,
+    sector_prices: Dict[str, float] | None = None,
 ) -> List[Dict]:
     """Generate trade directives for the crisis alpha strategy.
 
@@ -334,6 +351,13 @@ def generate_crisis_trades(
             signal_result.target_nav_pct * 100, budget,
         )
 
+        # ── Sector-specific puts on the weakest sectors ──────────
+        if config.sector_puts_enabled:
+            sector_trades = _generate_sector_puts(
+                signal_result, nav, config, sector_prices,
+            )
+            trades.extend(sector_trades)
+
     elif signal_result.signal == CrisisSignal.NONE and existing_crisis_position:
         # Exit signal: sick count dropped below threshold
         if signal_result.sick_count < config.exit_sick_count:
@@ -351,5 +375,123 @@ def generate_crisis_trades(
                 "Crisis alpha EXIT: %d sectors sick (below %d threshold)",
                 signal_result.sick_count, config.exit_sick_count,
             )
+
+    return trades
+
+
+# ── Sector-specific put generation ────────────────────────────────────
+
+
+# Sector ETF → underlying symbol for options (strip .US suffix)
+_SECTOR_ETF_TO_OPTION_SYMBOL: Dict[str, str] = {
+    "XLK.US": "XLK",
+    "XLF.US": "XLF",
+    "XLV.US": "XLV",
+    "XLI.US": "XLI",
+    "XLY.US": "XLY",
+    "XLP.US": "XLP",
+    "XLE.US": "XLE",
+    "XLU.US": "XLU",
+    "XLRE.US": "XLRE",
+    "XLC.US": "XLC",
+    "XLB.US": "XLB",
+}
+
+
+def _generate_sector_puts(
+    signal_result: CrisisAlphaSignalResult,
+    nav: float,
+    config: CrisisAlphaConfig,
+    sector_prices: Dict[str, float] | None = None,
+) -> List[Dict]:
+    """Generate put trades on the weakest individual sector ETFs.
+
+    Instead of only buying broad SPY puts, this targets the specific
+    sectors identified by SHI as most damaged. Concentrated exposure
+    where the pain actually is, cheaper premium (sector ETFs have
+    lower IV than SPY during sector-specific stress).
+
+    Parameters
+    ----------
+    signal_result : CrisisAlphaSignalResult
+        Must have sick_sectors and sector_scores populated.
+    nav : float
+        Portfolio NAV for sizing.
+    config : CrisisAlphaConfig
+        Strategy configuration.
+    sector_prices : dict, optional
+        ETF instrument_id -> current price. If None, sector puts are skipped.
+    """
+    from apathis.sector.health import SECTOR_NAME_TO_ETF
+
+    if not sector_prices:
+        logger.debug("Sector puts: no sector prices provided, skipping")
+        return []
+
+    trades: List[Dict] = []
+
+    # Rank sick sectors by SHI score (worst first)
+    sector_ranking = [
+        (sector, score)
+        for sector, score in signal_result.sector_scores.items()
+        if score < config.sector_puts_shi_threshold
+    ]
+    sector_ranking.sort(key=lambda x: x[1])
+
+    # Take the N weakest
+    targets = sector_ranking[:config.sector_puts_max_sectors]
+
+    for sector_name, shi_score in targets:
+        etf_id = SECTOR_NAME_TO_ETF.get(sector_name)
+        if not etf_id:
+            continue
+
+        option_symbol = _SECTOR_ETF_TO_OPTION_SYMBOL.get(etf_id)
+        if not option_symbol:
+            continue
+
+        etf_price = sector_prices.get(etf_id)
+        if not etf_price or etf_price <= 0:
+            continue
+
+        budget = nav * config.sector_puts_nav_pct_per_sector
+        strike = round(etf_price * (1 - config.sector_puts_otm_pct))
+
+        # Estimate premium (~3% of strike for sector ETF puts)
+        est_premium_pct = 0.03
+        premium_per_contract = strike * est_premium_pct * 100
+        if premium_per_contract <= 0:
+            continue
+        n_contracts = max(1, int(budget / premium_per_contract))
+
+        trades.append({
+            "strategy": "crisis_alpha_sector",
+            "action": "OPEN",
+            "symbol": option_symbol,
+            "right": "P",
+            "strike": strike,
+            "quantity": n_contracts,
+            "dte_target": (config.target_dte_min + config.target_dte_max) // 2,
+            "reason": (
+                f"SECTOR PUT: {sector_name} SHI={shi_score:.2f} "
+                f"(below {config.sector_puts_shi_threshold}). "
+                f"Buying {n_contracts} {option_symbol} puts @ {strike} "
+                f"(${budget:,.0f}, {config.sector_puts_nav_pct_per_sector:.1%} NAV)"
+            ),
+            "metadata": {
+                "signal": signal_result.signal.value,
+                "sector": sector_name,
+                "etf": etf_id,
+                "shi_score": shi_score,
+                "nav_pct": config.sector_puts_nav_pct_per_sector,
+                "budget": budget,
+            },
+        })
+
+        logger.info(
+            "Sector put: %s (SHI=%.2f) — buying %d %s puts @ %d (%.1f%% NAV = $%,.0f)",
+            sector_name, shi_score, n_contracts, option_symbol, strike,
+            config.sector_puts_nav_pct_per_sector * 100, budget,
+        )
 
     return trades

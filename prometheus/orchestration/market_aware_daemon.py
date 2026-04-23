@@ -537,10 +537,18 @@ def execute_job(
 
             if run.phase == RunPhase.BOOKS_DONE:
                 # Discover the correct live portfolio for this region.
-                # The allocator writes to "{REGION}_EQ_ALLOCATOR" (e.g. US_EQ_ALLOCATOR).
-                # Fall back to a DB scan if needed so we never silently skip.
+                # The books phase saves target_portfolios with portfolio_id = book_id
+                # from policy.yaml (e.g. US_EQ_LONG_V12). Read it from the policy
+                # so we always execute against the CURRENT book, not a stale allocator.
+                from prometheus.meta.policy import load_meta_policies
                 region = run.region.upper()
-                portfolio_id = f"{region}_EQ_ALLOCATOR"
+                market_id = f"{region}_EQ"
+                policies = load_meta_policies()
+                market_policy = policies.get(market_id)
+                if market_policy is not None:
+                    portfolio_id = market_policy.default.book_id
+                else:
+                    portfolio_id = f"{region}_EQ_LONG_V12"
                 exec_cfg = ExecutionConfig(mode=options_mode, portfolio_id=portfolio_id)
                 run_execution_for_run(db_manager, run, execution_config=exec_cfg)
             return True, None
