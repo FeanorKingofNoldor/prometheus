@@ -56,7 +56,12 @@ class JournalEntry:
 
 
 def ensure_trade_journal_table(db_manager: DatabaseManager) -> None:
-    """Create trade_journal table if it doesn't exist."""
+    """Create trade_journal table if it doesn't exist.
+
+    NOTE: This table is created at runtime rather than via Alembic migration
+    because it's a monitoring/meta table that should self-provision on first use.
+    Core schema tables (orders, fills, positions) use Alembic migrations.
+    """
     with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""

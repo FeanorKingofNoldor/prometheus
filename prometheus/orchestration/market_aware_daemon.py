@@ -1211,6 +1211,9 @@ class MarketAwareDaemon:
         if not hasattr(self, "_zombie_reap_done"):
             self._zombie_reap_done: set = set()
         self._zombie_reap_done.add(zombie_key)
+        # Prune old entries to prevent unbounded growth
+        if len(self._zombie_reap_done) > 60:
+            self._zombie_reap_done = set(sorted(self._zombie_reap_done)[-30:])
 
     def _reap_orphaned_threads(self) -> None:
         """Reap any orphaned (timed-out) threads that have finally exited.
@@ -1484,8 +1487,8 @@ class MarketAwareDaemon:
 
         # If as_of_date has already been rolled forward to today (e.g. by the
         # midnight date-change detection), there is nothing to catch up.
-        if as_of_date == date.today():
-            return
+        if as_of_date == now_local_dt.date():
+            return  # Already on today's date
 
         # Check if we already did a catch-up today
         catchup_key = f"catchup_{as_of_date}"
@@ -1515,6 +1518,9 @@ class MarketAwareDaemon:
             if not hasattr(self, "_catchup_done"):
                 self._catchup_done: set = set()
             self._catchup_done.add(catchup_key)
+            # Prune old entries to prevent unbounded growth
+            if len(self._catchup_done) > 60:
+                self._catchup_done = set(sorted(self._catchup_done)[-30:])
             return
 
         # Pipeline didn't run for the last trading day — force catch-up.
@@ -1623,6 +1629,9 @@ class MarketAwareDaemon:
         if not hasattr(self, "_catchup_done"):
             self._catchup_done = set()
         self._catchup_done.add(catchup_key)
+        # Prune old entries to prevent unbounded growth
+        if len(self._catchup_done) > 60:
+            self._catchup_done = set(sorted(self._catchup_done)[-30:])
 
     def _run_cycle(self, as_of_date: date) -> None:
         """Execute one orchestration cycle across all markets."""

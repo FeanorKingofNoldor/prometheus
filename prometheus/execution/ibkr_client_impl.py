@@ -482,6 +482,8 @@ class IbkrClientImpl(IbkrClient):
 
     def _create_ib_order(self, order: Order) -> IbOrder:
         """Create IBKR order from Prometheus order."""
+        if order.quantity <= 0:
+            raise ValueError(f"Order quantity must be positive, got {order.quantity}")
         action = "BUY" if order.side == OrderSide.BUY else "SELL"
 
         if order.order_type == OrderType.LIMIT:

@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 
 from apathis.core.database import DatabaseManager
 from apathis.core.logging import get_logger
+from psycopg2 import sql as psql
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)
@@ -480,7 +481,9 @@ class BacktestOptionsWriter:
             try:
                 for table in tables:
                     cursor.execute(
-                        f"DELETE FROM {table} WHERE run_id = %s",
+                        psql.SQL("DELETE FROM {} WHERE run_id = %s").format(
+                            psql.Identifier(table),
+                        ),
                         (self._run_id,),
                     )
                 conn.commit()
