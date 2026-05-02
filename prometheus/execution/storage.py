@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Mapping, Sequence
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 from prometheus.execution.broker_interface import Fill, Order, OrderStatus, Position

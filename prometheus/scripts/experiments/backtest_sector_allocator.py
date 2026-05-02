@@ -28,10 +28,10 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Set
 
 import numpy as np
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.sector.health import SectorHealthEngine
-from apathis.sector.mapper import SectorMapper
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.sector.health import SectorHealthEngine
+from apatheon.sector.mapper import SectorMapper
 
 from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig
 

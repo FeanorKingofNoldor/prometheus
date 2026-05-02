@@ -53,8 +53,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from apathis.core.logging import get_logger
-from apathis.sector.health import SECTOR_ETF_MAP
+from apatheon.core.logging import get_logger
+from apatheon.sector.health import SECTOR_ETF_MAP
 
 from prometheus.execution.market_data import (
     MarketDataService,

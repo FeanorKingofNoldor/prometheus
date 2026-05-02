@@ -25,9 +25,9 @@ import argparse
 import sys
 from typing import Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.historical_holidays import (
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.historical_holidays import (
     HAS_PANDAS_MARKET_CALENDARS,
     MARKET_TO_CALENDAR,
     backfill_historical_holidays,

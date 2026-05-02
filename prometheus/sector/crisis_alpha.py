@@ -36,7 +36,7 @@ from typing import Any, Dict, List
 
 import yaml
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -422,7 +422,7 @@ def _generate_sector_puts(
     sector_prices : dict, optional
         ETF instrument_id -> current price. If None, sector puts are skipped.
     """
-    from apathis.sector.health import SECTOR_NAME_TO_ETF
+    from apatheon.sector.health import SECTOR_NAME_TO_ETF
 
     if not sector_prices:
         logger.debug("Sector puts: no sector prices provided, skipping")

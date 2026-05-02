@@ -20,7 +20,7 @@ import json
 from datetime import date
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 _ALLOWED_FREQUENCIES = ("ANNUAL", "QUARTERLY")
 

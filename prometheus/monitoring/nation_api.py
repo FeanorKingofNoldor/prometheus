@@ -9,86 +9,86 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.nation.chokepoints import (
+from apatheon.core.database import get_db_manager
+from apatheon.nation.chokepoints import (
     get_chokepoint as _get_chokepoint,
 )
-from apathis.nation.chokepoints import (
+from apatheon.nation.chokepoints import (
     get_chokepoints as _get_chokepoints,
 )
-from apathis.nation.chokepoints import (
+from apatheon.nation.chokepoints import (
     update_status as _update_chokepoint_status,
 )
-from apathis.nation.conflicts import (
+from apatheon.nation.conflicts import (
     get_all_conflicts as _get_all_conflicts,
 )
-from apathis.nation.conflicts import (
+from apatheon.nation.conflicts import (
     get_conflict as _get_conflict,
 )
-from apathis.nation.conflicts import (
+from apatheon.nation.conflicts import (
     get_nation_conflicts as _get_nation_conflicts,
 )
-from apathis.nation.contagion import get_dependencies_directed
-from apathis.nation.flight_tracker import (
+from apatheon.nation.contagion import get_dependencies_directed
+from apatheon.nation.flight_tracker import (
     get_flight_count as _get_flight_count,
 )
-from apathis.nation.flight_tracker import (
+from apatheon.nation.flight_tracker import (
     get_flights as _get_flights,
 )
-from apathis.nation.industries import (
+from apatheon.nation.industries import (
     get_all_industries as _get_all_industries,
 )
-from apathis.nation.industries import (
+from apatheon.nation.industries import (
     get_industry_categories as _get_industry_categories,
 )
-from apathis.nation.industries import (
+from apatheon.nation.industries import (
     get_industry_names as _get_industry_names,
 )
-from apathis.nation.industries import (
+from apatheon.nation.industries import (
     get_industry_nations as _get_industry_nations,
 )
-from apathis.nation.industries import (
+from apatheon.nation.industries import (
     get_nation_industries as _get_nation_industries,
 )
-from apathis.nation.nation_info import get_nation_info as _get_nation_info
-from apathis.nation.naval_deployments import (
+from apatheon.nation.nation_info import get_nation_info as _get_nation_info
+from apatheon.nation.naval_deployments import (
     get_deployment_count as _get_deployment_count,
 )
-from apathis.nation.naval_deployments import (
+from apatheon.nation.naval_deployments import (
     get_deployments as _get_deployments,
 )
-from apathis.nation.naval_deployments import (
+from apatheon.nation.naval_deployments import (
     get_deployments_for_conflict as _get_deployments_for_conflict,
 )
-from apathis.nation.ports import (
+from apatheon.nation.ports import (
     get_port as _get_port,
 )
-from apathis.nation.ports import (
+from apatheon.nation.ports import (
     get_ports as _get_ports,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_all_resources as _get_all_resources,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_nation_resources as _get_nation_resources,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_resource_categories as _get_resource_categories,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_resource_info as _get_resource_info,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_resource_names as _get_resource_names,
 )
-from apathis.nation.resources import (
+from apatheon.nation.resources import (
     get_resource_producers as _get_resource_producers,
 )
-from apathis.nation.trade_routes import get_trade_routes as _get_trade_routes
-from apathis.nation.vessel_tracker import (
+from apatheon.nation.trade_routes import get_trade_routes as _get_trade_routes
+from apatheon.nation.vessel_tracker import (
     get_vessel_count as _get_vessel_count,
 )
-from apathis.nation.vessel_tracker import (
+from apatheon.nation.vessel_tracker import (
     get_vessels as _get_vessels,
 )
 from fastapi import APIRouter, HTTPException, Path, Query

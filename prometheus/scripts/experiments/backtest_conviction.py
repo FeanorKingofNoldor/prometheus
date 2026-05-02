@@ -32,9 +32,9 @@ from datetime import date, timedelta
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
-from apathis.core.logging import get_logger
-from apathis.sector.health import SectorHealthEngine
-from apathis.sector.mapper import SectorMapper
+from apatheon.core.logging import get_logger
+from apatheon.sector.health import SectorHealthEngine
+from apatheon.sector.mapper import SectorMapper
 
 from prometheus.portfolio.conviction import (
     ConvictionConfig,

@@ -26,18 +26,18 @@ import argparse
 from datetime import date
 from typing import List, Optional, Sequence
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
-from apathis.data.reader import DataReader
-from apathis.encoders import (
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
+from apatheon.data.reader import DataReader
+from apatheon.encoders import (
     FlattenNumericEmbeddingModel,
     NumericEmbeddingStore,
     NumericWindowBuilder,
     NumericWindowEncoder,
     NumericWindowSpec,
 )
-from apathis.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
+from apatheon.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
 
 logger = get_logger(__name__)
 

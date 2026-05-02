@@ -25,7 +25,7 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.books.registry import BookKind, HedgeEtfSleeveSpec, load_book_registry
 

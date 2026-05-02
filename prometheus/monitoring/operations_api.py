@@ -12,8 +12,8 @@ import subprocess
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 from fastapi import APIRouter, Query
 
 logger = get_logger(__name__)
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/ops", tags=["operations"])
 SERVICES = [
     {"name": "prometheus-daemon", "description": "Market-Aware Orchestration Daemon"},
     {"name": "prometheus-api", "description": "Prometheus Monitoring API (port 8200)"},
-    {"name": "apathis-api", "display_name": "apatheon-api", "description": "Apatheon Intelligence API (port 8100)"},
+    {"name": "apatheon-api", "display_name": "apatheon-api", "description": "Apatheon Intelligence API (port 8100)"},
     {"name": "postgresql", "description": "PostgreSQL Database"},
 ]
 

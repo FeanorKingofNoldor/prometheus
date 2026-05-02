@@ -42,11 +42,11 @@ from datetime import date
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.fragility.storage import FragilityStorage
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.fragility.storage import FragilityStorage
 
 from prometheus.backtest import SleeveConfig, run_backtest_campaign
 from prometheus.backtest.campaign import SleeveRunSummary, _run_backtest_for_sleeve

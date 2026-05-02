@@ -10,8 +10,8 @@ Usage:
 
 from datetime import datetime, timezone
 
-from apathis.core.logging import get_logger
-from apathis.core.market_state import (
+from apatheon.core.logging import get_logger
+from apatheon.core.market_state import (
     DEFAULT_CONFIGS,
     get_all_market_states,
     get_market_state,

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import OrderType
 from prometheus.execution.options_strategy import (

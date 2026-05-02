@@ -129,10 +129,10 @@ class _StubIbLogger:
 
 def _load_ibkr_module(monkeypatch):
     """Load ibkr_client_impl with minimal stubs (like test_ibkr_client_impl_account_fallback)."""
-    apathis_mod = types.ModuleType("apathis")
-    apathis_core_mod = types.ModuleType("apathis.core")
-    apathis_logging_mod = types.ModuleType("apathis.core.logging")
-    apathis_logging_mod.get_logger = lambda _name: _StubIbLogger()  # type: ignore[attr-defined]
+    apatheon_mod = types.ModuleType("apatheon")
+    apatheon_core_mod = types.ModuleType("apatheon.core")
+    apatheon_logging_mod = types.ModuleType("apatheon.core.logging")
+    apatheon_logging_mod.get_logger = lambda _name: _StubIbLogger()  # type: ignore[attr-defined]
 
     ib_compat_mod = types.ModuleType("prometheus.execution.ib_compat")
 
@@ -183,9 +183,9 @@ def _load_ibkr_module(monkeypatch):
 
     mapper_mod.InstrumentMapper = _StubInstrumentMapper  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(sys.modules, "apathis", apathis_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core", apathis_core_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.logging", apathis_logging_mod)
+    monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.logging", apatheon_logging_mod)
     monkeypatch.setitem(sys.modules, "prometheus.execution.ib_compat", ib_compat_mod)
     monkeypatch.setitem(sys.modules, "prometheus.execution.instrument_mapper", mapper_mod)
 

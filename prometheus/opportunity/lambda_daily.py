@@ -54,10 +54,10 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig
-from apathis.data.reader import DataReader
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar, TradingCalendarConfig
+from apatheon.data.reader import DataReader
 
 from prometheus.opportunity.lambda_model import (
     LambdaGBTModel,

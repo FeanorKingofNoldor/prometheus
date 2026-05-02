@@ -25,8 +25,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

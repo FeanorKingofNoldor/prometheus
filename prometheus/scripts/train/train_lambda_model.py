@@ -28,9 +28,9 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 from prometheus.opportunity.lambda_model import (
     LambdaGBTModel,

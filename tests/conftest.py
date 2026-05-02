@@ -1,6 +1,6 @@
-"""Shared test fixtures and apathis module stubs.
+"""Shared test fixtures and apatheon module stubs.
 
-The apathis sibling package is not necessarily installed in the test
+The apatheon sibling package is not necessarily installed in the test
 environment. This conftest registers lightweight stubs in sys.modules so
 that ``prometheus.*`` modules can be imported without the real package.
 
@@ -38,30 +38,30 @@ def _generate_uuid() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Stub apathis modules — only if the real package is not importable
+# Stub apatheon modules — only if the real package is not importable
 # ---------------------------------------------------------------------------
 
-def _install_apathis_stubs() -> None:
-    """Register fake apathis.* modules in sys.modules."""
-    if "apathis" in sys.modules:
+def _install_apatheon_stubs() -> None:
+    """Register fake apatheon.* modules in sys.modules."""
+    if "apatheon" in sys.modules:
         # Already loaded (either real or previously stubbed) — skip.
         return
 
-    # If the real apathis package is importable, don't stub it.
+    # If the real apatheon package is importable, don't stub it.
     try:
-        import apathis  # noqa: F401
+        import apatheon  # noqa: F401
         return
     except ImportError:
         pass
 
-    # -- apathis --
-    apathis = types.ModuleType("apathis")
+    # -- apatheon --
+    apatheon = types.ModuleType("apatheon")
 
-    # -- apathis.core --
-    core = types.ModuleType("apathis.core")
+    # -- apatheon.core --
+    core = types.ModuleType("apatheon.core")
 
-    # -- apathis.core.database --
-    db = types.ModuleType("apathis.core.database")
+    # -- apatheon.core.database --
+    db = types.ModuleType("apatheon.core.database")
 
     class _StubDatabaseManager:
         pass
@@ -69,20 +69,20 @@ def _install_apathis_stubs() -> None:
     db.DatabaseManager = _StubDatabaseManager  # type: ignore[attr-defined]
     db.get_db_manager = lambda: _StubDatabaseManager()  # type: ignore[attr-defined]
 
-    # -- apathis.core.logging --
-    logging_mod = types.ModuleType("apathis.core.logging")
+    # -- apatheon.core.logging --
+    logging_mod = types.ModuleType("apatheon.core.logging")
     logging_mod.get_logger = _get_logger  # type: ignore[attr-defined]
 
-    # -- apathis.core.ids --
-    ids_mod = types.ModuleType("apathis.core.ids")
+    # -- apatheon.core.ids --
+    ids_mod = types.ModuleType("apatheon.core.ids")
     ids_mod.generate_uuid = _generate_uuid  # type: ignore[attr-defined]
 
-    # -- apathis.core.types --
-    types_mod = types.ModuleType("apathis.core.types")
+    # -- apatheon.core.types --
+    types_mod = types.ModuleType("apatheon.core.types")
     types_mod.MetadataDict = Dict[str, Any]  # type: ignore[attr-defined]
 
-    # -- apathis.core.config --
-    config_mod = types.ModuleType("apathis.core.config")
+    # -- apatheon.core.config --
+    config_mod = types.ModuleType("apatheon.core.config")
 
     class _StubExecutionRiskConfig:
         def __init__(self, enabled=True, max_order_notional=0.0,
@@ -99,8 +99,8 @@ def _install_apathis_stubs() -> None:
     config_mod.ExecutionRiskConfig = _StubExecutionRiskConfig  # type: ignore[attr-defined]
     config_mod.get_config = lambda: _StubConfig()  # type: ignore[attr-defined]
 
-    # -- apathis.core.time --
-    time_mod = types.ModuleType("apathis.core.time")
+    # -- apatheon.core.time --
+    time_mod = types.ModuleType("apatheon.core.time")
 
     class _StubTradingCalendar:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -117,30 +117,30 @@ def _install_apathis_stubs() -> None:
     time_mod.TradingCalendarConfig = _StubTradingCalendarConfig  # type: ignore[attr-defined]
     time_mod.US_EQ = "US_EQ"  # type: ignore[attr-defined]
 
-    # -- apathis.data --
-    data = types.ModuleType("apathis.data")
+    # -- apatheon.data --
+    data = types.ModuleType("apatheon.data")
 
-    # -- apathis.data.reader --
-    reader = types.ModuleType("apathis.data.reader")
+    # -- apatheon.data.reader --
+    reader = types.ModuleType("apatheon.data.reader")
 
     class _StubDataReader:
         pass
 
     reader.DataReader = _StubDataReader  # type: ignore[attr-defined]
 
-    # -- apathis.stability --
-    stability = types.ModuleType("apathis.stability")
+    # -- apatheon.stability --
+    stability = types.ModuleType("apatheon.stability")
 
-    # -- apathis.stability.storage --
-    stab_storage = types.ModuleType("apathis.stability.storage")
+    # -- apatheon.stability.storage --
+    stab_storage = types.ModuleType("apatheon.stability.storage")
 
     class _StubStabilityStorage:
         pass
 
     stab_storage.StabilityStorage = _StubStabilityStorage  # type: ignore[attr-defined]
 
-    # -- apathis.stability.types --
-    stab_types = types.ModuleType("apathis.stability.types")
+    # -- apatheon.stability.types --
+    stab_types = types.ModuleType("apatheon.stability.types")
 
     from enum import Enum
 
@@ -176,11 +176,11 @@ def _install_apathis_stubs() -> None:
         sys.modules["psycopg2"] = pg2
         sys.modules["psycopg2.extras"] = pg2_extras
 
-    # -- apathis.sector --
-    sector = types.ModuleType("apathis.sector")
+    # -- apatheon.sector --
+    sector = types.ModuleType("apatheon.sector")
 
-    # -- apathis.sector.health --
-    sector_health = types.ModuleType("apathis.sector.health")
+    # -- apatheon.sector.health --
+    sector_health = types.ModuleType("apatheon.sector.health")
 
     class _StubSectorHealthResult:
         def __init__(self, *a: Any, **kw: Any) -> None:
@@ -189,8 +189,8 @@ def _install_apathis_stubs() -> None:
     sector_health.SectorHealthResult = _StubSectorHealthResult  # type: ignore[attr-defined]
     sector_health.SECTOR_ETF_MAP = {}  # type: ignore[attr-defined]
 
-    # -- apathis.sector.mapper --
-    sector_mapper = types.ModuleType("apathis.sector.mapper")
+    # -- apatheon.sector.mapper --
+    sector_mapper = types.ModuleType("apatheon.sector.mapper")
 
     class _StubSectorMapper:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -202,15 +202,15 @@ def _install_apathis_stubs() -> None:
 
     sector_mapper.SectorMapper = _StubSectorMapper  # type: ignore[attr-defined]
 
-    # -- apathis.core.markets --
-    markets_mod = types.ModuleType("apathis.core.markets")
+    # -- apatheon.core.markets --
+    markets_mod = types.ModuleType("apatheon.core.markets")
     markets_mod.infer_region_from_market_id = lambda mid: "US"  # type: ignore[attr-defined]
 
-    # -- apathis.regime --
-    regime = types.ModuleType("apathis.regime")
+    # -- apatheon.regime --
+    regime = types.ModuleType("apatheon.regime")
 
-    # -- apathis.regime.types --
-    regime_types = types.ModuleType("apathis.regime.types")
+    # -- apatheon.regime.types --
+    regime_types = types.ModuleType("apatheon.regime.types")
 
     class _RegimeLabel(str, Enum):
         CARRY = "CARRY"
@@ -220,8 +220,8 @@ def _install_apathis_stubs() -> None:
 
     regime_types.RegimeLabel = _RegimeLabel  # type: ignore[attr-defined]
 
-    # -- apathis.regime.storage --
-    regime_storage = types.ModuleType("apathis.regime.storage")
+    # -- apatheon.regime.storage --
+    regime_storage = types.ModuleType("apatheon.regime.storage")
 
     class _StubRegimeStorage:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -230,11 +230,11 @@ def _install_apathis_stubs() -> None:
 
     regime_storage.RegimeStorage = _StubRegimeStorage  # type: ignore[attr-defined]
 
-    # -- apathis.fragility --
-    fragility = types.ModuleType("apathis.fragility")
+    # -- apatheon.fragility --
+    fragility = types.ModuleType("apatheon.fragility")
 
-    # -- apathis.fragility.storage --
-    fragility_storage = types.ModuleType("apathis.fragility.storage")
+    # -- apatheon.fragility.storage --
+    fragility_storage = types.ModuleType("apatheon.fragility.storage")
 
     class _StubFragilityStorage:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -244,12 +244,12 @@ def _install_apathis_stubs() -> None:
     fragility_storage.FragilityStorage = _StubFragilityStorage  # type: ignore[attr-defined]
 
     # Wire parent/child relationships
-    apathis.core = core  # type: ignore[attr-defined]
-    apathis.data = data  # type: ignore[attr-defined]
-    apathis.stability = stability  # type: ignore[attr-defined]
-    apathis.sector = sector  # type: ignore[attr-defined]
-    apathis.regime = regime  # type: ignore[attr-defined]
-    apathis.fragility = fragility  # type: ignore[attr-defined]
+    apatheon.core = core  # type: ignore[attr-defined]
+    apatheon.data = data  # type: ignore[attr-defined]
+    apatheon.stability = stability  # type: ignore[attr-defined]
+    apatheon.sector = sector  # type: ignore[attr-defined]
+    apatheon.regime = regime  # type: ignore[attr-defined]
+    apatheon.fragility = fragility  # type: ignore[attr-defined]
     core.database = db  # type: ignore[attr-defined]
     core.logging = logging_mod  # type: ignore[attr-defined]
     core.ids = ids_mod  # type: ignore[attr-defined]
@@ -268,34 +268,34 @@ def _install_apathis_stubs() -> None:
 
     # Register in sys.modules
     for name, mod in [
-        ("apathis", apathis),
-        ("apathis.core", core),
-        ("apathis.core.database", db),
-        ("apathis.core.logging", logging_mod),
-        ("apathis.core.ids", ids_mod),
-        ("apathis.core.types", types_mod),
-        ("apathis.core.time", time_mod),
-        ("apathis.core.config", config_mod),
-        ("apathis.core.markets", markets_mod),
-        ("apathis.data", data),
-        ("apathis.data.reader", reader),
-        ("apathis.stability", stability),
-        ("apathis.stability.storage", stab_storage),
-        ("apathis.stability.types", stab_types),
-        ("apathis.sector", sector),
-        ("apathis.sector.health", sector_health),
-        ("apathis.sector.mapper", sector_mapper),
-        ("apathis.regime", regime),
-        ("apathis.regime.types", regime_types),
-        ("apathis.regime.storage", regime_storage),
-        ("apathis.fragility", fragility),
-        ("apathis.fragility.storage", fragility_storage),
+        ("apatheon", apatheon),
+        ("apatheon.core", core),
+        ("apatheon.core.database", db),
+        ("apatheon.core.logging", logging_mod),
+        ("apatheon.core.ids", ids_mod),
+        ("apatheon.core.types", types_mod),
+        ("apatheon.core.time", time_mod),
+        ("apatheon.core.config", config_mod),
+        ("apatheon.core.markets", markets_mod),
+        ("apatheon.data", data),
+        ("apatheon.data.reader", reader),
+        ("apatheon.stability", stability),
+        ("apatheon.stability.storage", stab_storage),
+        ("apatheon.stability.types", stab_types),
+        ("apatheon.sector", sector),
+        ("apatheon.sector.health", sector_health),
+        ("apatheon.sector.mapper", sector_mapper),
+        ("apatheon.regime", regime),
+        ("apatheon.regime.types", regime_types),
+        ("apatheon.regime.storage", regime_storage),
+        ("apatheon.fragility", fragility),
+        ("apatheon.fragility.storage", fragility_storage),
     ]:
         sys.modules[name] = mod
 
 
 # Install stubs at import time (before test module collection).
-_install_apathis_stubs()
+_install_apatheon_stubs()
 
 
 import pytest  # noqa: E402

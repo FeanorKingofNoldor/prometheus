@@ -289,28 +289,28 @@ class TestIrisChatTimeout:
     """Tests for LLM call timeout in iris_chat."""
 
     def _install_llm_stubs(self):
-        """Install apathis.llm stubs so iris_service can import them."""
+        """Install apatheon.llm stubs so iris_service can import them."""
         import sys
         import types
 
-        if "apathis.llm" not in sys.modules:
-            llm_mod = types.ModuleType("apathis.llm")
-            sys.modules["apathis.llm"] = llm_mod
+        if "apatheon.llm" not in sys.modules:
+            llm_mod = types.ModuleType("apatheon.llm")
+            sys.modules["apatheon.llm"] = llm_mod
 
-        if "apathis.llm.agent" not in sys.modules:
-            agent_mod = types.ModuleType("apathis.llm.agent")
+        if "apatheon.llm.agent" not in sys.modules:
+            agent_mod = types.ModuleType("apatheon.llm.agent")
             agent_mod.create_agent = MagicMock()
-            sys.modules["apathis.llm.agent"] = agent_mod
+            sys.modules["apatheon.llm.agent"] = agent_mod
 
-        if "apathis.llm.model_routing" not in sys.modules:
-            routing_mod = types.ModuleType("apathis.llm.model_routing")
+        if "apatheon.llm.model_routing" not in sys.modules:
+            routing_mod = types.ModuleType("apatheon.llm.model_routing")
             routing_mod.get_model = MagicMock(return_value="test-model")
-            sys.modules["apathis.llm.model_routing"] = routing_mod
+            sys.modules["apatheon.llm.model_routing"] = routing_mod
 
-        if "apathis.llm.gateway" not in sys.modules:
-            gw_mod = types.ModuleType("apathis.llm.gateway")
+        if "apatheon.llm.gateway" not in sys.modules:
+            gw_mod = types.ModuleType("apatheon.llm.gateway")
             gw_mod.get_llm = MagicMock()
-            sys.modules["apathis.llm.gateway"] = gw_mod
+            sys.modules["apatheon.llm.gateway"] = gw_mod
 
     @patch("prometheus.monitoring.iris_service.build_system_context", return_value="ctx")
     @patch("prometheus.monitoring.iris_service.build_system_prompt", return_value="prompt")
@@ -327,8 +327,8 @@ class TestIrisChatTimeout:
         mock_agent.run.side_effect = slow_agent_run
 
         import sys
-        sys.modules["apathis.llm.agent"].create_agent = MagicMock(return_value=mock_agent)
-        sys.modules["apathis.llm.model_routing"].get_model = MagicMock(return_value="test")
+        sys.modules["apatheon.llm.agent"].create_agent = MagicMock(return_value=mock_agent)
+        sys.modules["apatheon.llm.model_routing"].get_model = MagicMock(return_value="test")
 
         # Reload iris_service to pick up the stubs
         import importlib
@@ -366,8 +366,8 @@ class TestIrisChatTimeout:
         mock_agent.run.return_value = "The current regime is CARRY."
 
         import sys
-        sys.modules["apathis.llm.agent"].create_agent = MagicMock(return_value=mock_agent)
-        sys.modules["apathis.llm.model_routing"].get_model = MagicMock(return_value="test")
+        sys.modules["apatheon.llm.agent"].create_agent = MagicMock(return_value=mock_agent)
+        sys.modules["apatheon.llm.model_routing"].get_model = MagicMock(return_value="test")
 
         import importlib
         import prometheus.monitoring.iris_service as iris_mod

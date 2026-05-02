@@ -26,7 +26,7 @@ import time
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -107,8 +107,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     data_reader = None
     if args.use_db:
         try:
-            from apathis.core.database import get_db_manager
-            from apathis.data.reader import DataReader
+            from apatheon.core.database import get_db_manager
+            from apatheon.data.reader import DataReader
             db = get_db_manager()
             data_reader = DataReader(db_manager=db)
             logger.info("Connected to database for historical data")
@@ -119,7 +119,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     writer = None
     if args.persist:
         try:
-            from apathis.core.database import get_db_manager
+            from apatheon.core.database import get_db_manager
 
             from prometheus.backtest.backtest_options_writer import (
                 BacktestOptionsWriter,

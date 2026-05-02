@@ -10,18 +10,18 @@ import pytest
 
 def _load_show_alembic_status_module(monkeypatch: pytest.MonkeyPatch):
     # Minimal stubs so module import does not require installing cross-repo deps.
-    apathis_mod = types.ModuleType("apathis")
-    apathis_core_mod = types.ModuleType("apathis.core")
-    apathis_db_mod = types.ModuleType("apathis.core.database")
+    apatheon_mod = types.ModuleType("apatheon")
+    apatheon_core_mod = types.ModuleType("apatheon.core")
+    apatheon_db_mod = types.ModuleType("apatheon.core.database")
 
     def _dummy_get_db_manager():
         return None
 
-    apathis_db_mod.get_db_manager = _dummy_get_db_manager  # type: ignore[attr-defined]
+    apatheon_db_mod.get_db_manager = _dummy_get_db_manager  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(sys.modules, "apathis", apathis_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core", apathis_core_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.database", apathis_db_mod)
+    monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.database", apatheon_db_mod)
 
     sys.modules.pop("prometheus.scripts.show.show_alembic_status", None)
     return importlib.import_module("prometheus.scripts.show.show_alembic_status")

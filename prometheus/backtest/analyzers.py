@@ -13,7 +13,7 @@ from math import sqrt
 from typing import Dict, List, Sequence
 
 import numpy as np
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -22,7 +22,7 @@ import json
 from datetime import date
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 _ALLOWED_STATEMENT_TYPES = ("IS", "BS", "CF")
 _FISCAL_PERIOD_RE = "^[0-9]{4}(A|Q[1-4])$"

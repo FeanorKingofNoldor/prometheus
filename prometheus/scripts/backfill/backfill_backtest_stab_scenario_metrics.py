@@ -30,9 +30,9 @@ from __future__ import annotations
 import argparse
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

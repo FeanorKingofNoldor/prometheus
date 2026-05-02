@@ -12,9 +12,9 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Protocol
 
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 from prometheus.risk import apply_risk_constraints

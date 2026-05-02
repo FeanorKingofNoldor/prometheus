@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json, execute_values
 
 from .types import ScenarioRequest, ScenarioSetRef, SyntheticReality
@@ -409,7 +409,7 @@ class ScenarioStorage:
     def _write_reality_instruments(self, reality: SyntheticReality) -> None:
         """Insert synthetic issuers, instruments, and issuer_classifications."""
 
-        from apathis.sector.health import SECTOR_ETF_MAP
+        from apatheon.sector.health import SECTOR_ETF_MAP
 
         # Look up sector for each real instrument.
         real_inst_to_sector: Dict[str, str] = {}

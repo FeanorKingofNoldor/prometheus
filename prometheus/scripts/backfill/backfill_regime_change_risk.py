@@ -32,12 +32,12 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.regime.state_change import _build_transition_matrix
-from apathis.regime.storage import RegimeStorage
-from apathis.regime.types import RegimeLabel, RegimeState
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.regime.state_change import _build_transition_matrix
+from apatheon.regime.storage import RegimeStorage
+from apatheon.regime.types import RegimeLabel, RegimeState
 
 logger = get_logger(__name__)
 

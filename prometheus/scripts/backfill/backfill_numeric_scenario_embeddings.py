@@ -34,11 +34,11 @@ import argparse
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.encoders import NumericEmbeddingStore, NumericWindowSpec
-from apathis.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.encoders import NumericEmbeddingStore, NumericWindowSpec
+from apatheon.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
 
 logger = get_logger(__name__)
 

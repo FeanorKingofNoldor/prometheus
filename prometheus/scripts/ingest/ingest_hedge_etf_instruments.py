@@ -29,7 +29,7 @@ import argparse
 import json
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 from psycopg2.extras import Json
 
 from prometheus.books.registry import BookKind, HedgeEtfSleeveSpec, load_book_registry

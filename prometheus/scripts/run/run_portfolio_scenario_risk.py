@@ -25,9 +25,9 @@ import argparse
 from datetime import date
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 from prometheus.portfolio.scenario_risk import compute_portfolio_scenario_pnl

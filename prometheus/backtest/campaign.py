@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Sequence
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
 
 from prometheus.backtest.analyzers import EquityCurveAnalyzer
 from prometheus.backtest.config import SleeveConfig

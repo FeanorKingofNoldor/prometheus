@@ -8,7 +8,7 @@ include = ["prometheus*"]
 [project]
 name = "prometheus"
 version = "0.1.0"
-description = "Prometheus – Quantitative Trading System (thin layer, imports apathis for info-layer)"
+description = "Prometheus – Quantitative Trading System (thin layer, imports apatheon for info-layer)"
 readme = "README.md"
 requires-python = ">=3.11"
 
@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 # ``pip freeze`` in the deployment environment if reproducibility across
 # fresh installs becomes critical.
 dependencies = [
-  "apathis @ file:///home/feanor/coding/apathis",
+  "apatheon @ file:///home/feanor/coding/apatheon",
   "numpy>=1.24.0,<3.0.0",
   "pandas>=2.0.0,<3.0.0",
   "pydantic>=2.0.0,<3.0.0",

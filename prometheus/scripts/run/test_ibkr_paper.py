@@ -29,8 +29,8 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_factory import create_paper_broker
 from prometheus.execution.broker_interface import Order, OrderSide, OrderType

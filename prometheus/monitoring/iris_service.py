@@ -10,9 +10,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.llm.gateway import get_llm
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.llm.gateway import get_llm
 
 logger = get_logger(__name__)
 
@@ -279,7 +279,7 @@ def _fetch_live_performance_context() -> str:
     import math
     from datetime import date
 
-    from apathis.core.database import get_db_manager as _get_db
+    from apatheon.core.database import get_db_manager as _get_db
 
     from prometheus.decisions.live_performance import LivePerformanceTracker
 
@@ -346,7 +346,7 @@ def _fetch_live_performance_context() -> str:
 def _fetch_intel_context() -> str:
     """Latest intel SITREP + flash alerts for Iris context."""
     try:
-        from apathis.intel.store import get_briefs
+        from apatheon.intel.store import get_briefs
 
         # Latest daily SITREP
         sitreps = get_briefs(brief_type="daily_sitrep", limit=1)
@@ -534,8 +534,8 @@ def iris_chat(
 
     # Try tool-agent first; fall back to plain LLM if it fails.
     try:
-        from apathis.llm.agent import create_agent
-        from apathis.llm.model_routing import get_model
+        from apatheon.llm.agent import create_agent
+        from apatheon.llm.model_routing import get_model
 
         iris_model = get_model("iris_chat")
         agent = create_agent(tool_names=_resolve_iris_tools(), max_rounds=3, model=iris_model)
@@ -548,7 +548,7 @@ def iris_chat(
                 answer = "I'm sorry, my response timed out. Please try a simpler question."
     except Exception:
         logger.warning("[iris] Tool-agent failed, falling back to plain LLM")
-        from apathis.llm.model_routing import get_model as _get_model
+        from apatheon.llm.model_routing import get_model as _get_model
         llm = get_llm()
         with ThreadPoolExecutor(1) as pool:
             future = pool.submit(llm.complete, messages, model=_get_model("iris_chat"), temperature=0.4, max_tokens=2048)

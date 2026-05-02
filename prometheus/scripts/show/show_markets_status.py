@@ -14,7 +14,7 @@ import argparse
 import json
 from typing import Any, Dict, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 
 def _load_markets(db, which: str) -> list[dict[str, Any]]:

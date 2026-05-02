@@ -13,9 +13,9 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

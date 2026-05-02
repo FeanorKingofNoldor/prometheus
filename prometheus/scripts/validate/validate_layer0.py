@@ -32,9 +32,9 @@ from typing import Any, Optional, Sequence
 
 from alembic import command as alembic_command
 from alembic.config import Config
-from apathis.core.database import get_db_manager
-from apathis.core.time import US_EQ
-from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
+from apatheon.core.database import get_db_manager
+from apatheon.core.time import US_EQ
+from apatheon.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
 
 from prometheus.scripts.show import (
     show_alembic_status,

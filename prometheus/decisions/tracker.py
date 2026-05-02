@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, List
 
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 
 from prometheus.meta.storage import MetaStorage
 from prometheus.meta.types import EngineDecision

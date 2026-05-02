@@ -25,7 +25,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import (
     BrokerInterface,
@@ -709,7 +709,7 @@ class SectorPutSpreadStrategy(OptionStrategy):
         nav = signals.get("nav", 0.0)
 
         # Map sector → ETF symbol
-        from apathis.sector.health import SECTOR_NAME_TO_ETF
+        from apatheon.sector.health import SECTOR_NAME_TO_ETF
 
         directives: List[OptionTradeDirective] = []
         today = signals.get("as_of_date", date.today())
@@ -3506,7 +3506,7 @@ class OptionsStrategyManager:
         directives: List[OptionTradeDirective],
     ) -> None:
         """Convert directives to Orders and submit."""
-        from apathis.core.ids import generate_uuid
+        from apatheon.core.ids import generate_uuid
 
         for directive in directives:
             if directive.action == TradeAction.HOLD:

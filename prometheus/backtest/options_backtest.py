@@ -30,7 +30,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.backtest.iv_surface import IVSurfaceEngine, VolTermStructure
 from prometheus.backtest.option_pricer import bs_price, fill_price

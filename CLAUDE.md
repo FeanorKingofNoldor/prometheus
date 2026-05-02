@@ -33,7 +33,7 @@ NO_DAEMON=1 ./start.sh
 
 ## Apatheon (Info Layer)
 
-Apatheon (`../apathis` — Python package name unchanged) is the intelligence layer that Prometheus depends on. It must be running at port 8100 before Prometheus starts (`start.sh` handles this). Run it with `APATHEON_MODE=private` (or legacy `APATHIS_MODE=private`) to disable auth/rate-limiting for internal use.
+Apatheon (`../apatheon` — Python package name unchanged) is the intelligence layer that Prometheus depends on. It must be running at port 8100 before Prometheus starts (`start.sh` handles this). Run it with `APATHEON_MODE=private` (or legacy `APATHEON_MODE=private`) to disable auth/rate-limiting for internal use.
 
 Apatheon provides:
 - **Regime detection** — market regime (crisis/expansion/contraction) consumed by Prometheus engines
@@ -43,11 +43,11 @@ Apatheon provides:
 - **Market data** — prices, returns, volatility, fundamentals, macro series via `prometheus_historical` DB
 - **LLM chat** — Iris integration via `/api/chat`
 
-Both projects share the same two PostgreSQL databases (`prometheus_historical`, `prometheus_runtime`) accessed through PgBouncer on port 6432. Apatheon owns the schema and ingestion; Prometheus reads from it. Apatheon has its own CLAUDE.md at `../apathis/CLAUDE.md`.
+Both projects share the same two PostgreSQL databases (`prometheus_historical`, `prometheus_runtime`) accessed through PgBouncer on port 6432. Apatheon owns the schema and ingestion; Prometheus reads from it. Apatheon has its own CLAUDE.md at `../apatheon/CLAUDE.md`.
 
 ## Architecture
 
-Prometheus is a multi-market quantitative trading system layered on top of the `apathis` sibling package (the intelligence/info layer). It consists of:
+Prometheus is a multi-market quantitative trading system layered on top of the `apatheon` sibling package (the intelligence/info layer). It consists of:
 
 ### Pipeline State Machine
 The daily pipeline progresses through phases tracked in the `engine_runs` DB table:
@@ -92,7 +92,7 @@ PostgreSQL via PgBouncer (port 6432). Migrations managed by Alembic (`migrations
 React/Vite app (port 5173). Build: `npm --prefix prometheus_web ci && npm --prefix prometheus_web run build`.
 
 ## Key Dependencies
-- `apathis` — sibling private package, must be running on port 8100
+- `apatheon` — sibling private package, must be running on port 8100
 - `ib_insync` — Interactive Brokers API client
 - `sqlalchemy` + `alembic` — ORM and migrations
 - `fastapi` + `uvicorn` — REST API

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, FrozenSet, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -19,8 +19,8 @@ from __future__ import annotations
 import argparse
 from datetime import date
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.decisions import OutcomeEvaluator
 from prometheus.decisions.scorecard import PredictionScorecard

@@ -17,15 +17,15 @@ from datetime import date, timedelta
 from typing import Protocol, Sequence
 
 import numpy as np
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
-from apathis.data.reader import DataReader
-from apathis.profiles.service import ProfileService
-from apathis.stability.storage import StabilityStorage
-from apathis.stability.types import SoftTargetClass
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
+from apatheon.data.reader import DataReader
+from apatheon.profiles.service import ProfileService
+from apatheon.stability.storage import StabilityStorage
+from apatheon.stability.types import SoftTargetClass
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

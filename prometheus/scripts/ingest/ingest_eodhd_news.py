@@ -21,10 +21,10 @@ import argparse
 from datetime import datetime
 from typing import Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.eodhd_client import EodhdClient
-from apathis.data_ingestion.news_eodhd import (
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.eodhd_client import EodhdClient
+from apatheon.data_ingestion.news_eodhd import (
     NewsIngestionConfig,
     ingest_eodhd_news_for_market,
 )

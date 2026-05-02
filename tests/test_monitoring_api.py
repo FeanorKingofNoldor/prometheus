@@ -4,9 +4,9 @@ These tests exercise the business logic (P&L calculation, capital-flow
 filtering, alias mapping, config formatting) by mocking the database
 layer so no real Postgres connection is needed.
 
-NOTE: These tests require the full apathis package to be importable
+NOTE: These tests require the full apatheon package to be importable
 (editable install or in PYTHONPATH). They conflict with conftest.py's
-module stubs if apathis is not installed. Run separately:
+module stubs if apatheon is not installed. Run separately:
     pytest tests/test_monitoring_api.py -v
 """
 
@@ -117,7 +117,7 @@ def client_and_db():
         patch("prometheus.monitoring.meta_api.get_db_manager", _get_db),
         patch("prometheus.monitoring.control_api.get_db_manager", _get_db),
         # Also patch the top-level import used by meta_api.get_performance
-        patch("apathis.core.database.get_db_manager", _get_db),
+        patch("apatheon.core.database.get_db_manager", _get_db),
     ]
     for p in patches:
         p.start()

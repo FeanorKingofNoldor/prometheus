@@ -30,12 +30,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from apathis.core.market_state import MarketState, get_market_state
-from apathis.core.time import TradingCalendar, TradingCalendarConfig
-from apathis.data_ingestion.daily_orchestrator import (
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
+from apatheon.core.market_state import MarketState, get_market_state
+from apatheon.core.time import TradingCalendar, TradingCalendarConfig
+from apatheon.data_ingestion.daily_orchestrator import (
     check_price_data_freshness,
     is_data_ready_for_market,
     run_daily_ingestion,
@@ -365,7 +365,7 @@ def _get_or_create_engine_run(
     (get_or_create_run) so that timestamps and defaults stay consistent.
     """
 
-    from apathis.core.markets import infer_region_from_market_id
+    from apatheon.core.markets import infer_region_from_market_id
 
     region = infer_region_from_market_id(market_id)
     if not region:
@@ -743,17 +743,17 @@ def _execute_intel_job(
     """Execute an intel DAG job (no EngineRun required)."""
     try:
         if job.job_type == "intel_flash_check":
-            from apathis.intel.pipeline import run_flash_check
+            from apatheon.intel.pipeline import run_flash_check
             run_flash_check()
             return True, None
 
         elif job.job_type == "intel_daily_sitrep":
-            from apathis.intel.pipeline import run_daily_sitrep
+            from apatheon.intel.pipeline import run_daily_sitrep
             run_daily_sitrep()
             return True, None
 
         elif job.job_type == "intel_weekly_assessment":
-            from apathis.intel.pipeline import run_weekly_assessment
+            from apatheon.intel.pipeline import run_weekly_assessment
             run_weekly_assessment()
             return True, None
 
@@ -1445,8 +1445,16 @@ class MarketAwareDaemon:
                     error_msg,
                 )
 
-                # Schedule retry if applicable
-                if should_retry_job(job, execution):
+                # Schedule retry if applicable.
+                # NOTE: ``execution.status`` is the in-memory copy from when
+                # this row was loaded/created — it's still PENDING/RUNNING
+                # here even though we just wrote FAILED to the DB above. So
+                # we cannot use should_retry_job() (which gates on
+                # status == FAILED); checking the attempt counter directly
+                # is the right semantics anyway.  Without this, retry_backoff
+                # is never populated and the next cycle retries immediately,
+                # collapsing the 2 h exponential window down to ~poll_interval.
+                if execution.attempt_number < job.max_retries:
                     delay = calculate_retry_delay(
                         job, execution.attempt_number, error_message=error_msg,
                     )
@@ -1674,7 +1682,12 @@ class MarketAwareDaemon:
         """Run the orchestration daemon until shutdown is requested."""
         self._setup_signal_handlers()
 
-        as_of_date = self.config.as_of_date or date.today()
+        # Use UTC date — host-local (e.g. CEST) flips at 22:00 UTC and
+        # advances as_of_date *during* US POST_CLOSE for the prior session,
+        # which makes the daemon ask EODHD for tomorrow's prices.  UTC
+        # midnight (02:00 CEST) is past every market's POST_CLOSE end, so
+        # trading day D's POST_CLOSE always falls inside UTC date D.
+        as_of_date = self.config.as_of_date or datetime.now(timezone.utc).date()
         self._initialize_dags(as_of_date)
 
         logger.info(
@@ -1693,7 +1706,7 @@ class MarketAwareDaemon:
                 # Detect calendar date rollover (midnight crossings).
                 # Only auto-rolls when no explicit as_of_date was configured.
                 if self.config.as_of_date is None:
-                    today = date.today()
+                    today = datetime.now(timezone.utc).date()
                     if today != as_of_date:
                         logger.info(
                             "MarketAwareDaemon: date rolled over %s -> %s, reinitialising DAGs",

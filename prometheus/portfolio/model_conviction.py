@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Dict, Optional, Set
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.portfolio.conviction import (
     ConvictionConfig,

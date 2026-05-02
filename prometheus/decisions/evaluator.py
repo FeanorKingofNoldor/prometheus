@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Dict, List, Set, Tuple
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
 
 from prometheus.meta.storage import MetaStorage
 from prometheus.meta.types import DecisionOutcome
@@ -45,7 +45,7 @@ class OutcomeEvaluator:
         self._storage = MetaStorage(db_manager=self.db_manager)
         self._data_reader = DataReader(db_manager=self.db_manager)
         if self.calendar is None:
-            from apathis.core.time import TradingCalendarConfig
+            from apatheon.core.time import TradingCalendarConfig
             config = TradingCalendarConfig(market="US_EQ")
             self.calendar = TradingCalendar(config=config, db_manager=self.db_manager)
 

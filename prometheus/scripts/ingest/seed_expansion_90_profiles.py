@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)
@@ -915,8 +915,8 @@ def _seed_profiles(
             print(f"  [dry] {o.profile_id}: {o.person_name} – {o.role} ({o.nation})")
         return len(officials), 0
 
-    from apathis.nation.person_service import PersonProfileService
-    from apathis.nation.storage import PersonProfileStorage
+    from apatheon.nation.person_service import PersonProfileService
+    from apatheon.nation.storage import PersonProfileStorage
 
     db = get_db_manager()
     storage = PersonProfileStorage(db_manager=db)
@@ -924,12 +924,12 @@ def _seed_profiles(
     llm = None
     tool_agent = None
     if use_llm:
-        from apathis.llm.gateway import get_llm
+        from apatheon.llm.gateway import get_llm
         llm = get_llm()
         print(f"  LLM configured: {llm.__class__.__name__}")
 
         try:
-            from apathis.llm.agent import ToolAgent
+            from apatheon.llm.agent import ToolAgent
             tool_agent = ToolAgent(
                 provider=llm,
                 tool_names=[

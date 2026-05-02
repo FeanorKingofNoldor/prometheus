@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Sequence, Tuple
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.books.registry import AllocatorSleeveSpec, load_book_registry
 

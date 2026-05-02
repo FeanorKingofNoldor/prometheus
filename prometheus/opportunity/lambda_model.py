@@ -47,7 +47,7 @@ from typing import Iterable, List
 import joblib
 import numpy as np
 import pandas as pd
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 logger = get_logger(__name__)

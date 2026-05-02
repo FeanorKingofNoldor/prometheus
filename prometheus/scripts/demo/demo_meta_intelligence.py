@@ -20,9 +20,9 @@ Created: 2025-12-02
 import argparse
 import sys
 
-from apathis.core.config import get_config
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.meta.applicator import ProposalApplicator
 from prometheus.meta.diagnostics import DiagnosticsEngine

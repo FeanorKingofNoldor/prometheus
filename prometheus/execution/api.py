@@ -23,8 +23,8 @@ from datetime import date, datetime, timezone
 from time import monotonic, sleep as _blocking_sleep
 from typing import Dict, List, Mapping
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.backtest_broker import BacktestBroker
 from prometheus.execution.broker_interface import BrokerInterface, Fill, OrderSide, OrderStatus

@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.market_state import MarketState, get_market_state, get_next_state_transition
-from apathis.core.markets import MARKETS_BY_REGION
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.market_state import MarketState, get_market_state, get_next_state_transition
+from apatheon.core.markets import MARKETS_BY_REGION
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 

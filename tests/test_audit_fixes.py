@@ -92,7 +92,7 @@ def viz_client():
 
     patches = [
         patch("prometheus.monitoring.visualization_api.get_db_manager", _get_db),
-        patch("apathis.core.database.get_db_manager", _get_db),
+        patch("apatheon.core.database.get_db_manager", _get_db),
     ]
     for p in patches:
         p.start()

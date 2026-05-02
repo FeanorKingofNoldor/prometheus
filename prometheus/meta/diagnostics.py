@@ -25,8 +25,8 @@ from datetime import date
 from typing import Dict, List
 
 import numpy as np
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 from prometheus.meta.types import BacktestRunRecord
 

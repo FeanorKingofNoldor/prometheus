@@ -33,9 +33,9 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.derived.returns_volatility import (
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.derived.returns_volatility import (
     compute_returns_and_volatility_for_instrument,
 )
 

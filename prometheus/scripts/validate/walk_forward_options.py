@@ -24,7 +24,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -81,8 +81,8 @@ def _run_single(
     end: date,
 ) -> Dict[str, float]:
     """Run one options backtest config on a date window.  Returns summary dict."""
-    from apathis.core.database import get_db_manager
-    from apathis.data.reader import DataReader
+    from apatheon.core.database import get_db_manager
+    from apatheon.data.reader import DataReader
 
     from prometheus.backtest.options_backtest import (
         OptionsBacktestConfig,

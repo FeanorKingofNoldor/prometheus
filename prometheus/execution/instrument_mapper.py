@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.ib_compat import (
     Bag,

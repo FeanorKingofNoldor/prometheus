@@ -22,8 +22,8 @@ import argparse
 from datetime import date, datetime
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.pipeline.state import RunPhase
 

@@ -15,9 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from apathis.core.logging import get_logger
-from apathis.nation.storage import NationScoreStorage
-from apathis.nation.types import NationScores
+from apatheon.core.logging import get_logger
+from apatheon.nation.storage import NationScoreStorage
+from apatheon.nation.types import NationScores
 
 logger = get_logger(__name__)
 

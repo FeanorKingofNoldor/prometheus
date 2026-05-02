@@ -24,11 +24,11 @@ class _StubLogger:
 
 
 def _load_ibkr_client_impl_module(monkeypatch):
-    # Minimal apathis logging stub.
-    apathis_mod = types.ModuleType("apathis")
-    apathis_core_mod = types.ModuleType("apathis.core")
-    apathis_logging_mod = types.ModuleType("apathis.core.logging")
-    apathis_logging_mod.get_logger = lambda _name: _StubLogger()  # type: ignore[attr-defined]
+    # Minimal apatheon logging stub.
+    apatheon_mod = types.ModuleType("apatheon")
+    apatheon_core_mod = types.ModuleType("apatheon.core")
+    apatheon_logging_mod = types.ModuleType("apatheon.core.logging")
+    apatheon_logging_mod.get_logger = lambda _name: _StubLogger()  # type: ignore[attr-defined]
 
     # Minimal ib_compat stub so importing ibkr_client_impl does not require
     # external IB libraries in the test environment.
@@ -86,9 +86,9 @@ def _load_ibkr_client_impl_module(monkeypatch):
 
     mapper_mod.InstrumentMapper = _StubInstrumentMapper  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(sys.modules, "apathis", apathis_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core", apathis_core_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.logging", apathis_logging_mod)
+    monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.logging", apatheon_logging_mod)
     monkeypatch.setitem(sys.modules, "prometheus.execution.ib_compat", ib_compat_mod)
     monkeypatch.setitem(sys.modules, "prometheus.execution.instrument_mapper", mapper_mod)
 

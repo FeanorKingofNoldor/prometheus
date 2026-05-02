@@ -28,7 +28,7 @@ with code 2".
 - Code 2 → IBKR credential preflight failed; check the
   `IBKR_PAPER_*` env vars in `/etc/sysconfig/prometheus-daemon`
 - ImportError → likely a partial deploy; verify
-  `/home/feanor/coding/apathis/.venv/lib/...` matches `git log`
+  `/home/feanor/coding/apatheon/.venv/lib/...` matches `git log`
 
 **Fix**:
 1. Set the missing env var or revert the bad deploy
@@ -134,8 +134,8 @@ SELECT trade_date, COUNT(*) FROM prices_daily
 1. Check EODHD API key/quota — `curl https://eodhd.com/api/...`
 2. Manually run today's ingestion:
 ```bash
-cd /home/feanor/coding/apathis
-.venv/bin/python -m apathis.data_ingestion.daily_orchestrator US_EQ
+cd /home/feanor/coding/apatheon
+.venv/bin/python -m apatheon.data_ingestion.daily_orchestrator US_EQ
 ```
 3. If EODHD is down, override staleness threshold (will run on yesterday's
    prices — accept the risk explicitly):
@@ -146,22 +146,22 @@ cd /home/feanor/coding/apathis
 
 ## 6. Log file growing out of control
 
-**Symptoms**: `/home/feanor/coding/prometheus/apathis.log` over 100MB.
+**Symptoms**: `/home/feanor/coding/prometheus/apatheon.log` over 100MB.
 
-**Diagnose**: log rotation should kick in at `APATHIS_LOG_MAX_BYTES`
+**Diagnose**: log rotation should kick in at `APATHEON_LOG_MAX_BYTES`
 (default 100MB). Verify via:
 ```bash
-ls -lh /home/feanor/coding/prometheus/apathis.log*
+ls -lh /home/feanor/coding/prometheus/apatheon.log*
 ```
 
 **Fix**:
-- If only `apathis.log` exists (no `.1`, `.2` etc.), the daemon was
+- If only `apatheon.log` exists (no `.1`, `.2` etc.), the daemon was
   running on the pre-rotation build. Restart picks up the rotating
   handler.
 - If rotation is working but logs grow too fast, tune via env:
 ```
-APATHIS_LOG_MAX_BYTES=52428800
-APATHIS_LOG_BACKUP_COUNT=10
+APATHEON_LOG_MAX_BYTES=52428800
+APATHEON_LOG_BACKUP_COUNT=10
 ```
 
 ---
@@ -222,8 +222,8 @@ sudo systemctl start prometheus-daemon
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `APATHIS_LOG_MAX_BYTES` | 104857600 | Log file rotation size |
-| `APATHIS_LOG_BACKUP_COUNT` | 5 | Number of rotated files kept |
+| `APATHEON_LOG_MAX_BYTES` | 104857600 | Log file rotation size |
+| `APATHEON_LOG_BACKUP_COUNT` | 5 | Number of rotated files kept |
 | `PROMETHEUS_LOCAL_TZ` | Europe/Berlin | Local zone for scheduler decisions |
 | `PROMETHEUS_OPTIONS_SUBMIT_LIVE` | unset | Required for live mode order submission |
 | `PROMETHEUS_OPTIONS_MAX_FAILURE_PCT` | 50 | Threshold for hard-failing options job |

@@ -24,8 +24,8 @@ import argparse
 from datetime import date
 from typing import Dict, Optional, Sequence, Tuple
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

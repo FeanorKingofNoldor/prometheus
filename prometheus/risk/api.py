@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 from prometheus.risk.constraints import StrategyRiskConfig, get_strategy_risk_config
 from prometheus.risk.engine import apply_risk_to_decision

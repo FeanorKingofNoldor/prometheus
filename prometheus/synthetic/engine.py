@@ -22,11 +22,11 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from apathis.data.reader import DataReader
-from apathis.sector.health import SECTOR_ETF_MAP
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
+from apatheon.data.reader import DataReader
+from apatheon.sector.health import SECTOR_ETF_MAP
 
 from .storage import ScenarioPathRow, ScenarioStorage
 from .types import RealityConfig, ScenarioRequest, ScenarioSetRef, SyntheticReality

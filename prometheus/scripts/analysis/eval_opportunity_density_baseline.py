@@ -26,7 +26,7 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 from scipy.stats import spearmanr
 
 logger = get_logger(__name__)

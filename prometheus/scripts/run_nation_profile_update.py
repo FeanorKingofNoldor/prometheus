@@ -31,8 +31,8 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, Sequence
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -68,9 +68,9 @@ def step_ingest(
     Returns {nation: total_rows_upserted}.
     """
 
-    from apathis.data_ingestion.fred_client import FredClient
-    from apathis.nation.ingestion import NationMacroIngestionService
-    from apathis.nation.storage import NationMacroStorage
+    from apatheon.data_ingestion.fred_client import FredClient
+    from apatheon.nation.ingestion import NationMacroIngestionService
+    from apatheon.nation.storage import NationMacroStorage
 
     results: dict[str, int] = {}
 
@@ -128,9 +128,9 @@ def step_score(
 ) -> dict[str, float]:
     """Re-score all nations.  Returns {nation: composite_risk}."""
 
-    from apathis.nation.engine import NationScoringEngine
-    from apathis.nation.model_basic import BasicNationScoringModel
-    from apathis.nation.storage import NationMacroStorage, NationScoreStorage, PersonProfileStorage
+    from apatheon.nation.engine import NationScoringEngine
+    from apatheon.nation.model_basic import BasicNationScoringModel
+    from apatheon.nation.storage import NationMacroStorage, NationScoreStorage, PersonProfileStorage
 
     results: dict[str, float] = {}
     score_date = as_of or date.today()
@@ -184,7 +184,7 @@ def step_wiki(
 ) -> tuple[int, int]:
     """Refresh Wikipedia photos/bios.  Returns (attempted, enriched)."""
 
-    from apathis.nation.wikipedia_service import enrich_all_profiles
+    from apatheon.nation.wikipedia_service import enrich_all_profiles
 
     if dry_run:
         print("  [dry] Would refresh Wikipedia for all profiles")

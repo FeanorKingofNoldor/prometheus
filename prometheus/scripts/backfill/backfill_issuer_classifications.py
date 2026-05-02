@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import requests
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.classifications import DEFAULT_CLASSIFICATION_TAXONOMY
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

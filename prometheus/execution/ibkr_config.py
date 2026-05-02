@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.ibkr_client import IbkrConnectionConfig
 

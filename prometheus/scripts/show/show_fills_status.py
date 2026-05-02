@@ -21,7 +21,7 @@ import json
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 _ALLOWED_SIDES = ("BUY", "SELL")
 _ALLOWED_MODES = ("LIVE", "PAPER", "BACKTEST")

@@ -26,17 +26,17 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
-from apathis.fragility.overlay import FragilityOverlayStepper, overlay_config_from_sleeve_spec
-from apathis.fragility.storage import FragilityStorage
-from apathis.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
-from apathis.regime.state_change import RegimeStateChangeForecaster
-from apathis.sector.health import SectorHealthResult, compute_sector_health
-from apathis.sector.mapper import SectorMapper
-from apathis.stability import (
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
+from apatheon.fragility.overlay import FragilityOverlayStepper, overlay_config_from_sleeve_spec
+from apatheon.fragility.storage import FragilityStorage
+from apatheon.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
+from apatheon.regime.state_change import RegimeStateChangeForecaster
+from apatheon.sector.health import SectorHealthResult, compute_sector_health
+from apatheon.sector.mapper import SectorMapper
+from apatheon.stability import (
     BasicPriceStabilityModel,
     StabilityEngine,
     StabilityStateChangeForecaster,

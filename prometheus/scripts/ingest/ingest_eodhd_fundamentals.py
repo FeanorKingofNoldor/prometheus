@@ -26,10 +26,10 @@ from __future__ import annotations
 import argparse
 from typing import List, Optional
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.eodhd_client import EodhdClient
-from apathis.data_ingestion.eodhd_fundamentals import (
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.eodhd_client import EodhdClient
+from apatheon.data_ingestion.eodhd_fundamentals import (
     ingest_fundamentals_for_issuers,
 )
 

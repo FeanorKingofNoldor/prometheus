@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Info-layer routes → Apathis API (:8100)
+      // Info-layer routes → Apatheon API (:8100)
       "/api/nation": {
         target: "http://localhost:8100",
         changeOrigin: true,

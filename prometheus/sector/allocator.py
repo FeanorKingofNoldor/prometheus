@@ -38,9 +38,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from apathis.core.logging import get_logger
-from apathis.sector.health import SectorHealthResult
-from apathis.sector.mapper import SectorMapper
+from apatheon.core.logging import get_logger
+from apatheon.sector.health import SectorHealthResult
+from apatheon.sector.mapper import SectorMapper
 
 logger = get_logger(__name__)
 

@@ -21,7 +21,7 @@ from datetime import date, datetime  # noqa: F401  (datetime kept for type hints
 from prometheus.orchestration.clock import now_local
 from typing import IO, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -116,7 +116,7 @@ app.include_router(logs_router)
 app.include_router(operations_router)
 
 # NOTE: Info-layer routes (entities, intel, nation, geo) are served
-# by the Apathis API on :8100.
+# by the Apatheon API on :8100.
 
 
 # ============================================================================
@@ -155,7 +155,7 @@ async def health_check() -> dict:
 
     from fastapi import HTTPException
 
-    from apathis.core.database import get_db_manager
+    from apatheon.core.database import get_db_manager
 
     from prometheus.orchestration.clock import now_utc
 
@@ -220,7 +220,7 @@ async def health_check() -> dict:
         pipeline_info = {"ok": False, "error": str(exc)[:200]}
     checks["pipeline"] = pipeline_info
 
-    # --- Apatheon (Apathis API) probe — advisory, does not flip overall_ok ---
+    # --- Apatheon (Apatheon API) probe — advisory, does not flip overall_ok ---
     apatheon_info: dict = {"ok": True}
     try:
         import httpx
@@ -359,7 +359,7 @@ async def _intel_weekly_scheduler() -> None:
             logger.info("[scheduler] Sunday %02d:%02d — launching weekly intel DAG", _WEEKLY_HOUR, _WEEKLY_MINUTE)
 
             def _run_weekly_dag() -> None:
-                from apathis.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
+                from apatheon.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
 
                 from prometheus.monitoring.report_service import generate_log_report
 

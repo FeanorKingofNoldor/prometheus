@@ -40,9 +40,9 @@ from datetime import date, timedelta
 from math import log1p
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

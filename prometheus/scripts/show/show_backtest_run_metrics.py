@@ -19,7 +19,7 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 
 def _parse_date(value: str) -> date:

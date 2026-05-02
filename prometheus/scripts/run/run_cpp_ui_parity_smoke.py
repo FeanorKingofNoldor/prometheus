@@ -26,9 +26,9 @@ from datetime import date
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
 
 
 def _parse_date(value: str) -> date:

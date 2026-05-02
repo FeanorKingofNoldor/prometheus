@@ -30,15 +30,15 @@ class _StubLogger:
 
 def _load_execution_api_module(monkeypatch):
     # Minimal stubs so importing execution.api does not require the
-    # sibling apathis package to be installed in the test environment.
-    apathis_mod = types.ModuleType("apathis")
-    apathis_core_mod = types.ModuleType("apathis.core")
-    apathis_db_mod = types.ModuleType("apathis.core.database")
-    apathis_logging_mod = types.ModuleType("apathis.core.logging")
-    apathis_ids_mod = types.ModuleType("apathis.core.ids")
-    apathis_time_mod = types.ModuleType("apathis.core.time")
-    apathis_data_mod = types.ModuleType("apathis.data")
-    apathis_data_reader_mod = types.ModuleType("apathis.data.reader")
+    # sibling apatheon package to be installed in the test environment.
+    apatheon_mod = types.ModuleType("apatheon")
+    apatheon_core_mod = types.ModuleType("apatheon.core")
+    apatheon_db_mod = types.ModuleType("apatheon.core.database")
+    apatheon_logging_mod = types.ModuleType("apatheon.core.logging")
+    apatheon_ids_mod = types.ModuleType("apatheon.core.ids")
+    apatheon_time_mod = types.ModuleType("apatheon.core.time")
+    apatheon_data_mod = types.ModuleType("apatheon.data")
+    apatheon_data_reader_mod = types.ModuleType("apatheon.data.reader")
 
     class _StubDatabaseManager:
         pass
@@ -56,22 +56,22 @@ def _load_execution_api_module(monkeypatch):
     class _StubDataReader:
         pass
 
-    apathis_db_mod.DatabaseManager = _StubDatabaseManager  # type: ignore[attr-defined]
-    apathis_logging_mod.get_logger = lambda _name: _StubLogger()  # type: ignore[attr-defined]
-    apathis_ids_mod.generate_uuid = lambda: "stub-uuid"  # type: ignore[attr-defined]
-    apathis_time_mod.US_EQ = "US_EQ"  # type: ignore[attr-defined]
-    apathis_time_mod.TradingCalendar = _StubTradingCalendar  # type: ignore[attr-defined]
-    apathis_time_mod.TradingCalendarConfig = _StubTradingCalendarConfig  # type: ignore[attr-defined]
-    apathis_data_reader_mod.DataReader = _StubDataReader  # type: ignore[attr-defined]
+    apatheon_db_mod.DatabaseManager = _StubDatabaseManager  # type: ignore[attr-defined]
+    apatheon_logging_mod.get_logger = lambda _name: _StubLogger()  # type: ignore[attr-defined]
+    apatheon_ids_mod.generate_uuid = lambda: "stub-uuid"  # type: ignore[attr-defined]
+    apatheon_time_mod.US_EQ = "US_EQ"  # type: ignore[attr-defined]
+    apatheon_time_mod.TradingCalendar = _StubTradingCalendar  # type: ignore[attr-defined]
+    apatheon_time_mod.TradingCalendarConfig = _StubTradingCalendarConfig  # type: ignore[attr-defined]
+    apatheon_data_reader_mod.DataReader = _StubDataReader  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(sys.modules, "apathis", apathis_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core", apathis_core_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.database", apathis_db_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.logging", apathis_logging_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.ids", apathis_ids_mod)
-    monkeypatch.setitem(sys.modules, "apathis.core.time", apathis_time_mod)
-    monkeypatch.setitem(sys.modules, "apathis.data", apathis_data_mod)
-    monkeypatch.setitem(sys.modules, "apathis.data.reader", apathis_data_reader_mod)
+    monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.database", apatheon_db_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.logging", apatheon_logging_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.ids", apatheon_ids_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.core.time", apatheon_time_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.data", apatheon_data_mod)
+    monkeypatch.setitem(sys.modules, "apatheon.data.reader", apatheon_data_reader_mod)
 
     for name in (
         "prometheus.execution.api",

@@ -36,7 +36,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -158,7 +158,7 @@ class EquityResult:
 
 def _load_instruments(market_id: str = "US_EQ") -> List[str]:
     """Load real instrument IDs from database."""
-    from apathis.core.database import get_db_manager
+    from apatheon.core.database import get_db_manager
     db = get_db_manager()
     sql = """
         SELECT instrument_id FROM instruments
@@ -416,8 +416,8 @@ def run_options_config(
     equity_nav_path: str,
 ) -> OptionsResult:
     """Run a single options backtest config."""
-    from apathis.core.database import get_db_manager
-    from apathis.data.reader import DataReader
+    from apatheon.core.database import get_db_manager
+    from apatheon.data.reader import DataReader
 
     from prometheus.backtest.options_backtest import (
         OptionsBacktestConfig,
@@ -617,7 +617,7 @@ def export_best_equity_nav(
         return ""
 
     # Extract daily NAV from database
-    from apathis.core.database import get_db_manager
+    from apatheon.core.database import get_db_manager
     db = get_db_manager()
 
     with db.get_runtime_connection() as conn:

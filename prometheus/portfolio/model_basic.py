@@ -19,10 +19,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable, Dict, List
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.fragility.storage import FragilityStorage
-from apathis.fragility.types import FragilityClass
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.fragility.storage import FragilityStorage
+from apatheon.fragility.types import FragilityClass
 
 from prometheus.portfolio.scenario_risk import compute_portfolio_scenario_pnl
 from prometheus.universe.engine import UniverseMember, UniverseStorage

@@ -35,7 +35,7 @@ import sys
 from datetime import date
 from typing import Any, Dict, Optional, Sequence
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -123,7 +123,7 @@ def _load_signals(
     def _db_price(instrument_id: str) -> Optional[float]:
         """Fetch the most recent close from ``prices_daily`` in the historical DB."""
         try:
-            from apathis.core.database import get_db_manager
+            from apatheon.core.database import get_db_manager
             db = get_db_manager()
             with db.get_historical_connection() as conn:
                 with conn.cursor() as cur:
@@ -213,7 +213,7 @@ def _load_signals(
     # ── Sector Health Index (SHI) from runtime DB ────────────────────
     # Used by SectorPutSpreadStrategy and CrisisAlphaStrategy.
     try:
-        from apathis.core.database import get_db_manager as _get_db
+        from apatheon.core.database import get_db_manager as _get_db
         _db = _get_db()
         with _db.get_runtime_connection() as conn:
             with conn.cursor() as cur:
@@ -717,7 +717,7 @@ def run_derivatives_daily(
             # ── Log options decisions to DecisionTracker ──────────────────
             if approved:
                 try:
-                    from apathis.core.database import get_db_manager
+                    from apatheon.core.database import get_db_manager
 
                     from prometheus.decisions.tracker import DecisionTracker
 

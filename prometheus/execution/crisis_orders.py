@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Position
 from prometheus.execution.instrument_mapper import InstrumentMapper

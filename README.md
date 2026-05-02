@@ -2,7 +2,7 @@
 
 Algorithmic trading system for US equities with options overlay. Runs a daily pipeline that scores instruments, constructs portfolios, and executes trades via Interactive Brokers. Backtested at **23% CAGR, 1.2 Sharpe, -25% MaxDD** over 29 years (1997-2025), beating the S&P 500 in 25 of 29 years.
 
-Built on top of [Apatheon](../apathis) (the intelligence/info layer; Python package still named `apathis`) which provides regime detection, stability scoring, entity graph, and geopolitical signals.
+Built on top of [Apatheon](../apatheon) (the intelligence/info layer; Python package still named `apatheon`) which provides regime detection, stability scoring, entity graph, and geopolitical signals.
 
 ## Architecture
 
@@ -36,8 +36,8 @@ The daily pipeline progresses through phases tracked in `engine_runs`:
 | **Assessment** | Scores instruments: momentum + STAB fragility + embedding outlier + guidance breadth | `prometheus/assessment/model_basic.py` |
 | **Universe** | Filters 660 instruments to top-K by score, with sector caps | `prometheus/universe/engine.py` |
 | **Portfolio** | Builds target weights with conviction lifecycle (half-weight entry, 3-day build) | `prometheus/portfolio/model_conviction.py` |
-| **Forward Indicators** | 13 leading signals (credit, rates, internals, macro) → budget multiplier | `apathis/regime/forward_indicators.py` |
-| **Tier 1 Monitor** | 39 systemic entities (G-SIBs, central banks) → SOP constraints | `apathis/stability/tier1_monitor.py` |
+| **Forward Indicators** | 13 leading signals (credit, rates, internals, macro) → budget multiplier | `apatheon/regime/forward_indicators.py` |
+| **Tier 1 Monitor** | 39 systemic entities (G-SIBs, central banks) → SOP constraints | `apatheon/stability/tier1_monitor.py` |
 | **Options** | 7 strategies (iron butterfly, VIX tail hedge, bull call spread, etc.) | `prometheus/execution/options_strategy.py` |
 | **Crisis Alpha** | Offensive SPY puts when 5+ sectors deteriorate | `prometheus/sector/crisis_alpha.py` |
 | **Daemon Log Viewer** | Live-tailing daemon logs in the frontend dashboard | `prometheus/monitoring/` |

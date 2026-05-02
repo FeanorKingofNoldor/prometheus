@@ -20,9 +20,9 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from apathis.regime.eval_baseline import run_baseline_walk_forward
-from apathis.regime.event_eval import run_event_eval
-from apathis.regime.reporting import build_rollup_dataframe, summarize_folds
+from apatheon.regime.eval_baseline import run_baseline_walk_forward
+from apatheon.regime.event_eval import run_event_eval
+from apatheon.regime.reporting import build_rollup_dataframe, summarize_folds
 
 
 def _select_eval_df(df: pd.DataFrame, mode: str) -> pd.DataFrame:

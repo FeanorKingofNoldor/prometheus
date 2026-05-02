@@ -35,9 +35,9 @@ import argparse
 from datetime import date
 from typing import Optional, Tuple
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
 
 from prometheus.meta.policy import load_meta_policy_artifact
 from prometheus.scripts.run.run_execution_for_portfolio import main as run_execution_for_portfolio_main

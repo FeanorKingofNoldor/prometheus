@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from apathis.core.config import ExecutionRiskConfig, get_config
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.config import ExecutionRiskConfig, get_config
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import (
     BrokerInterface,
@@ -206,7 +206,7 @@ class RiskCheckingBroker(BrokerInterface):
 
         # Try latest close from DB
         try:
-            from apathis.core.database import get_db_manager
+            from apatheon.core.database import get_db_manager
 
             db = get_db_manager()
             with db.get_historical_connection() as conn:

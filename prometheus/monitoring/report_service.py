@@ -17,8 +17,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.monitoring.log_buffer import get_logs
 
@@ -192,14 +192,14 @@ def _build_log_context(since: date, until: date) -> str:
 def _call_llm(system_prompt: str, context: str, max_tokens: int = 2048) -> str:
     """Send the assembled context to the LLM and get the report text."""
     try:
-        from apathis.llm.gateway import get_llm
+        from apatheon.llm.gateway import get_llm
 
         llm = get_llm()
         messages = [
             {"role": "system", "content": system_prompt + context},
             {"role": "user", "content": "Generate the system health report now."},
         ]
-        from apathis.llm.model_routing import get_model
+        from apatheon.llm.model_routing import get_model
 
         return llm.complete(messages, model=get_model("health_report"), temperature=0.3, max_tokens=max_tokens)
     except Exception as exc:

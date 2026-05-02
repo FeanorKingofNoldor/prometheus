@@ -24,10 +24,10 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.markets import infer_region_from_market_id
-from apathis.regime.storage import RegimeStorage
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.markets import infer_region_from_market_id
+from apatheon.regime.storage import RegimeStorage
 from psycopg2.extras import Json
 
 from prometheus.backtest.analyzers import EquityCurvePoint

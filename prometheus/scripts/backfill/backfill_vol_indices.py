@@ -25,11 +25,11 @@ from datetime import date
 from typing import Optional
 
 import requests
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.types import PriceBar
-from apathis.data.writer import DataWriter
-from apathis.data_ingestion.fred_client import FredClient
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.types import PriceBar
+from apatheon.data.writer import DataWriter
+from apatheon.data_ingestion.fred_client import FredClient
 from dotenv import load_dotenv
 
 logger = get_logger(__name__)

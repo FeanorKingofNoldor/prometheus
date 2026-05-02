@@ -16,9 +16,9 @@ import json
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.time import US_EQ
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import US_EQ
 
 logger = get_logger(__name__)
 

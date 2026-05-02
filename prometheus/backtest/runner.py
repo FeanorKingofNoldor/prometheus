@@ -26,13 +26,13 @@ from datetime import date, datetime
 from math import sqrt
 from typing import Callable, Dict, List, Sequence
 
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from apathis.core.markets import infer_region_from_market_id
-from apathis.fragility.storage import FragilityStorage
-from apathis.regime.storage import RegimeStorage
-from apathis.regime.types import RegimeLabel
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
+from apatheon.core.markets import infer_region_from_market_id
+from apatheon.fragility.storage import FragilityStorage
+from apatheon.regime.storage import RegimeStorage
+from apatheon.regime.types import RegimeLabel
 from psycopg2.extras import Json
 
 from prometheus.backtest.analyzers import EquityCurveAnalyzer, EquityCurvePoint

@@ -36,11 +36,11 @@ from datetime import date
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.encoders.joint import JointEmbeddingService, JointEmbeddingStore, JointExample
-from apathis.encoders.models_joint_simple import IdentityNumericJointModel
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.encoders.joint import JointEmbeddingService, JointEmbeddingStore, JointExample
+from apatheon.encoders.models_joint_simple import IdentityNumericJointModel
 
 logger = get_logger(__name__)
 

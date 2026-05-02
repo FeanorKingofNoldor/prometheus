@@ -29,24 +29,24 @@ def test_setup_logging_uses_rotating_handler(tmp_path, monkeypatch):
     import logging
     import importlib
 
-    import apathis.core.logging as apathis_logging
+    import apatheon.core.logging as apatheon_logging
 
     # Reset the root logger so setup_logging() actually configures handlers.
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
 
-    log_path = tmp_path / "test_apathis.log"
+    log_path = tmp_path / "test_apatheon.log"
     monkeypatch.setenv("LOG_FILE", str(log_path))
-    monkeypatch.setenv("APATHIS_LOG_MAX_BYTES", "1024")
-    monkeypatch.setenv("APATHIS_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("APATHEON_LOG_MAX_BYTES", "1024")
+    monkeypatch.setenv("APATHEON_LOG_BACKUP_COUNT", "3")
 
     # Force config reload so the env vars take effect.
-    import apathis.core.config as cfg_mod
+    import apatheon.core.config as cfg_mod
     importlib.reload(cfg_mod)
-    importlib.reload(apathis_logging)
+    importlib.reload(apatheon_logging)
 
-    apathis_logging.setup_logging()
+    apatheon_logging.setup_logging()
 
     rotating = [h for h in logging.getLogger().handlers
                 if isinstance(h, logging.handlers.RotatingFileHandler)]
@@ -118,7 +118,7 @@ def test_options_live_flag_truthy_values():
 
 
 def test_execution_risk_config_supports_drawdown_and_sector():
-    from apathis.core.config import ExecutionRiskConfig
+    from apatheon.core.config import ExecutionRiskConfig
 
     cfg = ExecutionRiskConfig(
         max_drawdown_pct=0.10,
@@ -130,7 +130,7 @@ def test_execution_risk_config_supports_drawdown_and_sector():
 
 def test_drawdown_breaker_blocks_when_below_threshold():
     """When equity is far enough below peak, the breaker raises."""
-    from apathis.core.config import ExecutionRiskConfig
+    from apatheon.core.config import ExecutionRiskConfig
     from prometheus.execution.broker_interface import (
         Order,
         OrderSide,
@@ -172,7 +172,7 @@ def test_drawdown_breaker_blocks_when_below_threshold():
 
 def test_drawdown_breaker_allows_when_within_threshold():
     """Equity within tolerance must NOT trip the breaker."""
-    from apathis.core.config import ExecutionRiskConfig
+    from apatheon.core.config import ExecutionRiskConfig
     from prometheus.execution.broker_interface import (
         Order,
         OrderSide,
@@ -257,7 +257,7 @@ def test_retry_backoff_429_lifts_floor():
 
 
 def test_check_price_data_freshness_passes_within_lag():
-    from apathis.data_ingestion.daily_orchestrator import check_price_data_freshness
+    from apatheon.data_ingestion.daily_orchestrator import check_price_data_freshness
 
     db = MagicMock()
     cur = MagicMock()
@@ -274,7 +274,7 @@ def test_check_price_data_freshness_passes_within_lag():
 
 
 def test_check_price_data_freshness_fails_when_stale():
-    from apathis.data_ingestion.daily_orchestrator import check_price_data_freshness
+    from apatheon.data_ingestion.daily_orchestrator import check_price_data_freshness
 
     db = MagicMock()
     cur = MagicMock()
@@ -292,7 +292,7 @@ def test_check_price_data_freshness_fails_when_stale():
 
 
 def test_check_price_data_freshness_fails_when_table_empty():
-    from apathis.data_ingestion.daily_orchestrator import check_price_data_freshness
+    from apatheon.data_ingestion.daily_orchestrator import check_price_data_freshness
 
     db = MagicMock()
     cur = MagicMock()

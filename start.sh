@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Prometheus + Apathis + Cassandra — Development Frontend Servers
+# Prometheus + Apatheon + Cassandra — Development Frontend Servers
 #
 # Backends run via systemd:
-#   apathis-api         → :8100  (geopolitical intelligence)
+#   apatheon-api         → :8100  (geopolitical intelligence)
 #   cassandra           → :8200  (prediction market module)
 #   prometheus-web      → :8000  (trading C2 backend)
 #   prometheus-daemon   → orchestration (no port)
@@ -12,18 +12,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APATHIS_ROOT="/home/feanor/coding/apathis"
+APATHEON_ROOT="/home/feanor/coding/apatheon"
 
 FRONTEND_PORT=5173
-APATHIS_FRONTEND_PORT=5174
+APATHEON_FRONTEND_PORT=5174
 CASSANDRA_FRONTEND_PORT=5175
 CASSANDRA_ROOT="/home/feanor/coding/cassandra"
 
 cleanup() {
   echo ""
   echo "Shutting down frontend dev servers..."
-  kill "$FRONTEND_PID" "$APATHIS_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
-  wait "$FRONTEND_PID" "$APATHIS_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
+  kill "$FRONTEND_PID" "$APATHEON_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
+  wait "$FRONTEND_PID" "$APATHEON_FE_PID" "$CASSANDRA_FE_PID" 2>/dev/null || true
   echo "Done."
 }
 trap cleanup EXIT INT TERM
@@ -41,7 +41,7 @@ for pid in $(pgrep -f "uvicorn cassandra.api.app" 2>/dev/null || true); do
 done
 
 # Kill orphan vite processes on our ports
-for port in $FRONTEND_PORT $APATHIS_FRONTEND_PORT $CASSANDRA_FRONTEND_PORT; do
+for port in $FRONTEND_PORT $APATHEON_FRONTEND_PORT $CASSANDRA_FRONTEND_PORT; do
   stale_pid=$(lsof -ti ":$port" 2>/dev/null || true)
   if [ -n "$stale_pid" ]; then
     echo "  Killing stale process on :$port (pid $stale_pid)"
@@ -54,7 +54,7 @@ done
 echo ""
 echo "Checking backend services..."
 ALL_OK=true
-for svc in apathis-api cassandra prometheus-web prometheus-daemon; do
+for svc in apatheon-api cassandra prometheus-web prometheus-daemon; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     echo "  ✓ $svc"
   else
@@ -79,11 +79,11 @@ npx vite --port "$FRONTEND_PORT" < /dev/null &
 FRONTEND_PID=$!
 cd "$ROOT"
 
-# ── Apathis Frontend ────────────────────────────────────
-echo "Starting Apathis frontend on :$APATHIS_FRONTEND_PORT..."
-cd "$APATHIS_ROOT/apathis_web"
-npx vite --port "$APATHIS_FRONTEND_PORT" < /dev/null &
-APATHIS_FE_PID=$!
+# ── Apatheon Frontend ────────────────────────────────────
+echo "Starting Apatheon frontend on :$APATHEON_FRONTEND_PORT..."
+cd "$APATHEON_ROOT/apatheon_web"
+npx vite --port "$APATHEON_FRONTEND_PORT" < /dev/null &
+APATHEON_FE_PID=$!
 cd "$ROOT"
 
 # ── Cassandra Frontend ──────────────────────────────────
@@ -97,13 +97,13 @@ sleep 3
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo "  Backends (systemd):"
-echo "  Apathis API:    http://localhost:8100"
+echo "  Apatheon API:    http://localhost:8100"
 echo "  Cassandra API:  http://localhost:8200  (prediction markets)"
 echo "  Prometheus API: http://localhost:8000"
 echo ""
 echo "  Frontends (dev mode — hot reload):"
 echo "  Prometheus UI:  http://localhost:$FRONTEND_PORT"
-echo "  Apathis UI:     http://localhost:$APATHIS_FRONTEND_PORT"
+echo "  Apatheon UI:     http://localhost:$APATHEON_FRONTEND_PORT"
 echo "  Cassandra UI:   http://localhost:$CASSANDRA_FRONTEND_PORT"
 echo ""
 echo "  Press Ctrl+C to stop frontend dev servers"

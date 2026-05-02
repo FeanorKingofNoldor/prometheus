@@ -27,11 +27,11 @@ from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.data.reader import DataReader
-from apathis.regime.hazard_overlay import (
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.data.reader import DataReader
+from apatheon.regime.hazard_overlay import (
     RegimeHazardConfig,
     compute_future_max_drawdown_label,
     compute_future_return_label,

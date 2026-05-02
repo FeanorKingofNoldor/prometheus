@@ -22,8 +22,8 @@ from typing import Dict, List
 
 import numpy as np
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -48,15 +48,15 @@ def generate_numeric_embeddings(
     Uses PadToDimNumericEmbeddingModel (384-dim, deterministic, no external files).
     Returns number of embeddings generated.
     """
-    from apathis.core.time import TradingCalendar
-    from apathis.data.reader import DataReader
-    from apathis.encoders import (
+    from apatheon.core.time import TradingCalendar
+    from apatheon.data.reader import DataReader
+    from apatheon.encoders import (
         NumericWindowBuilder,
         NumericWindowEncoder,
         NumericWindowSpec,
         NumericEmbeddingStore,
     )
-    from apathis.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
+    from apatheon.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
 
     reader = DataReader(db_manager=db_manager)
     calendar = TradingCalendar()

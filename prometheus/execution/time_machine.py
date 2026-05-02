@@ -34,9 +34,9 @@ from datetime import date, timedelta
 from typing import Any, Iterator, Mapping
 
 import pandas as pd
-from apathis.core.logging import get_logger
-from apathis.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
-from apathis.data.reader import DataReader
+from apatheon.core.logging import get_logger
+from apatheon.core.time import US_EQ, TradingCalendar, TradingCalendarConfig
+from apatheon.data.reader import DataReader
 
 # ============================================================================
 # Module setup

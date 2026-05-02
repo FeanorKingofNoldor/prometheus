@@ -13,8 +13,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel
 
@@ -96,7 +96,7 @@ async def get_log_categories() -> List[str]:
 
 # ── Daemon Logs (from log file) ─────────────────────────────────────
 
-# Pattern: "2026-03-31 12:37:38 - apathis.core.database - INFO - message"
+# Pattern: "2026-03-31 12:37:38 - apatheon.core.database - INFO - message"
 _DAEMON_LOG_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+"  # timestamp
     r"([\w.]+)\s+-\s+"                                     # logger name
@@ -147,7 +147,7 @@ def _parse_daemon_log(
             if current is not None:
                 entries.append(current)
             ts, name, lvl, msg = m.groups()
-            # Shorten category: "apathis.prometheus.pipeline.tasks" → "pipeline.tasks"
+            # Shorten category: "apatheon.prometheus.pipeline.tasks" → "pipeline.tasks"
             parts = name.split(".")
             if len(parts) > 2:
                 short_cat = ".".join(parts[-2:])

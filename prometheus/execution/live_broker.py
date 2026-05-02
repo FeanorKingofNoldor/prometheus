@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import (
     BrokerInterface,

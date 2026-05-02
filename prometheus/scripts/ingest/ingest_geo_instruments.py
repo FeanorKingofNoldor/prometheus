@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import yaml
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 from psycopg2.extras import Json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

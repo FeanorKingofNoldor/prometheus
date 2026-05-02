@@ -12,8 +12,8 @@ import argparse
 import sys
 from datetime import date
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.orchestration.daily_orchestrator import (
     DailyOrchestrator,

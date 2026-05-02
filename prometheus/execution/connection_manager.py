@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.ib_compat import IB
 from prometheus.execution.ibkr_client import IbkrConnectionConfig

@@ -23,11 +23,11 @@ from datetime import date
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.writer import DataWriter
-from apathis.data_ingestion.eodhd_client import EodhdClient
-from apathis.data_ingestion.eodhd_prices import ingest_eodhd_prices_for_instrument
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.writer import DataWriter
+from apatheon.data_ingestion.eodhd_client import EodhdClient
+from apatheon.data_ingestion.eodhd_prices import ingest_eodhd_prices_for_instrument
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

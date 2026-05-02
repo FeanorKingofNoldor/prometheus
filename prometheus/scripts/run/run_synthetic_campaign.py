@@ -46,9 +46,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.reader import DataReader
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.reader import DataReader
 
 from prometheus.synthetic import (
     RealityConfig,

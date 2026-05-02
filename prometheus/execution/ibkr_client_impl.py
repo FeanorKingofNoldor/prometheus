@@ -20,7 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Fill, Order, OrderSide, OrderStatus, OrderType, Position
 from prometheus.execution.connection_manager import DualConnectionManager

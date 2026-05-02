@@ -18,8 +18,8 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Order, OrderSide, OrderType, Position
 

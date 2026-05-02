@@ -22,7 +22,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

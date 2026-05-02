@@ -13,15 +13,15 @@ from pathlib import Path
 
 # Ensure both projects on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apathis"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apatheon"))
 
 import logging
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 # Show info for our modules only
 logging.getLogger("prometheus.backtest").setLevel(logging.INFO)
 
-from apathis.core.database import get_db_manager
-from apathis.core.time import TradingCalendar
+from apatheon.core.database import get_db_manager
+from apatheon.core.time import TradingCalendar
 from prometheus.backtest import run_backtest_campaign, SleeveConfig
 
 

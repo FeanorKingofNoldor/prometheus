@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Position
 

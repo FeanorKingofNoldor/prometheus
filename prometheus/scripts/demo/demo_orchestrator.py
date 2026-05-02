@@ -9,8 +9,8 @@ Usage:
 
 from datetime import date, datetime, timezone
 
-from apathis.core.logging import get_logger
-from apathis.core.market_state import MarketState, get_market_state
+from apatheon.core.logging import get_logger
+from apatheon.core.market_state import MarketState, get_market_state
 
 from prometheus.orchestration.dag import build_market_dag
 

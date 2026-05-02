@@ -47,15 +47,15 @@ from datetime import date
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.encoders import (
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.encoders import (
     JointEmbeddingService,
     JointEmbeddingStore,
     JointExample,
 )
-from apathis.encoders.models_joint_simple import SimpleAverageJointModel
+from apatheon.encoders.models_joint_simple import SimpleAverageJointModel
 from numpy.typing import NDArray
 
 logger = get_logger(__name__)

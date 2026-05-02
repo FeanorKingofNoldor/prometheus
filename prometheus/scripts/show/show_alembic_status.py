@@ -20,7 +20,7 @@ from typing import Optional, Sequence
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 
 def _get_alembic_heads(project_root: Path) -> list[str]:

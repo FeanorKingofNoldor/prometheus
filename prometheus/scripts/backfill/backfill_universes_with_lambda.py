@@ -25,13 +25,13 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.markets import MARKETS_BY_REGION
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
-from apathis.profiles import (
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.markets import MARKETS_BY_REGION
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
+from apatheon.profiles import (
     BasicProfileEmbedder,
     ProfileFeatureBuilder,
     ProfileService,
@@ -39,7 +39,7 @@ from apathis.profiles import (
     RoutedProfileFeatureBuilder,
     SovereignProfileFeatureBuilder,
 )
-from apathis.stability import StabilityStorage
+from apatheon.stability import StabilityStorage
 
 from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
 from prometheus.universe import BasicUniverseModel, UniverseEngine, UniverseStorage

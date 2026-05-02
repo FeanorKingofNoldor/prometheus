@@ -21,11 +21,11 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
-from apathis.stability import StabilityStorage
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
+from apatheon.stability import StabilityStorage
 
 from prometheus.assessment import AssessmentEngine
 from prometheus.assessment.model_basic import BasicAssessmentModel

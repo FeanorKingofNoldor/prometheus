@@ -136,7 +136,7 @@
 
 ---
 
-## 2026-03-25 — Apathis v2, Entity Graph, Intelligence Engine
+## 2026-03-25 — Apatheon v2, Entity Graph, Intelligence Engine
 
 ### Reactive Entity Graph
 - In-memory typed property graph with BFS propagation
@@ -178,7 +178,7 @@
 ## 2026-03-24 — Initial Stack, Pipeline Fixes, Test Suite
 
 ### Stack Migration
-- Migrated from prometheus_v2 to new prometheus + apathis stack
+- Migrated from prometheus_v2 to new prometheus + apatheon stack
 - Systemd service configured with SELinux-compatible paths
 - PgBouncer on port 6432, PostgreSQL with historical + runtime DBs
 

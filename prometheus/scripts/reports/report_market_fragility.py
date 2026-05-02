@@ -15,9 +15,9 @@ import argparse
 from datetime import date, timedelta
 from typing import Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.fragility.storage import FragilityStorage
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.fragility.storage import FragilityStorage
 
 
 def _parse_date(value: str) -> date:

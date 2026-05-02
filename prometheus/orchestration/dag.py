@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
-from apathis.core.logging import get_logger
-from apathis.core.market_state import MarketState
+from apatheon.core.logging import get_logger
+from apatheon.core.market_state import MarketState
 
 from prometheus.pipeline.state import RunPhase
 

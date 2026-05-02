@@ -19,12 +19,12 @@ from datetime import date, timedelta
 from typing import Dict, Sequence
 
 import numpy as np
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
-from apathis.stability.storage import StabilityStorage
-from apathis.stability.types import SoftTargetState
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
+from apatheon.stability.storage import StabilityStorage
+from apatheon.stability.types import SoftTargetState
 
 from prometheus.assessment.api import AssessmentModel, InstrumentScore
 

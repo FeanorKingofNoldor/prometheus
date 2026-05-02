@@ -46,8 +46,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
 import yaml
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
 
 # ---------------------------------------------------------------------------
 # Small helpers

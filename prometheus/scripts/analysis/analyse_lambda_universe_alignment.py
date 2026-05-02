@@ -19,8 +19,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.universe.engine import UniverseMember, UniverseStorage
 

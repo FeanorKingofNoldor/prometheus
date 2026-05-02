@@ -30,10 +30,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.types import PriceBar
-from apathis.data.writer import DataWriter
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.types import PriceBar
+from apatheon.data.writer import DataWriter
 
 from prometheus.execution.market_data import (
     SECTOR_ETF_SYMBOLS,

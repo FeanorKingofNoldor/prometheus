@@ -24,10 +24,10 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.eodhd_client import EodhdClient
-from apathis.data_ingestion.eodhd_sp500_instruments import (
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.eodhd_client import EodhdClient
+from apatheon.data_ingestion.eodhd_sp500_instruments import (
     fetch_sp500_constituents,
     upsert_sp500_instruments,
 )

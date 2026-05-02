@@ -20,8 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.decisions import DecisionTracker, OutcomeEvaluator
 from prometheus.pipeline.state import EngineRun, RunPhase, get_or_create_run

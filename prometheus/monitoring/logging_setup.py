@@ -10,7 +10,7 @@ by monitoring scripts or the monitoring web API.
 
 from __future__ import annotations
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 
 def configure_monitoring_logging() -> None:

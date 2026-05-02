@@ -13,9 +13,9 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar
 
 logger = get_logger(__name__)
 

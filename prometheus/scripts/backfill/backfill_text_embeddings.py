@@ -26,11 +26,11 @@ import argparse
 from datetime import date
 from typing import List, Optional, Sequence, Tuple
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.encoders import TextDoc, TextEmbeddingService, TextEmbeddingStore
-from apathis.encoders.models_text_hf import HuggingFaceTextEmbeddingModel
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.encoders import TextDoc, TextEmbeddingService, TextEmbeddingStore
+from apatheon.encoders.models_text_hf import HuggingFaceTextEmbeddingModel
 
 logger = get_logger(__name__)
 

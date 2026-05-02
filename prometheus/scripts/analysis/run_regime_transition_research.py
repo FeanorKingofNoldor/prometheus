@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from apathis.regime.cftc_features import build_tff_weekly_features, forward_fill_weekly_to_daily
-from apathis.regime.data_sources import (
+from apatheon.regime.cftc_features import build_tff_weekly_features, forward_fill_weekly_to_daily
+from apatheon.regime.data_sources import (
     load_breadth,
     load_cftc_tff,
     load_finra_margin,
@@ -34,11 +34,11 @@ from apathis.regime.data_sources import (
     load_fred_vixcls,
     load_pcr_total,
 )
-from apathis.regime.eval_baseline import run_baseline_walk_forward
-from apathis.regime.event_eval import run_event_eval
-from apathis.regime.event_labels import generate_labels
-from apathis.regime.features_numeric import FeatureConfig, compute_feature_matrix, join_features_and_labels
-from apathis.regime.reporting import build_rollup_dataframe, summarize_folds
+from apatheon.regime.eval_baseline import run_baseline_walk_forward
+from apatheon.regime.event_eval import run_event_eval
+from apatheon.regime.event_labels import generate_labels
+from apatheon.regime.features_numeric import FeatureConfig, compute_feature_matrix, join_features_and_labels
+from apatheon.regime.reporting import build_rollup_dataframe, summarize_folds
 
 
 def build_daily_dataset(*, include_pcr: bool = True, include_cftc: bool = False, include_macro: bool = True) -> pd.DataFrame:

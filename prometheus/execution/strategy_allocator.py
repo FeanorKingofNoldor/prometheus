@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional, Set
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

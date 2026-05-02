@@ -1,8 +1,8 @@
 [Unit]
 Description=Prometheus Monitoring API (FastAPI/Uvicorn)
-After=network.target postgresql.service apathis-api.service
+After=network.target postgresql.service apatheon-api.service
 Requires=postgresql.service
-Wants=apathis-api.service
+Wants=apatheon-api.service
 
 [Service]
 Type=simple
@@ -11,7 +11,7 @@ Group=feanor
 WorkingDirectory=/home/feanor/coding/prometheus
 EnvironmentFile=/etc/sysconfig/prometheus-daemon
 
-Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apathis:/home/feanor/coding/prometheus
+Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apatheon:/home/feanor/coding/prometheus
 
 # SECURITY: Bind to 127.0.0.1 only — the API has no authentication.
 # If you need external access, put a reverse proxy with auth in front.

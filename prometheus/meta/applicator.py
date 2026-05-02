@@ -25,9 +25,9 @@ from datetime import date, datetime  # noqa: F401  (datetime kept for type hints
 from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
 
 logger = get_logger(__name__)

@@ -20,20 +20,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import yaml
-from apathis.core.database import DatabaseManager
-from apathis.core.ids import generate_uuid
-from apathis.core.logging import get_logger
-from apathis.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
-from apathis.core.time import TradingCalendar
-from apathis.data.reader import DataReader
-from apathis.fragility import (
+from apatheon.core.database import DatabaseManager
+from apatheon.core.ids import generate_uuid
+from apatheon.core.logging import get_logger
+from apatheon.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
+from apatheon.core.time import TradingCalendar
+from apatheon.data.reader import DataReader
+from apatheon.fragility import (
     BasicFragilityAlphaModel,
     FragilityAlphaEngine,
     FragilityStorage,
 )
-from apathis.fragility.model_market import MarketFragilityModel
-from apathis.fragility.overlay import compute_fragility_overlay, overlay_config_from_sleeve_spec
-from apathis.profiles import (
+from apatheon.fragility.model_market import MarketFragilityModel
+from apatheon.fragility.overlay import compute_fragility_overlay, overlay_config_from_sleeve_spec
+from apatheon.profiles import (
     BasicProfileEmbedder,
     ProfileFeatureBuilder,
     ProfileService,
@@ -41,11 +41,11 @@ from apathis.profiles import (
     RoutedProfileFeatureBuilder,
     SovereignProfileFeatureBuilder,
 )
-from apathis.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
-from apathis.regime.state_change import RegimeStateChangeForecaster
-from apathis.sector.health import SectorHealthResult, compute_sector_health
-from apathis.sector.mapper import SectorMapper
-from apathis.stability import (
+from apatheon.regime import MarketProxyRegimeModel, RegimeEngine, RegimeStorage
+from apatheon.regime.state_change import RegimeStateChangeForecaster
+from apatheon.sector.health import SectorHealthResult, compute_sector_health
+from apatheon.sector.mapper import SectorMapper
+from apatheon.stability import (
     BasicPriceStabilityModel,
     StabilityEngine,
     StabilityStateChangeForecaster,
@@ -768,8 +768,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # ------------------------------------------------------------------
 
     try:
-        from apathis.api.graph import get_graph
-        from apathis.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
+        from apatheon.api.graph import get_graph
+        from apatheon.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
 
         t1_graph = get_graph()
         t1_snapshot = compute_tier1_scores(db_manager, t1_graph, run.as_of_date)
@@ -793,7 +793,7 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # ------------------------------------------------------------------
 
     try:
-        from apathis.regime.forward_indicators import compute_forward_indicators
+        from apatheon.regime.forward_indicators import compute_forward_indicators
 
         fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
         logger.info(
@@ -2098,8 +2098,8 @@ def run_books_for_run(
     # ------------------------------------------------------------------
 
     try:
-        from apathis.api.graph import get_graph
-        from apathis.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
+        from apatheon.api.graph import get_graph
+        from apatheon.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
 
         t1_graph = get_graph()
         t1_snap = compute_tier1_scores(db_manager, t1_graph, run.as_of_date)
@@ -2123,7 +2123,7 @@ def run_books_for_run(
     fwd_adaptation: dict[str, object] = {}
 
     try:
-        from apathis.regime.forward_indicators import compute_forward_indicators
+        from apatheon.regime.forward_indicators import compute_forward_indicators
         import yaml
 
         fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)

@@ -32,9 +32,9 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.market_calendar import load_and_cache_market_holidays
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.market_calendar import load_and_cache_market_holidays
 
 logger = get_logger(__name__)
 

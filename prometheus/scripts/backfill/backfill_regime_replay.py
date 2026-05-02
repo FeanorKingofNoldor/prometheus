@@ -23,13 +23,13 @@ from collections import Counter
 from datetime import date, timedelta
 from typing import Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig
-from apathis.regime.engine import RegimeEngine
-from apathis.regime.model_proxy import MarketProxyRegimeModel
-from apathis.regime.storage import RegimeStorage
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar, TradingCalendarConfig
+from apatheon.regime.engine import RegimeEngine
+from apatheon.regime.model_proxy import MarketProxyRegimeModel
+from apatheon.regime.storage import RegimeStorage
 
 logger = get_logger(__name__)
 

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Iterable, Mapping, MutableMapping, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

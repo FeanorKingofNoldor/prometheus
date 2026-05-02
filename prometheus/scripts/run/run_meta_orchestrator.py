@@ -19,8 +19,8 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.meta import MetaOrchestrator, MetaStorage
 from prometheus.pipeline.tasks import run_meta_for_strategy

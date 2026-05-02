@@ -17,8 +17,8 @@ import json
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.ids import generate_uuid
+from apatheon.core.database import get_db_manager
+from apatheon.core.ids import generate_uuid
 from psycopg2.extras import Json
 
 # ── US Tier 1 positions ──────────────────────────────────────────────────

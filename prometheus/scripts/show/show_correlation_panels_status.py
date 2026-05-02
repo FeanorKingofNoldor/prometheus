@@ -19,7 +19,7 @@ import json
 from datetime import date, datetime
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 
 def _summarise(db, which: str) -> dict[str, Any]:

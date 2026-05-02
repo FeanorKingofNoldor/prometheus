@@ -357,7 +357,7 @@ class TestEstimatePrice:
         price = rb._estimate_price("AAPL", positions)
         assert price == 150.0
 
-    @patch("apathis.core.database.get_db_manager")
+    @patch("apatheon.core.database.get_db_manager")
     def test_estimate_price_fallback_to_db(self, mock_get_db):
         """When no position exists, fall back to DB lookup."""
         mock_conn = MagicMock()
@@ -373,7 +373,7 @@ class TestEstimatePrice:
         price = rb._estimate_price("MSFT", {})
         assert price == 200.0
 
-    @patch("apathis.core.database.get_db_manager", side_effect=Exception("no DB"))
+    @patch("apatheon.core.database.get_db_manager", side_effect=Exception("no DB"))
     def test_estimate_price_conservative_fallback(self, mock_get_db):
         """When DB lookup fails, returns 1000.0 conservative fallback."""
         inner = FakeBroker()

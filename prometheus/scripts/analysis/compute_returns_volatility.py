@@ -29,9 +29,9 @@ import argparse
 from datetime import date
 from typing import List, Optional
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data_ingestion.derived.returns_volatility import (
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data_ingestion.derived.returns_volatility import (
     DerivedStatsResult,
     compute_returns_and_volatility_for_instruments,
 )

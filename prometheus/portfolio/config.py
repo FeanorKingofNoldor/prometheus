@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 
 import yaml
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 from pydantic import BaseModel
 
 logger = get_logger(__name__)

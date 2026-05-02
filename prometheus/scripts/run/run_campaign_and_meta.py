@@ -21,9 +21,9 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 from prometheus.pipeline.tasks import run_backtest_campaign_and_meta_for_strategy
 

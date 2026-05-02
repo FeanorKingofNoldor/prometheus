@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import pandas as pd
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.opportunity.lambda_model import (
     LambdaPoly2Model,

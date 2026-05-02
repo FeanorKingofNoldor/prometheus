@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -321,7 +321,7 @@ def main(argv=None):
     logger.info("Loaded equity CAGR for %d realities", len(equity_cagrs))
 
     # DB connection params from pydantic config
-    from apathis.core.config import get_config
+    from apatheon.core.config import get_config
     cfg = get_config()
     db_cfg = cfg.historical_db
     db_conn_params = {

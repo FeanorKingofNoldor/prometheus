@@ -55,8 +55,8 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from apathis.core.database import DatabaseManager, get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager, get_db_manager
+from apatheon.core.logging import get_logger
 
 from prometheus.decisions import DecisionTracker
 from prometheus.execution.api import apply_execution_plan

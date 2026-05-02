@@ -16,8 +16,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-from apathis.core.logging import get_logger, setup_logging
-from apathis.data_ingestion.factors_sector import (
+from apatheon.core.logging import get_logger, setup_logging
+from apatheon.data_ingestion.factors_sector import (
     SectorFactorBackfillConfig,
     backfill_sector_factors,
 )

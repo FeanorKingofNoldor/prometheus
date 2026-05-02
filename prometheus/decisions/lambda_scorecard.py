@@ -31,8 +31,8 @@ from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

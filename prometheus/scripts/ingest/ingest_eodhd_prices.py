@@ -27,11 +27,11 @@ import argparse
 from datetime import date
 from typing import Dict, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.writer import DataWriter
-from apathis.data_ingestion.eodhd_client import EodhdClient
-from apathis.data_ingestion.eodhd_prices import (
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.writer import DataWriter
+from apatheon.data_ingestion.eodhd_client import EodhdClient
+from apatheon.data_ingestion.eodhd_prices import (
     ingest_eodhd_prices_for_instrument,
     ingest_eodhd_prices_for_instruments,
 )

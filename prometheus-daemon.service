@@ -14,7 +14,7 @@ EnvironmentFile=/etc/sysconfig/prometheus-daemon
 # site-packages on PYTHONPATH so imports resolve without needing the symlinks
 # inside ~/coding/prometheus/.venv/bin/ (which are user_home_t and not exec-able
 # by systemd's init domain).
-Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apathis:/home/feanor/coding/prometheus
+Environment=PYTHONPATH=/home/feanor/coding/prometheus/.venv/lib/python3.14/site-packages:/home/feanor/coding/apatheon:/home/feanor/coding/prometheus
 
 # Market-aware daemon: polls every 60s, executes full DAG for US_EQ / IRIS / INTEL
 ExecStart=/usr/bin/python3.14 \

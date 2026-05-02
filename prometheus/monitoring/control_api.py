@@ -18,8 +18,8 @@ from datetime import date, datetime  # noqa: F401  (datetime kept for type hints
 from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Path
 from pydantic import BaseModel, Field
 
@@ -262,9 +262,9 @@ async def run_backtest(request: BacktestRequest = Body(...)) -> JobResponse:
     apply_risk = not bool(ovr.get("disable_risk", False))
 
     def _run() -> Dict[str, Any]:
-        from apathis.core.config import get_config
-        from apathis.core.database import DatabaseManager
-        from apathis.core.time import TradingCalendar, TradingCalendarConfig
+        from apatheon.core.config import get_config
+        from apatheon.core.database import DatabaseManager
+        from apatheon.core.time import TradingCalendar, TradingCalendarConfig
 
         from prometheus.backtest.campaign import _run_backtest_for_sleeve
         from prometheus.backtest.config import SleeveConfig
@@ -670,7 +670,7 @@ async def schedule_dag(request: DAGScheduleRequest = Body(...)) -> JobResponse:
         is_sunday = as_of.weekday() == 6
 
         def _run_intel_dag() -> Dict[str, Any]:
-            from apathis.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
+            from apatheon.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
 
             from prometheus.monitoring.report_service import generate_log_report
 
@@ -960,7 +960,7 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                     try:
                         from datetime import date as _date
 
-                        from apathis.core.ids import generate_uuid
+                        from apatheon.core.ids import generate_uuid
                         from psycopg2.extras import Json as _Json
 
                         net_liq = float(account.get("NetLiquidation", 0))
@@ -1064,9 +1064,9 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
             from datetime import date as _date
             from datetime import timedelta as _td
 
-            from apathis.data.writer import DataWriter as _DataWriter
-            from apathis.data_ingestion.eodhd_client import EodhdClient as _EodhdClient
-            from apathis.data_ingestion.eodhd_prices import ingest_eodhd_prices_for_instrument
+            from apatheon.data.writer import DataWriter as _DataWriter
+            from apatheon.data_ingestion.eodhd_client import EodhdClient as _EodhdClient
+            from apatheon.data_ingestion.eodhd_prices import ingest_eodhd_prices_for_instrument
 
             _end = _date.today()
             _start = _end - _td(days=60)
@@ -1092,9 +1092,9 @@ async def sync_data(request: SyncDataRequest = Body(...)) -> SyncDataResponse:
                 logger.info("[sync/nations] Re-scoring all nations...")
                 from datetime import date as _date
 
-                from apathis.nation.engine import NationScoringEngine
-                from apathis.nation.model_basic import BasicNationScoringModel
-                from apathis.nation.storage import (
+                from apatheon.nation.engine import NationScoringEngine
+                from apatheon.nation.model_basic import BasicNationScoringModel
+                from apatheon.nation.storage import (
                     NationMacroStorage,
                     NationScoreStorage,
                     PersonProfileStorage,

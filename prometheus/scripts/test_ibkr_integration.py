@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.execution.ib_compat import IB, IB_BACKEND
 from prometheus.execution.instrument_mapper import InstrumentMapper

@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

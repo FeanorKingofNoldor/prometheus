@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Prometheus + Apathis — Production Build & Deploy
+# Prometheus + Apatheon — Production Build & Deploy
 #
 # Builds both frontends, copies to static dirs, restarts backends.
 # After this, backends serve the built frontends directly — no Vite needed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APATHIS_ROOT="/home/feanor/coding/apathis"
+APATHEON_ROOT="/home/feanor/coding/apatheon"
 
 echo "═══════════════════════════════════════════════════"
 echo "  Production Build & Deploy"
 echo "═══════════════════════════════════════════════════"
 
-# ── Build Apathis frontend ───────────────────────────────
+# ── Build Apatheon frontend ───────────────────────────────
 echo ""
-echo "Building Apathis frontend..."
-cd "$APATHIS_ROOT/apathis_web"
+echo "Building Apatheon frontend..."
+cd "$APATHEON_ROOT/apatheon_web"
 npm run build
-rm -rf "$APATHIS_ROOT/static"
-cp -r dist "$APATHIS_ROOT/static"
+rm -rf "$APATHEON_ROOT/static"
+cp -r dist "$APATHEON_ROOT/static"
 # Copy to /opt/ for nginx (nginx can't traverse /home/feanor/)
-sudo rm -rf /opt/apathis/static
-sudo cp -r dist /opt/apathis/static
-echo "  ✓ Apathis frontend built → /opt/apathis/static/"
+sudo rm -rf /opt/apatheon/static
+sudo cp -r dist /opt/apatheon/static
+echo "  ✓ Apatheon frontend built → /opt/apatheon/static/"
 
 # ── Build Prometheus frontend ────────────────────────────
 echo ""
@@ -41,20 +41,20 @@ echo "  ✓ Prometheus frontend built → /opt/prometheus/static/"
 echo ""
 echo "Deploying nginx configs..."
 sudo cp "$ROOT/deploy/nginx/prometheus.conf" /etc/nginx/conf.d/prometheus.conf
-sudo cp "$ROOT/deploy/nginx/apathis.conf" /etc/nginx/conf.d/apathis.conf
+sudo cp "$ROOT/deploy/nginx/apatheon.conf" /etc/nginx/conf.d/apatheon.conf
 sudo nginx -t && sudo systemctl reload nginx
 echo "  ✓ Nginx configs deployed"
 
 # ── Restart backends to pick up static files ─────────────
 echo ""
 echo "Restarting backend services..."
-sudo systemctl restart apathis-api prometheus-api prometheus-daemon
+sudo systemctl restart apatheon-api prometheus-api prometheus-daemon
 sleep 5
 
 # ── Verify ───────────────────────────────────────────────
 echo ""
 echo "Verifying..."
-for svc in apathis-api prometheus-api prometheus-daemon; do
+for svc in apatheon-api prometheus-api prometheus-daemon; do
   if systemctl is-active --quiet "$svc"; then
     echo "  ✓ $svc is running"
   else
@@ -66,9 +66,9 @@ echo ""
 echo "═══════════════════════════════════════════════════"
 echo "  Production deploy complete!"
 echo ""
-echo "  Apathis:    http://localhost:8100  (API + frontend)"
+echo "  Apatheon:    http://localhost:8100  (API + frontend)"
 echo "  Prometheus: http://localhost:8200  (API + frontend)"
 echo ""
 echo "  No Vite dev servers needed."
-echo "  Logs: journalctl -u apathis-api -f"
+echo "  Logs: journalctl -u apatheon-api -f"
 echo "═══════════════════════════════════════════════════"

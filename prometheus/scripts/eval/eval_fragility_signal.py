@@ -21,10 +21,10 @@ from typing import List, Sequence
 
 import numpy as np
 import pandas as pd
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.data.reader import DataReader
-from apathis.fragility.storage import FragilityStorage
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.data.reader import DataReader
+from apatheon.fragility.storage import FragilityStorage
 
 
 def _parse_date(value: str) -> date:

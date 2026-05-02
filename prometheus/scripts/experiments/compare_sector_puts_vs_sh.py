@@ -18,9 +18,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Tuple
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.sector.health import SectorHealthEngine, SECTOR_NAME_TO_ETF
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.sector.health import SectorHealthEngine, SECTOR_NAME_TO_ETF
 
 logger = get_logger(__name__)
 

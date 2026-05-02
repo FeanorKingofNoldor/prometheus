@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 from fastapi import APIRouter, HTTPException, Path, Query
 
 logger = get_logger(__name__)
@@ -89,7 +89,7 @@ async def list_briefs(
     limit: int = Query(50, ge=1, le=200),
 ) -> List[Dict[str, Any]]:
     """List intelligence briefs with optional filters."""
-    from apathis.intel.store import get_briefs
+    from apatheon.intel.store import get_briefs
 
     return get_briefs(
         brief_type=brief_type,
@@ -106,7 +106,7 @@ async def list_briefs(
 @intel_router.get("/briefs/unread-count")
 async def unread_count() -> Dict[str, int]:
     """Return unread brief counts by type."""
-    from apathis.intel.store import get_unread_count
+    from apatheon.intel.store import get_unread_count
 
     return get_unread_count()
 
@@ -114,7 +114,7 @@ async def unread_count() -> Dict[str, int]:
 @intel_router.get("/briefs/flash-alerts")
 async def flash_alerts(limit: int = Query(20, ge=1, le=100)) -> List[Dict[str, Any]]:
     """Convenience endpoint: latest flash alerts only."""
-    from apathis.intel.store import get_briefs
+    from apatheon.intel.store import get_briefs
 
     return get_briefs(brief_type="flash_alert", limit=limit)
 
@@ -122,7 +122,7 @@ async def flash_alerts(limit: int = Query(20, ge=1, le=100)) -> List[Dict[str, A
 @intel_router.get("/briefs/{brief_id}")
 async def get_brief_detail(brief_id: str = Path(...)) -> Dict[str, Any]:
     """Get a single brief with full content."""
-    from apathis.intel.store import get_brief
+    from apatheon.intel.store import get_brief
 
     brief = get_brief(brief_id)
     if not brief:
@@ -136,7 +136,7 @@ async def get_brief_detail(brief_id: str = Path(...)) -> Dict[str, Any]:
 @intel_router.post("/briefs/{brief_id}/read")
 async def mark_brief_read(brief_id: str = Path(...)) -> Dict[str, str]:
     """Mark a brief as read."""
-    from apathis.intel.store import mark_read
+    from apatheon.intel.store import mark_read
 
     if mark_read(brief_id):
         return {"status": "ok"}
@@ -172,7 +172,7 @@ async def get_job_status(job_id: str = Path(...)) -> Dict[str, Any]:
 
 def _run_sitrep_job(job_id: str) -> None:
     """Background thread for SITREP generation."""
-    from apathis.intel.pipeline import run_daily_sitrep
+    from apatheon.intel.pipeline import run_daily_sitrep
 
     try:
         brief = run_daily_sitrep(
@@ -186,7 +186,7 @@ def _run_sitrep_job(job_id: str) -> None:
 
 def _run_weekly_job(job_id: str) -> None:
     """Background thread for weekly assessment."""
-    from apathis.intel.pipeline import run_weekly_assessment
+    from apatheon.intel.pipeline import run_weekly_assessment
 
     try:
         brief = run_weekly_assessment(
@@ -212,7 +212,7 @@ async def generate_sitrep() -> Dict[str, Any]:
 @intel_router.post("/generate/flash-check")
 async def generate_flash_check() -> Dict[str, Any]:
     """Manually trigger flash alert evaluation (fast — no LLM)."""
-    from apathis.intel.pipeline import run_flash_check
+    from apatheon.intel.pipeline import run_flash_check
 
     try:
         alerts = await asyncio.to_thread(run_flash_check)

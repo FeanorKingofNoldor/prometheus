@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, Optional, Set
 
-from apathis.core.logging import get_logger
+from apatheon.core.logging import get_logger
 
 from prometheus.sector.allocator import StressLevel
 

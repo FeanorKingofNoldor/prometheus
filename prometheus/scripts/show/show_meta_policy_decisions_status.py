@@ -18,7 +18,7 @@ import json
 from datetime import date
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 
 
 def _summarise(db, *, market_id: str, limit: int) -> dict[str, Any]:

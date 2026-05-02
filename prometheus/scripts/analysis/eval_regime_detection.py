@@ -28,11 +28,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from apathis.core.database import get_db_manager
-from apathis.core.markets import MARKETS_BY_REGION
-from apathis.regime.overlay_cache import ensure_overlay_csv
-from apathis.regime.storage import RegimeStorage
-from apathis.regime.types import RegimeLabel
+from apatheon.core.database import get_db_manager
+from apatheon.core.markets import MARKETS_BY_REGION
+from apatheon.regime.overlay_cache import ensure_overlay_csv
+from apatheon.regime.storage import RegimeStorage
+from apatheon.regime.types import RegimeLabel
 
 
 def _parse_date(value: str) -> date:

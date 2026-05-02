@@ -20,8 +20,8 @@ import argparse
 import os
 from typing import Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.logging import get_logger
+from apatheon.core.config import get_config
+from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
 

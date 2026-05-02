@@ -22,14 +22,14 @@ import argparse
 from datetime import date, timedelta
 from typing import Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.fragility.engine import FragilityAlphaEngine
-from apathis.fragility.model_basic import BasicFragilityAlphaModel
-from apathis.fragility.model_market import MarketFragilityModel
-from apathis.fragility.storage import FragilityStorage
-from apathis.stability.storage import StabilityStorage
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.fragility.engine import FragilityAlphaEngine
+from apatheon.fragility.model_basic import BasicFragilityAlphaModel
+from apatheon.fragility.model_market import MarketFragilityModel
+from apatheon.fragility.storage import FragilityStorage
+from apatheon.stability.storage import StabilityStorage
 
 logger = get_logger(__name__)
 

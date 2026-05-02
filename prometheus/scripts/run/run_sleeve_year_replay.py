@@ -33,10 +33,10 @@ import argparse
 from datetime import date
 from typing import Optional, Sequence
 
-from apathis.core.config import get_config
-from apathis.core.database import DatabaseManager
-from apathis.core.logging import get_logger
-from apathis.core.time import TradingCalendar, TradingCalendarConfig
+from apatheon.core.config import get_config
+from apatheon.core.database import DatabaseManager
+from apatheon.core.logging import get_logger
+from apatheon.core.time import TradingCalendar, TradingCalendarConfig
 
 from prometheus.backtest.campaign import _run_backtest_for_sleeve
 from prometheus.backtest.config import SleeveConfig

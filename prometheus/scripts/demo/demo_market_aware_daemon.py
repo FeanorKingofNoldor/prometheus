@@ -28,8 +28,8 @@ import argparse
 import sys
 from datetime import date, datetime
 
-from apathis.core.database import get_db_manager
-from apathis.core.market_state import get_all_market_states, get_next_state_transition
+from apatheon.core.database import get_db_manager
+from apatheon.core.market_state import get_all_market_states, get_next_state_transition
 
 from prometheus.orchestration.dag import build_market_dag
 from prometheus.orchestration.market_aware_daemon import (

@@ -15,7 +15,7 @@ import math
 from datetime import date
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from apathis.core.database import get_db_manager
+from apatheon.core.database import get_db_manager
 from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 

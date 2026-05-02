@@ -10,12 +10,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
-from apathis.core.config import get_config
+from apatheon.core.config import get_config
 from prometheus.assessment.model_basic import BasicAssessmentModel
 from prometheus.books.registry import (
     AllocatorSleeveSpec,
@@ -237,14 +237,14 @@ class LLMConfigRequest(BaseModel):
 @iris_router.get("/llm/config")
 async def get_llm_config() -> Dict[str, Any]:
     """Return current LLM configuration (no secrets)."""
-    from apathis.llm.gateway import get_llm_info
+    from apatheon.llm.gateway import get_llm_info
     return get_llm_info()
 
 
 @iris_router.post("/llm/config")
 async def set_llm_config(request: LLMConfigRequest = Body(...)) -> Dict[str, Any]:
     """Reconfigure the LLM provider at runtime."""
-    from apathis.llm.gateway import configure_llm
+    from apatheon.llm.gateway import configure_llm
 
     try:
         health = configure_llm(
@@ -262,7 +262,7 @@ async def set_llm_config(request: LLMConfigRequest = Body(...)) -> Dict[str, Any
 @iris_router.get("/llm/health")
 async def llm_health() -> Dict[str, Any]:
     """Run a health check on the current LLM provider."""
-    from apathis.llm.gateway import get_llm
+    from apatheon.llm.gateway import get_llm
 
     try:
         provider = get_llm()
@@ -502,7 +502,7 @@ async def get_performance(
     each key as a KPI card, so the response must be a flat dict of
     scalar values (not nested ``metrics``/``by_regime`` dicts).
     """
-    from apathis.core.database import get_db_manager
+    from apatheon.core.database import get_db_manager
 
     db = get_db_manager()
     out: Dict[str, Any] = {}

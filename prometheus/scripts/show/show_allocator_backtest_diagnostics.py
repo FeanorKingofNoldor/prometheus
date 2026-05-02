@@ -30,9 +30,9 @@ from datetime import date
 from statistics import mean
 from typing import Any, Optional, Sequence
 
-from apathis.core.database import get_db_manager
-from apathis.core.logging import get_logger
-from apathis.data.reader import DataReader
+from apatheon.core.database import get_db_manager
+from apatheon.core.logging import get_logger
+from apatheon.data.reader import DataReader
 
 logger = get_logger(__name__)
 
