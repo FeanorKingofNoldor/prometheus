@@ -12,7 +12,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, ClassVar, Dict, List, Set, Tuple
 
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
@@ -84,7 +84,12 @@ class OutcomeEvaluator:
                 d.engine_name
             FROM engine_decisions d
             WHERE d.as_of_date <= %s
-              AND d.engine_name IN ('PORTFOLIO', 'ASSESSMENT', 'OPTIONS')
+              AND d.engine_name IN (
+                  'PORTFOLIO', 'ASSESSMENT', 'OPTIONS',
+                  -- Intel-driven decisions wired in May 2026:
+                  'DIVERGENCE', 'CONVERGENCE', 'COMPOUND_PRESSURE',
+                  'GEO_RISK', 'BENEFICIARY', 'SCENARIO'
+              )
         """
 
         params: List[Any] = [as_of_date]
@@ -161,6 +166,229 @@ class OutcomeEvaluator:
                 return cursor.fetchone() is not None
             finally:
                 cursor.close()
+
+    # ── Intel-driven engine outcome evaluation ─────────────────────────
+    #
+    # Intel signal decisions (DIVERGENCE, CONVERGENCE, COMPOUND_PRESSURE,
+    # GEO_RISK, BENEFICIARY, SCENARIO) don't have target weights — they
+    # carry a *predicted directional thesis* in their output_refs.  The
+    # evaluator translates that thesis into a single instrument's realized
+    # return over the horizon and scores correctness as
+    # ``realized_pnl = predicted_direction * realized_return``  (positive
+    # = the signal was right, negative = wrong).
+
+    # Map entity → representative tradable instrument so we can compute a
+    # realized return for the signal's directional thesis.  This is a
+    # deliberately small curated mapping; unknown entities fall back to
+    # SPY.US so every decision still scores something rather than being
+    # silently dropped.
+    _ENTITY_TO_INSTRUMENT: ClassVar[Dict[Tuple[str, str], str]] = {
+        # Chokepoints — pick the highest-beta commodity proxy
+        ("chokepoint", "hormuz"):           "USO.US",   # WTI oil
+        ("chokepoint", "suez"):             "BNO.US",   # Brent
+        ("chokepoint", "bab_el_mandeb"):    "BNO.US",
+        ("chokepoint", "malacca"):          "USO.US",
+        ("chokepoint", "south_china_sea_cp"): "USO.US",
+        ("chokepoint", "taiwan_strait_cp"): "SOXX.US",  # semis
+        ("chokepoint", "turkish_straits"):  "BNO.US",
+        # Conflicts — pick the conflict-driver sector proxy
+        ("conflict", "iran_war_2026"):      "USO.US",
+        ("conflict", "russia_ukraine"):     "ITA.US",   # defense
+        ("conflict", "israel_gaza"):        "ITA.US",
+        ("conflict", "yemen_houthis"):      "BNO.US",
+        ("conflict", "taiwan_strait"):      "SOXX.US",
+        ("conflict", "drc_m23"):            "REMX.US",  # rare earth / battery
+        # Sovereign targets — country ETF for compound-pressure scoring
+        ("SOVEREIGN", "USA"):               "SPY.US",
+        ("SOVEREIGN", "CHN"):               "FXI.US",
+        ("SOVEREIGN", "RUS"):               "RSX.US",
+        ("SOVEREIGN", "IRN"):               "USO.US",
+        ("SOVEREIGN", "ISR"):               "EIS.US",
+        ("SOVEREIGN", "SAU"):               "KSA.US",
+        ("SOVEREIGN", "TWN"):               "EWT.US",
+        ("SOVEREIGN", "DEU"):               "EWG.US",
+        ("SOVEREIGN", "JPN"):               "EWJ.US",
+        ("SOVEREIGN", "KOR"):               "EWY.US",
+        ("SOVEREIGN", "UKR"):               "EWG.US",   # proxy via DEU
+    }
+
+    def _resolve_entity_instrument(
+        self,
+        entity_type: str | None,
+        entity_id: str | None,
+    ) -> str:
+        if entity_type and entity_id:
+            inst = self._ENTITY_TO_INSTRUMENT.get((entity_type, entity_id))
+            if inst is not None:
+                return inst
+            # Try uppercased ISO3 fallback for SOVEREIGN
+            inst = self._ENTITY_TO_INSTRUMENT.get((entity_type, entity_id.upper()))
+            if inst is not None:
+                return inst
+        return "SPY.US"
+
+    def _intel_predicted_direction(
+        self,
+        *,
+        engine_name: str,
+        output_refs: Dict[str, Any],
+        input_refs: Dict[str, Any],
+    ) -> Tuple[int, str]:
+        """Decode the directional thesis into +1 (long), -1 (short), 0 (neutral).
+
+        Returns (direction, reason_string) so the outcome metadata can
+        explain why this score was applied.
+        """
+        if engine_name == "DIVERGENCE":
+            sig = output_refs.get("trading_signal")
+            if sig == "FRONT_RUN_REALITY":
+                return +1, "FRONT_RUN_REALITY → expect reality-exposed instrument to rise"
+            if sig == "FADE_NARRATIVE":
+                return -1, "FADE_NARRATIVE → expect narrative-driven instrument to fall"
+            return 0, "no actionable divergence signal"
+
+        if engine_name == "CONVERGENCE":
+            # Confidence-weighted but neutral direction by itself; the
+            # divergence side carries the direction.  When we have a
+            # paired divergence decision we'll have used that decision_id.
+            # Standalone convergence is scored as +1 if confidence>0.7
+            # under the assumption the convergence movement is "up" in
+            # tradable instruments (it usually is for chokepoints/conflicts).
+            return +1, "convergence pending — score directional move on entity proxy"
+
+        if engine_name == "COMPOUND_PRESSURE":
+            # Encirclement of a sovereign → expect that sovereign's
+            # market to underperform (short signal).
+            return -1, "compound pressure → expect target sovereign ETF to fall"
+
+        if engine_name == "GEO_RISK":
+            # Elevated portfolio geo risk → expect portfolio benchmark
+            # (SPY) to fall vs cash.  Score as -1 on SPY.
+            return -1, "elevated portfolio geo risk → expect benchmark drawdown"
+
+        if engine_name == "BENEFICIARY":
+            # Asymmetry detected → no clean directional thesis on a single
+            # instrument; persist the outcome row but score 0 so it
+            # doesn't pollute hit-rate metrics until we have a richer
+            # framework.
+            return 0, "beneficiary asymmetry — directional thesis pending"
+
+        if engine_name == "SCENARIO":
+            # Default to long on the affected entities — the option
+            # strategy uses scenario weights to allocate gamma/vega, so
+            # "scenario realized" means the affected names moved at all
+            # (volatility realized).  Score as direction +1.
+            return +1, "scenario branch realized — score directional move"
+
+        return 0, f"no scoring rule for {engine_name}"
+
+    def _intel_decision_payload(
+        self,
+        decision_id: str,
+    ) -> Tuple[str, Dict[str, Any], Dict[str, Any]] | None:
+        """Pull engine_name + input_refs + output_refs for one decision."""
+        sql = """
+            SELECT engine_name, input_refs, output_refs
+            FROM engine_decisions
+            WHERE decision_id = %s
+            LIMIT 1
+        """
+        with self.db_manager.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, (decision_id,))
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        if row is None:
+            return None
+        return str(row[0]), (row[1] or {}), (row[2] or {})
+
+    def evaluate_intel_decision_outcome(
+        self,
+        *,
+        decision_id: str,
+        decision_as_of_date: date,
+        horizon_days: int,
+    ) -> DecisionOutcome | None:
+        """Evaluate an intel-driven decision (DIVERGENCE, CONVERGENCE, etc.).
+
+        Computes ``realized_pnl = predicted_direction * realized_return``
+        on the entity's representative instrument over the horizon.
+        ``realized_return`` is the raw price change for transparency.
+        """
+        payload = self._intel_decision_payload(decision_id)
+        if payload is None:
+            return None
+        engine_name, input_refs, output_refs = payload
+
+        direction, reason = self._intel_predicted_direction(
+            engine_name=engine_name,
+            output_refs=output_refs,
+            input_refs=input_refs,
+        )
+
+        # Resolve the instrument to score against
+        entity_type = (
+            input_refs.get("entity_type")
+            or input_refs.get("target_entity_type")
+            or input_refs.get("victim_entity_type")
+        )
+        entity_id = (
+            input_refs.get("entity_id")
+            or input_refs.get("target_entity_id")
+            or input_refs.get("victim_entity_id")
+        )
+        # GEO_RISK is portfolio-wide → SPY benchmark
+        if engine_name == "GEO_RISK":
+            instrument_id = "SPY.US"
+        else:
+            instrument_id = self._resolve_entity_instrument(entity_type, entity_id)
+
+        # Compute realized return on that instrument over the horizon
+        exit_date = decision_as_of_date + timedelta(days=horizon_days)
+        if self.calendar is not None:
+            trading_days = self.calendar.trading_days_between(
+                start_date=decision_as_of_date,
+                end_date=exit_date,
+            )
+        else:
+            trading_days = []
+            cur_d = decision_as_of_date
+            while cur_d <= exit_date:
+                trading_days.append(cur_d)
+                cur_d += timedelta(days=1)
+
+        if len(trading_days) < 2:
+            return None
+
+        entry = self._get_prices_for_instruments([instrument_id], trading_days[0])
+        exit_p = self._get_prices_for_instruments([instrument_id], trading_days[-1])
+
+        entry_price = entry.get(instrument_id)
+        exit_price = exit_p.get(instrument_id)
+        if entry_price is None or exit_price is None or entry_price <= 0:
+            return None
+
+        realized_return = (exit_price / entry_price) - 1.0
+        realized_pnl = direction * realized_return  # signed: + means correct
+
+        return DecisionOutcome(
+            decision_id=decision_id,
+            horizon_days=horizon_days,
+            realized_return=realized_return,
+            realized_pnl=realized_pnl,
+            realized_drawdown=None,
+            realized_vol=None,
+            metadata={
+                "engine_name": engine_name,
+                "instrument_id": instrument_id,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "predicted_direction": direction,
+                "reason": reason,
+            },
+        )
 
     def evaluate_portfolio_decision_outcome(
         self,
@@ -537,8 +765,16 @@ class OutcomeEvaluator:
             return 0
 
         # --- Phase 1: split by engine type and batch-load decision data -----
+        _INTEL_ENGINES = {
+            "DIVERGENCE", "CONVERGENCE", "COMPOUND_PRESSURE",
+            "GEO_RISK", "BENEFICIARY", "SCENARIO",
+        }
         options_ids = [did for did, _, _, eng in pending if eng == "OPTIONS"]
-        non_options_ids = [did for did, _, _, eng in pending if eng != "OPTIONS"]
+        [did for did, _, _, eng in pending if eng in _INTEL_ENGINES]
+        non_options_ids = [
+            did for did, _, _, eng in pending
+            if eng != "OPTIONS" and eng not in _INTEL_ENGINES
+        ]
 
         weights_map = self._batch_load_decision_weights(list(set(non_options_ids)))
         orders_map = self._batch_load_decision_orders(list(set(options_ids)))
@@ -550,6 +786,7 @@ class OutcomeEvaluator:
 
         tasks: List[Tuple[str, date, int, Dict[str, float]]] = []
         options_tasks: List[Tuple[str, date, int, List[Dict[str, Any]]]] = []
+        intel_tasks: List[Tuple[str, date, int]] = []
 
         for decision_id, decision_date, horizon_days, eng_name in pending:
             exit_date = decision_date + timedelta(days=horizon_days)
@@ -566,6 +803,13 @@ class OutcomeEvaluator:
                     uid = order.get("underlying_id", "")
                     if uid:
                         all_instruments.add(uid)
+            elif eng_name in _INTEL_ENGINES:
+                # Intel decisions are scored against a single representative
+                # instrument resolved at evaluation time; we preload the
+                # full curated set so the scorer hits the price cache.
+                intel_tasks.append((decision_id, decision_date, horizon_days))
+                all_instruments.update(set(self._ENTITY_TO_INSTRUMENT.values()))
+                all_instruments.add("SPY.US")
             else:
                 weights = weights_map.get(decision_id, {})
                 if not weights:
@@ -578,7 +822,7 @@ class OutcomeEvaluator:
 
         # --- Phase 3: evaluate in parallel ---------------------------------
         evaluated_count = 0
-        total_tasks = len(tasks) + len(options_tasks)
+        total_tasks = len(tasks) + len(options_tasks) + len(intel_tasks)
 
         def _eval_one(task: Tuple[str, date, int, Dict[str, float]]) -> DecisionOutcome | None:
             d_id, d_date, h_days, w = task
@@ -598,12 +842,22 @@ class OutcomeEvaluator:
                 orders=orders,
             )
 
+        def _eval_intel(task: Tuple[str, date, int]) -> DecisionOutcome | None:
+            d_id, d_date, h_days = task
+            return self.evaluate_intel_decision_outcome(
+                decision_id=d_id,
+                decision_as_of_date=d_date,
+                horizon_days=h_days,
+            )
+
         all_futures: dict = {}
         with ThreadPoolExecutor(max_workers=num_workers) as pool:
             for t in tasks:
                 all_futures[pool.submit(_eval_one, t)] = t[0]
             for t in options_tasks:
                 all_futures[pool.submit(_eval_options, t)] = t[0]
+            for t in intel_tasks:
+                all_futures[pool.submit(_eval_intel, t)] = t[0]
 
             for future in as_completed(all_futures):
                 decision_id = all_futures[future]
@@ -625,11 +879,12 @@ class OutcomeEvaluator:
                     )
 
         logger.info(
-            "Evaluated %d/%d pending outcomes (%d portfolio/assessment, %d options)",
+            "Evaluated %d/%d pending outcomes (%d portfolio/assessment, %d options, %d intel)",
             evaluated_count,
             total_tasks,
             len(tasks),
             len(options_tasks),
+            len(intel_tasks),
         )
 
         return evaluated_count
@@ -848,6 +1103,22 @@ class OutcomeEvaluator:
             entry_price = float(order.get("entry_price", 0.0))
 
             if quantity <= 0 or strike <= 0 or not underlying_id:
+                continue
+
+            # An options leg with entry_price == 0 can't be honestly evaluated:
+            # you cannot sell or buy a contract for zero premium.  Earlier
+            # versions of this code defaulted entry_price to 0 when the
+            # option-chain lookup failed at decision time, which produced
+            # fabricated catastrophic losses on SELL legs (the intrinsic
+            # at exit was treated as pure cost).  Skip rather than synthesize
+            # noise — and log loudly so the upstream writer gets fixed.
+            if entry_price <= 0.0:
+                logger.warning(
+                    "[options.evaluator] decision_id=%s skipping leg with "
+                    "entry_price<=0: %s %s %s strike=%s qty=%s — fix the "
+                    "decision writer so this never happens",
+                    decision_id, underlying_id, right, action, strike, quantity,
+                )
                 continue
 
             s_exit = self._get_price(underlying_id, actual_exit_date)

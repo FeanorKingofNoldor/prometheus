@@ -3172,6 +3172,31 @@ def build_options_signals(
         len(stab_scores), len(sector_shi), len(equity_prices),
     )
 
+    # ── Intel signals (Apatheon → Prometheus wiring) ─────────────────
+    # Pulls divergence, convergence, compound-pressure, and portfolio
+    # geo-risk into the signals dict so options strategies can read them
+    # by name.  Failures are logged inside load_intel_signals and return
+    # an empty IntelSignals — never raise here.
+    intel_signals_dict: Dict[str, Any] = {}
+    intel_options_multiplier = 1.0
+    try:
+        from prometheus.execution.intel_signals import (
+            IntelSignals,
+            load_intel_signals,
+            options_sizing_multiplier,
+        )
+
+        intel = load_intel_signals(
+            as_of_date=as_of_date,
+            db_manager=db_manager,
+            portfolio_id=getattr(run, "portfolio_id", None),
+        )
+        intel_signals_dict = intel.as_signals_dict()
+        intel_options_multiplier = options_sizing_multiplier(intel)
+    except Exception:
+        logger.warning("build_options_signals: intel signals load failed", exc_info=True)
+        IntelSignals = None  # type: ignore[assignment]
+
     # ── Build signals dict (matching backtest format) ────────────────
     return {
         "as_of_date": as_of_date,
@@ -3199,6 +3224,10 @@ def build_options_signals(
         },
         "equity_prices": equity_prices,
         "futures_positions": {},
+        # Apatheon intel — strategies read by key for finer-grained rules,
+        # or use intel_options_multiplier as a single sizing scalar.
+        **intel_signals_dict,
+        "intel_options_multiplier": intel_options_multiplier,
     }
 
 

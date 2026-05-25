@@ -337,6 +337,14 @@ class BasicUniverseModel:
 
     window_days: int = 63
 
+    # Fraction of ``window_days`` for which an instrument must have price
+    # observations to be eligible. Requiring *every* trading day in the
+    # window makes the universe brittle: a single missed ingestion day
+    # collapses coverage to only the always-ingested core names. A small
+    # tolerance (default 90%) keeps the liquidity/vol estimates robust
+    # while surviving occasional upstream ingestion gaps.
+    min_history_coverage: float = 0.9
+
     # Optional Assessment integration. When ``use_assessment_scores`` is
     # True and ``assessment_strategy_id`` is provided, the model will
     # read scores from ``instrument_scores`` for the given
@@ -480,16 +488,22 @@ class BasicUniverseModel:
         if self.window_days <= 0:
             return {}
 
+        # Minimum number of observed trading days required within the
+        # window. A small tolerance (``min_history_coverage``) prevents a
+        # few missed upstream ingestion days from collapsing the universe.
+        coverage = min(max(self.min_history_coverage, 0.0), 1.0)
+        min_required = max(2, int(round(self.window_days * coverage)))
+
         search_start = as_of_date - timedelta(days=self.window_days * 3)
         trading_days = self.calendar.trading_days_between(search_start, as_of_date)
-        if len(trading_days) < self.window_days:
+        if len(trading_days) < min_required:
             return {}
 
         window_days = trading_days[-self.window_days :]
         start_date = window_days[0]
 
         df = self.data_reader.read_prices([instrument_id], start_date, as_of_date)
-        if df.empty or len(df) < self.window_days:
+        if df.empty or len(df) < min_required:
             return {}
 
         df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
@@ -498,7 +512,7 @@ class BasicUniverseModel:
         closes = df_window["close"].astype(float).to_numpy()
         volumes = df_window["volume"].astype(float).to_numpy()
 
-        if closes.shape[0] != self.window_days:
+        if closes.shape[0] < min_required:
             return {}
 
         log_rets = np.zeros_like(closes, dtype=float)

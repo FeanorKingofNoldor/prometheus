@@ -3,13 +3,16 @@
 This module provides configuration management for IBKR paper and live trading,
 loading credentials and connection settings from environment variables.
 
-Configuration is loaded from environment variables:
-- IBKR_LIVE_USERNAME: Live trading username
-- IBKR_LIVE_PASSWORD: Live trading password
-- IBKR_LIVE_ACCOUNT: Live trading account number (default: U22014992)
-- IBKR_PAPER_USERNAME: Paper trading username (default: xubtmn245)
-- IBKR_PAPER_PASSWORD: Paper trading password
-- IBKR_PAPER_ACCOUNT: Paper trading account number (default: DUN807925)
+Configuration is loaded from environment variables.  There are NO
+hardcoded defaults — every value must come from the environment, or
+``load_credentials()`` raises ValueError at startup.
+
+- IBKR_LIVE_USERNAME
+- IBKR_LIVE_PASSWORD
+- IBKR_LIVE_ACCOUNT
+- IBKR_PAPER_USERNAME
+- IBKR_PAPER_PASSWORD
+- IBKR_PAPER_ACCOUNT
 
 Port configuration:
 - IB Gateway: Live=4001, Paper=4002 (recommended)
@@ -193,10 +196,11 @@ def create_paper_config(
 ) -> IbkrConnectionConfig:
     """Create IBKR connection configuration for PAPER trading.
 
-    Loads credentials from environment:
-    - IBKR_PAPER_USERNAME (default: xubtmn245)
+    Loads credentials from environment — there are NO hardcoded defaults
+    despite what older docstrings claimed.  Required:
+    - IBKR_PAPER_USERNAME
     - IBKR_PAPER_PASSWORD
-    - IBKR_PAPER_ACCOUNT (default: DUN807925)
+    - IBKR_PAPER_ACCOUNT
 
     Args:
         gateway_type: Gateway type (GATEWAY or TWS), defaults to GATEWAY

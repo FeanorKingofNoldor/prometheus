@@ -17,6 +17,11 @@ import {
   useTradingReports,
   useIntelBriefs,
   useSystemLogs,
+  useDivergenceSignals,
+  useConvergenceSignals,
+  useCompoundPressure,
+  usePortfolioGeoRisk,
+  useRiskDampener,
 } from "../api/hooks";
 import { usePortfolioContext } from "../context/PortfolioContext";
 
@@ -60,6 +65,78 @@ interface LogRow extends Record<string, unknown> {
   level: string;
   category: string;
   message: string;
+}
+
+interface DivergenceSignalRow {
+  signal_id: string;
+  as_of_date: string;
+  entity_type: string;
+  entity_id: string;
+  behavioral_score: number;
+  narrative_score: number;
+  divergence: number;
+  abs_divergence: number;
+  direction: string;
+  severity: "NONE" | "MILD" | "SIGNIFICANT" | "EXTREME";
+  trading_signal: "NONE" | "FADE_NARRATIVE" | "FRONT_RUN_REALITY";
+  decision_id: string | null;
+  computed_at: string;
+  rationale: string | null;
+}
+
+interface ConvergenceSignalRow {
+  signal_id: string;
+  entity_type: string;
+  entity_id: string;
+  days_to_hard_deadline: number | null;
+  hard_deadline_reason: string | null;
+  days_to_soft_signal: number | null;
+  soft_signal_type: string | null;
+  estimated_convergence_days: number | null;
+  convergence_window_min: number | null;
+  convergence_window_max: number | null;
+  confidence: number;
+  strategy: string | null;
+  entry_windows: Array<{ label?: string; days_from_now?: number; allocation_pct?: number; trigger?: string }>;
+  decision_id: string | null;
+}
+
+interface CompoundPressureRow {
+  alert_id: string;
+  target_entity_type: string;
+  target_entity_id: string;
+  total_pressure_points: number;
+  pressure_points_moved: number;
+  cluster_days: number;
+  encirclement_score: number;
+  severity: "LOW" | "MODERATE" | "HIGH" | "CRITICAL";
+  likely_orchestrators: Array<Record<string, unknown>>;
+  decision_id: string | null;
+}
+
+interface PortfolioGeoRiskRow {
+  portfolio_id: string;
+  as_of_date: string;
+  overall_risk_score: number;
+  conflict_risk: number;
+  chokepoint_risk: number;
+  sovereign_risk: number;
+  sector_risk: number;
+  ticker_count: number;
+  decision_id: string | null;
+}
+
+interface RiskDampenerRow {
+  portfolio_id: string;
+  strategy_id: string;
+  dampener: number;
+  base_max_weight: number;
+  effective_max_weight: number;
+  overall_geo_risk: number | null;
+  compound_severities: string[];
+  exposed_isos: string[];
+  strategy_disabled: boolean;
+  strategy_floor: number;
 }
 
 // ── Column definitions ───────────────────────────────────
@@ -172,6 +249,16 @@ const TIP = {
   reports: "Most recent trading reports with date, type, and summary. Click to view full report.",
   intel: "Latest intelligence briefs from the AI briefing center. Shows severity, type, domain, and title.",
   logs: "Recent system log entries. Errors and warnings are highlighted for quick triage.",
+  divergence:
+    "Narrative-vs-Reality signals from Apatheon's intel layer. FADE_NARRATIVE = news overstates reality, short the headline. FRONT_RUN_REALITY = ships moving but media silent, long ahead of repricing. SIGNIFICANT/EXTREME signals are logged to engine_decisions for outcome tracking.",
+  convergence:
+    "Convergence-timing signals: when narrative will be forced to reprice based on physical depletion timelines, infrastructure lag, and leading indicators. Entry windows are laddered allocation suggestions; pair with the divergence direction for the trade.",
+  compound_pressure:
+    "Encirclement detection on watched sovereigns. HIGH/CRITICAL means multiple pressure points moved within a short window — consider trimming beta and raising tail-hedge sizing on names exposed to the target.",
+  geo_risk:
+    "Composite geopolitical risk for the live IBKR portfolio (0–100). Driven by conflict + chokepoint + sovereign + sector exposure. ≥40 logs a GEO_RISK decision; ≥60 = trim or hedge proactively.",
+  risk_dampener:
+    "Multiplicative shrink applied to per-name caps based on portfolio geo-risk + active compound-pressure alerts. Floors at the strategy's configured minimum (default 40%). Some strategies (hedge books) opt out — they're meant to concentrate during stress.",
 };
 
 // ── Component ────────────────────────────────────────────
@@ -191,6 +278,11 @@ export default function Dashboard() {
   const tradingReports = useTradingReports();
   const intelBriefs = useIntelBriefs({ limit: 8 });
   const systemLogs = useSystemLogs({ level: "WARNING", limit: 20 });
+  const divergence = useDivergenceSignals("SIGNIFICANT");
+  const convergence = useConvergenceSignals(0.5);
+  const compoundPressure = useCompoundPressure("MODERATE");
+  const geoRisk = usePortfolioGeoRisk(activePortfolioId);
+  const riskDampener = useRiskDampener(activePortfolioId);
 
   const ov = (overview.data ?? {}) as Record<string, unknown>;
   const port = (portfolio.data ?? {}) as Record<string, unknown>;
@@ -210,6 +302,11 @@ export default function Dashboard() {
   const reports = ((tradingReports.data ?? []) as ReportRow[]).slice(0, 5);
   const briefs = ((Array.isArray(intelBriefs.data) ? intelBriefs.data : []) as IntelRow[]).slice(0, 8);
   const logs = ((Array.isArray(systemLogs.data) ? systemLogs.data : []) as LogRow[]).slice(0, 12);
+  const divSignals = ((Array.isArray(divergence.data) ? divergence.data : []) as DivergenceSignalRow[]);
+  const convSignals = ((Array.isArray(convergence.data) ? convergence.data : []) as ConvergenceSignalRow[]);
+  const pressureAlerts = ((Array.isArray(compoundPressure.data) ? compoundPressure.data : []) as CompoundPressureRow[]);
+  const geoRiskRow = (geoRisk.data ?? null) as PortfolioGeoRiskRow | null;
+  const dampenerRow = (riskDampener.data ?? null) as RiskDampenerRow | null;
 
   return (
     <div className="space-y-4">
@@ -369,6 +466,277 @@ export default function Dashboard() {
           )}
         </Panel>
       </div>
+
+      {/* Divergence Signals (Apatheon → Prometheus wiring) */}
+      <Panel
+        title={`Divergence Signals${divSignals.length > 0 ? ` (${divSignals.length})` : ""}`}
+        tooltip={TIP.divergence}
+      >
+        {divSignals.length > 0 ? (
+          <div className="space-y-1.5">
+            {divSignals.slice(0, 8).map((d) => {
+              const isFade = d.trading_signal === "FADE_NARRATIVE";
+              const isFront = d.trading_signal === "FRONT_RUN_REALITY";
+              const sigCls = isFade
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                : isFront
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  : "border-border-dim bg-surface-overlay text-zinc-400";
+              const sevCls =
+                d.severity === "EXTREME"
+                  ? "bg-red-500/15 text-red-300 border-red-500/30"
+                  : d.severity === "SIGNIFICANT"
+                    ? "bg-orange-500/15 text-orange-300 border-orange-500/30"
+                    : "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
+              return (
+                <div
+                  key={d.signal_id}
+                  className="flex items-center gap-3 rounded border border-border-dim/50 bg-surface-overlay/40 px-3 py-2"
+                >
+                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${sevCls}`}>
+                    {d.severity}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted uppercase">{d.entity_type}</span>
+                  <span className="font-mono text-xs text-zinc-200">{d.entity_id}</span>
+                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${sigCls}`}>
+                    {isFade ? "FADE" : isFront ? "FRONT-RUN" : "—"}
+                  </span>
+                  <span className="flex-1 truncate text-[11px] text-zinc-300">
+                    {d.rationale ?? `${d.direction} (Δ ${d.divergence.toFixed(2)})`}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-muted">
+                    b={d.behavioral_score.toFixed(2)} · n={d.narrative_score.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="py-6 text-center text-xs text-muted">
+            No SIGNIFICANT/EXTREME divergence signals — narrative tracking reality.
+          </div>
+        )}
+      </Panel>
+
+      {/* Convergence + Compound Pressure grid */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Convergence */}
+        <Panel
+          title={`Convergence Timing${convSignals.length > 0 ? ` (${convSignals.length})` : ""}`}
+          tooltip={TIP.convergence}
+        >
+          {convSignals.length > 0 ? (
+            <div className="space-y-2">
+              {convSignals.slice(0, 5).map((c) => {
+                const est = c.estimated_convergence_days;
+                const win = c.convergence_window_min !== null && c.convergence_window_max !== null
+                  ? `${Math.round(c.convergence_window_min)}–${Math.round(c.convergence_window_max)}d`
+                  : "—";
+                return (
+                  <div
+                    key={c.signal_id}
+                    className="rounded border border-border-dim/50 bg-surface-overlay/40 p-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-[10px] uppercase text-muted">{c.entity_type}</span>
+                      <span className="font-mono text-xs text-zinc-200">{c.entity_id}</span>
+                      <span className="ml-auto font-mono text-[10px] text-emerald-300">
+                        ~{est != null ? `${Math.round(est)}d` : "—"}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted">({win})</span>
+                      <span className="font-mono text-[10px] text-muted">conf {c.confidence.toFixed(2)}</span>
+                    </div>
+                    {c.strategy && (
+                      <div className="mt-1 text-[11px] text-purple-200/90 leading-snug">
+                        {c.strategy}
+                      </div>
+                    )}
+                    {c.entry_windows?.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {c.entry_windows.slice(0, 4).map((w, i) => (
+                          <span
+                            key={i}
+                            className="rounded bg-accent/10 border border-accent/30 px-1.5 py-0.5 text-[9px] font-semibold text-accent"
+                          >
+                            d{Math.round(w.days_from_now ?? 0)} · {w.allocation_pct ?? 0}%
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-6 text-center text-xs text-muted">
+              No high-confidence convergence timelines.
+            </div>
+          )}
+        </Panel>
+
+        {/* Compound Pressure */}
+        <Panel
+          title={`Compound Pressure${pressureAlerts.length > 0 ? ` (${pressureAlerts.length})` : ""}`}
+          tooltip={TIP.compound_pressure}
+        >
+          {pressureAlerts.length > 0 ? (
+            <div className="space-y-1.5">
+              {pressureAlerts.slice(0, 6).map((a) => {
+                const sevCls =
+                  a.severity === "CRITICAL"
+                    ? "bg-red-500/15 text-red-300 border-red-500/30"
+                    : a.severity === "HIGH"
+                      ? "bg-orange-500/15 text-orange-300 border-orange-500/30"
+                      : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+                return (
+                  <div
+                    key={a.alert_id}
+                    className="flex items-center gap-3 rounded border border-border-dim/50 bg-surface-overlay/40 px-3 py-2"
+                  >
+                    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${sevCls}`}>
+                      {a.severity}
+                    </span>
+                    <span className="font-mono text-xs text-zinc-200">{a.target_entity_id}</span>
+                    <span className="text-[11px] text-zinc-300">
+                      {a.pressure_points_moved}/{a.total_pressure_points} moved · {a.cluster_days.toFixed(1)}d cluster
+                    </span>
+                    <span className="ml-auto font-mono text-[10px] text-muted">
+                      score {a.encirclement_score.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-6 text-center text-xs text-muted">
+              No encirclement patterns above MODERATE.
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {/* Portfolio Geo Risk */}
+      {geoRiskRow && (
+        <Panel title="Portfolio Geo Risk" tooltip={TIP.geo_risk}>
+          <div className="flex flex-wrap items-center gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted">Composite</div>
+              <div className={`text-3xl font-bold ${
+                geoRiskRow.overall_risk_score >= 70 ? "text-negative"
+                  : geoRiskRow.overall_risk_score >= 40 ? "text-warning"
+                    : "text-positive"
+              }`}>
+                {geoRiskRow.overall_risk_score.toFixed(0)}
+              </div>
+              <div className="text-[10px] text-muted">{geoRiskRow.ticker_count} positions</div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 flex-1">
+              {[
+                { label: "Conflict", value: geoRiskRow.conflict_risk },
+                { label: "Chokepoint", value: geoRiskRow.chokepoint_risk },
+                { label: "Sovereign", value: geoRiskRow.sovereign_risk },
+                { label: "Sector", value: geoRiskRow.sector_risk },
+              ].map((d) => {
+                const pct = Math.min(100, Math.max(0, d.value * 100));
+                const color = pct > 70 ? "bg-negative" : pct > 40 ? "bg-warning" : "bg-positive";
+                return (
+                  <div key={d.label} className="rounded border border-border-dim bg-surface-overlay px-3 py-2">
+                    <div className="text-[10px] uppercase text-muted">{d.label}</div>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+                        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="font-mono text-xs text-zinc-200">{pct.toFixed(0)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* Risk Dampener — shows why per-name caps were reduced today */}
+      {dampenerRow && (dampenerRow.dampener < 0.999 || dampenerRow.strategy_disabled) && (
+        <Panel
+          title={`Risk Dampener — ${dampenerRow.strategy_id}`}
+          tooltip={TIP.risk_dampener}
+        >
+          {dampenerRow.strategy_disabled ? (
+            <div className="text-xs text-muted">
+              Dampener disabled for <span className="font-mono text-zinc-200">{dampenerRow.strategy_id}</span>{" "}
+              — this strategy is meant to concentrate during stress (hedge book).
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-6">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-muted">Multiplier</div>
+                <div className={`text-3xl font-bold ${
+                  dampenerRow.dampener <= 0.55 ? "text-negative"
+                    : dampenerRow.dampener <= 0.85 ? "text-warning"
+                      : "text-positive"
+                }`}>
+                  {(dampenerRow.dampener * 100).toFixed(0)}%
+                </div>
+                <div className="text-[10px] text-muted">
+                  floor {(dampenerRow.strategy_floor * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-muted">Per-name cap</div>
+                <div className="text-sm font-mono">
+                  <span className="text-muted">{(dampenerRow.base_max_weight * 100).toFixed(2)}%</span>
+                  <span className="mx-1.5 text-muted">→</span>
+                  <span className="font-bold text-zinc-200">
+                    {(dampenerRow.effective_max_weight * 100).toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+              <div className="flex-1 min-w-[200px]">
+                <div className="text-[10px] uppercase tracking-wider text-muted mb-1">Drivers</div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  {dampenerRow.overall_geo_risk != null && (
+                    <span className="rounded border border-border-dim bg-surface-overlay px-2 py-0.5">
+                      <span className="text-muted">geo</span>{" "}
+                      <span className={`font-bold ${
+                        dampenerRow.overall_geo_risk >= 70 ? "text-negative"
+                          : dampenerRow.overall_geo_risk >= 40 ? "text-warning"
+                            : "text-positive"
+                      }`}>
+                        {dampenerRow.overall_geo_risk.toFixed(0)}
+                      </span>
+                    </span>
+                  )}
+                  {dampenerRow.compound_severities.length > 0 ? (
+                    dampenerRow.compound_severities.map((s, i) => (
+                      <span
+                        key={i}
+                        className={`rounded border px-2 py-0.5 font-bold uppercase tracking-wider text-[10px] ${
+                          s === "CRITICAL"
+                            ? "border-red-500/40 bg-red-500/10 text-red-300"
+                            : "border-orange-500/40 bg-orange-500/10 text-orange-300"
+                        }`}
+                      >
+                        compound {s}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded border border-border-dim bg-surface-overlay px-2 py-0.5 text-muted">
+                      no active compound pressure
+                    </span>
+                  )}
+                  {dampenerRow.exposed_isos.length > 0 && (
+                    <span className="rounded border border-border-dim bg-surface-overlay px-2 py-0.5 text-[10px] text-muted">
+                      exposed: {dampenerRow.exposed_isos.slice(0, 4).join(" · ")}
+                      {dampenerRow.exposed_isos.length > 4 && ` +${dampenerRow.exposed_isos.length - 4}`}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </Panel>
+      )}
 
       {/* System Log */}
       <Panel title="System Log" tooltip={TIP.logs}>

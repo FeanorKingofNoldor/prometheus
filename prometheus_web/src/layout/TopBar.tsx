@@ -26,6 +26,23 @@ function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+// Returns a short "(stale 5h)" / "(stale 2d)" suffix if the snapshot is
+// older than the freshness threshold; otherwise returns an empty string.
+// Threshold is intentionally tight: a paper/live book whose latest
+// snapshot is older than 15 min is almost certainly out-of-sync with
+// IBKR (broker is disconnected, daemon paused, or sync failed).
+function staleSuffix(ts: string | null | undefined): string {
+  if (!ts) return " (no snapshot)";
+  const ageMs = Date.now() - new Date(ts).getTime();
+  if (ageMs < 15 * 60_000) return "";
+  const ageMin = Math.floor(ageMs / 60_000);
+  if (ageMin < 60) return ` (stale ${ageMin}m)`;
+  const ageH = Math.floor(ageMin / 60);
+  if (ageH < 24) return ` (stale ${ageH}h)`;
+  const ageD = Math.floor(ageH / 24);
+  return ` (stale ${ageD}d)`;
+}
+
 const DEFAULT_SYNC_PORTFOLIO_ID = "IBKR_PAPER";
 const SYNC_SOURCES = ["ibkr", "engines"];
 
@@ -94,7 +111,7 @@ export function TopBar() {
             <optgroup label="Trading">
               {tradingPortfolios.map((p) => (
                 <option key={p.portfolio_id} value={p.portfolio_id}>
-                  {p.portfolio_id} — {p.num_positions} pos — {fmtUsd(p.total_market_value)}
+                  {p.portfolio_id} — {p.num_positions} pos — {fmtUsd(p.total_market_value)}{staleSuffix(p.latest_timestamp)}
                 </option>
               ))}
             </optgroup>

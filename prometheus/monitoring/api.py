@@ -126,6 +126,7 @@ class PortfolioSummary(BaseModel):
     portfolio_id: str
     mode: str = "BACKTEST"
     latest_date: Optional[date] = None
+    latest_timestamp: Optional[datetime] = None
     num_positions: int = 0
     total_market_value: float = 0.0
     net_exposure: Optional[float] = None
@@ -238,10 +239,21 @@ async def get_status_overview() -> SystemOverview:
     gross_exposure = 0.0
     leverage = 0.0
 
+    # Scope to LIVE/PAPER portfolios only.  Without this filter the
+    # average pulls in every backtest sleeve (US_EQ_LONG_V12, etc.) and
+    # produces a number that's neither the live book nor any single
+    # backtest — pure noise.
+    _DASHBOARD_PORTFOLIOS = ("IBKR_PAPER", "IBKR_LIVE")
     with db_manager.get_runtime_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT MAX(as_of_date) FROM portfolio_risk_reports")
+            cursor.execute(
+                """
+                SELECT MAX(as_of_date) FROM portfolio_risk_reports
+                WHERE portfolio_id = ANY(%s)
+                """,
+                (list(_DASHBOARD_PORTFOLIOS),),
+            )
             row = cursor.fetchone()
             latest_date = row[0] if row is not None else None
             if latest_date is not None:
@@ -250,8 +262,9 @@ async def get_status_overview() -> SystemOverview:
                     SELECT AVG(net_exposure), AVG(gross_exposure), AVG(leverage)
                     FROM portfolio_risk_reports
                     WHERE as_of_date = %s
+                      AND portfolio_id = ANY(%s)
                     """,
-                    (latest_date,),
+                    (latest_date, list(_DASHBOARD_PORTFOLIOS)),
                 )
                 exp_row = cursor.fetchone()
                 if exp_row is not None:
@@ -1404,13 +1417,14 @@ async def list_portfolios() -> PortfolioListResponse:
                     SELECT ps.portfolio_id,
                            ps.mode,
                            ps.as_of_date,
+                           ps.timestamp AS latest_ts,
                            COUNT(*) AS num_pos,
                            SUM(ps.market_value) AS total_mv
                     FROM positions_snapshots ps
                     JOIN latest l ON l.portfolio_id = ps.portfolio_id AND l.max_ts = ps.timestamp
-                    GROUP BY ps.portfolio_id, ps.mode, ps.as_of_date
+                    GROUP BY ps.portfolio_id, ps.mode, ps.as_of_date, ps.timestamp
                 )
-                SELECT s.portfolio_id, s.mode, s.as_of_date, s.num_pos, s.total_mv,
+                SELECT s.portfolio_id, s.mode, s.as_of_date, s.latest_ts, s.num_pos, s.total_mv,
                        r.risk_metrics->'net_exposure' AS net_exp,
                        r.risk_metrics->'gross_exposure' AS gross_exp
                 FROM snap s
@@ -1421,11 +1435,12 @@ async def list_portfolios() -> PortfolioListResponse:
                 ) r ON TRUE
                 ORDER BY s.total_mv DESC NULLS LAST
             """)
-            for pid, mode, aod, npos, tmv, net_exp, gross_exp in cursor.fetchall():
+            for pid, mode, aod, lts, npos, tmv, net_exp, gross_exp in cursor.fetchall():
                 summaries.append(PortfolioSummary(
                     portfolio_id=pid,
                     mode=str(mode or "BACKTEST"),
                     latest_date=aod,
+                    latest_timestamp=lts,
                     num_positions=int(npos or 0),
                     total_market_value=float(tmv or 0.0),
                     net_exposure=float(net_exp) if net_exp is not None else None,
@@ -4179,6 +4194,452 @@ Structured logging via `prometheus.core.logging` with:
 """,
     },
 }
+
+
+# ============================================================================
+# Divergence Signals (Apatheon → Prometheus wiring)
+# ============================================================================
+
+
+class DivergenceSignalRow(BaseModel):
+    """Row returned by ``/api/status/divergence``."""
+
+    signal_id: str
+    as_of_date: date
+    entity_type: str
+    entity_id: str
+    behavioral_score: float
+    narrative_score: float
+    divergence: float
+    abs_divergence: float
+    direction: str
+    severity: str
+    trading_signal: str
+    decision_id: Optional[str] = None
+    computed_at: datetime
+    rationale: Optional[str] = None
+
+
+# ─── Convergence ───────────────────────────────────────────
+
+
+class ConvergenceSignalRow(BaseModel):
+    signal_id: str
+    as_of_date: date
+    entity_type: str
+    entity_id: str
+    days_to_hard_deadline: Optional[float] = None
+    hard_deadline_reason: Optional[str] = None
+    days_to_soft_signal: Optional[float] = None
+    soft_signal_type: Optional[str] = None
+    infrastructure_lag_days: float = 0.0
+    buffer_days: float = 0.0
+    buffer_source: Optional[str] = None
+    estimated_convergence_days: Optional[float] = None
+    convergence_window_min: Optional[float] = None
+    convergence_window_max: Optional[float] = None
+    confidence: float = 0.0
+    strategy: Optional[str] = None
+    entry_windows: List[Dict[str, Any]] = Field(default_factory=list)
+    decision_id: Optional[str] = None
+    computed_at: datetime
+
+
+@router.get("/convergence", response_model=List[ConvergenceSignalRow])
+async def get_convergence_signals(
+    as_of_date: Optional[date] = Query(None),
+    min_confidence: float = Query(0.0, ge=0.0, le=1.0),
+    limit: int = Query(50, ge=1, le=500),
+) -> List[ConvergenceSignalRow]:
+    """Convergence-timing signals: when narrative will be forced to reprice.
+
+    Pairs with ``/api/status/divergence`` (which says *which way*) — use
+    these to size laddered entries through ``entry_windows``.
+    """
+    db = get_db_manager()
+    target_date = as_of_date
+    if target_date is None:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT MAX(as_of_date) FROM convergence_signals")
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        target_date = row[0] if row and row[0] is not None else None
+    if target_date is None:
+        return []
+
+    from prometheus.signals.convergence import ConvergenceStorage
+
+    storage = ConvergenceStorage(db_manager=db)
+    rows = storage.list_recent(
+        as_of_date=target_date,
+        min_confidence=min_confidence,
+        limit=limit,
+    )
+    return [
+        ConvergenceSignalRow(
+            signal_id=s.signal_id,
+            as_of_date=s.as_of_date,
+            entity_type=s.entity_type,
+            entity_id=s.entity_id,
+            days_to_hard_deadline=s.days_to_hard_deadline,
+            hard_deadline_reason=s.hard_deadline_reason,
+            days_to_soft_signal=s.days_to_soft_signal,
+            soft_signal_type=s.soft_signal_type,
+            infrastructure_lag_days=s.infrastructure_lag_days,
+            buffer_days=s.buffer_days,
+            buffer_source=s.buffer_source,
+            estimated_convergence_days=s.estimated_convergence_days,
+            convergence_window_min=s.convergence_window_min,
+            convergence_window_max=s.convergence_window_max,
+            confidence=s.confidence,
+            strategy=s.strategy,
+            entry_windows=s.entry_windows,
+            decision_id=s.decision_id,
+            computed_at=s.computed_at,
+        )
+        for s in rows
+    ]
+
+
+# ─── Compound Pressure ─────────────────────────────────────
+
+
+class CompoundPressureRow(BaseModel):
+    alert_id: str
+    as_of_date: date
+    target_entity_type: str
+    target_entity_id: str
+    lookback_days: int
+    total_pressure_points: int
+    pressure_points_moved: int
+    cluster_days: float
+    encirclement_score: float
+    severity: str
+    likely_orchestrators: List[Dict[str, Any]] = Field(default_factory=list)
+    decision_id: Optional[str] = None
+    computed_at: datetime
+
+
+@router.get("/compound_pressure", response_model=List[CompoundPressureRow])
+async def get_compound_pressure(
+    as_of_date: Optional[date] = Query(None),
+    min_severity: str = Query("MODERATE"),
+    limit: int = Query(50, ge=1, le=500),
+) -> List[CompoundPressureRow]:
+    """Encirclement / compound-pressure alerts on watched sovereign targets."""
+    db = get_db_manager()
+    target_date = as_of_date
+    if target_date is None:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT MAX(as_of_date) FROM compound_pressure_alerts")
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        target_date = row[0] if row and row[0] is not None else None
+    if target_date is None:
+        return []
+
+    from prometheus.signals.compound_pressure import CompoundPressureStorage
+
+    storage = CompoundPressureStorage(db_manager=db)
+    rows = storage.list_recent(
+        as_of_date=target_date,
+        min_severity=min_severity,
+        limit=limit,
+    )
+    return [
+        CompoundPressureRow(
+            alert_id=a.alert_id,
+            as_of_date=a.as_of_date,
+            target_entity_type=a.target_entity_type,
+            target_entity_id=a.target_entity_id,
+            lookback_days=a.lookback_days,
+            total_pressure_points=a.total_pressure_points,
+            pressure_points_moved=a.pressure_points_moved,
+            cluster_days=a.cluster_days,
+            encirclement_score=a.encirclement_score,
+            severity=a.severity,
+            likely_orchestrators=a.likely_orchestrators,
+            decision_id=a.decision_id,
+            computed_at=a.computed_at,
+        )
+        for a in rows
+    ]
+
+
+# ─── Beneficiary ──────────────────────────────────────────
+
+
+class BeneficiaryRowOut(BaseModel):
+    score_id: str
+    as_of_date: date
+    victim_entity_type: str
+    victim_entity_id: str
+    rank: int
+    candidate_entity_type: str
+    candidate_entity_id: str
+    candidate_name: Optional[str] = None
+    composite_score: float
+    motive_score: float
+    means_score: float
+    opportunity_score: float
+    pattern_match_score: float
+    asymmetry_detected: bool
+    decision_id: Optional[str] = None
+    computed_at: datetime
+
+
+@router.get("/beneficiary", response_model=List[BeneficiaryRowOut])
+async def get_beneficiary_scores(
+    victim_entity_type: str = Query(..., description="e.g. CONFLICT or SOVEREIGN"),
+    victim_entity_id: str = Query(..., description="e.g. iran_war_2026 or USA"),
+    as_of_date: Optional[date] = Query(None),
+    top_k: int = Query(5, ge=1, le=20),
+) -> List[BeneficiaryRowOut]:
+    """Cui Bono scores for a victim entity.
+
+    Top-ranked candidates by motive / means / opportunity / pattern-match.
+    ``asymmetry_detected=true`` means the claimed perpetrator scores
+    structurally lower than the top alternative — a tradeable mispricing
+    signal.
+    """
+    db = get_db_manager()
+    from prometheus.signals.beneficiary import BeneficiaryStorage
+
+    storage = BeneficiaryStorage(db_manager=db)
+    rows = storage.list_for_victim(
+        victim_entity_type=victim_entity_type,
+        victim_entity_id=victim_entity_id,
+        as_of_date=as_of_date,
+        top_k=top_k,
+    )
+    return [
+        BeneficiaryRowOut(
+            score_id=r.score_id,
+            as_of_date=r.as_of_date,
+            victim_entity_type=r.victim_entity_type,
+            victim_entity_id=r.victim_entity_id,
+            rank=r.rank,
+            candidate_entity_type=r.candidate_entity_type,
+            candidate_entity_id=r.candidate_entity_id,
+            candidate_name=r.metadata.get("candidate_name") if r.metadata else None,
+            composite_score=r.composite_score,
+            motive_score=r.motive_score,
+            means_score=r.means_score,
+            opportunity_score=r.opportunity_score,
+            pattern_match_score=r.pattern_match_score,
+            asymmetry_detected=r.asymmetry_detected,
+            decision_id=r.decision_id,
+            computed_at=r.computed_at,
+        )
+        for r in rows
+    ]
+
+
+# ─── Portfolio Geo Risk ───────────────────────────────────
+
+
+class PortfolioGeoRiskOut(BaseModel):
+    snapshot_id: str
+    portfolio_id: str
+    as_of_date: date
+    overall_risk_score: float
+    conflict_risk: float
+    chokepoint_risk: float
+    sovereign_risk: float
+    sector_risk: float
+    ticker_count: int
+    exposure: Dict[str, Any] = Field(default_factory=dict)
+    decision_id: Optional[str] = None
+    computed_at: datetime
+
+
+# ─── Risk Dampener ────────────────────────────────────────
+
+
+class RiskDampenerOut(BaseModel):
+    """Effective risk dampener applied to per-name caps for a portfolio."""
+
+    portfolio_id: str
+    strategy_id: str
+    dampener: float
+    base_max_weight: float
+    effective_max_weight: float
+    overall_geo_risk: Optional[float] = None
+    compound_severities: List[str] = Field(default_factory=list)
+    exposed_isos: List[str] = Field(default_factory=list)
+    strategy_disabled: bool = False
+    strategy_floor: float
+
+
+@router.get("/risk_dampener", response_model=RiskDampenerOut)
+async def get_risk_dampener(
+    portfolio_id: str = Query(..., description="Portfolio identifier"),
+    strategy_id: str = Query("US_EQ_CORE_LONG_EQ", description="Strategy identifier"),
+) -> RiskDampenerOut:
+    """Return the current effective risk dampener for ``(portfolio_id, strategy_id)``.
+
+    Operators read this to understand *why* per-name caps shrunk on a
+    given day — e.g. ``dampener=0.6`` because ``overall_geo_risk=70`` and
+    one ``HIGH`` compound-pressure alert is targeting an exposed sovereign.
+    """
+    db = get_db_manager()
+    from prometheus.risk.constraints import get_strategy_risk_config
+    from prometheus.risk.dynamic_constraints import (
+        _strategy_dampener_disabled,
+        _strategy_floor,
+        compute_dampener,
+    )
+
+    base = get_strategy_risk_config(strategy_id)
+    disabled = _strategy_dampener_disabled(strategy_id)
+
+    if disabled:
+        return RiskDampenerOut(
+            portfolio_id=portfolio_id,
+            strategy_id=strategy_id,
+            dampener=1.0,
+            base_max_weight=base.max_abs_weight_per_name,
+            effective_max_weight=base.max_abs_weight_per_name,
+            overall_geo_risk=None,
+            compound_severities=[],
+            exposed_isos=[],
+            strategy_disabled=True,
+            strategy_floor=_strategy_floor(strategy_id),
+        )
+
+    multiplier, inputs = compute_dampener(
+        portfolio_id=portfolio_id,
+        strategy_id=strategy_id,
+        db_manager=db,
+    )
+
+    return RiskDampenerOut(
+        portfolio_id=portfolio_id,
+        strategy_id=strategy_id,
+        dampener=multiplier,
+        base_max_weight=base.max_abs_weight_per_name,
+        effective_max_weight=base.max_abs_weight_per_name * multiplier,
+        overall_geo_risk=inputs.overall_geo_risk,
+        compound_severities=list(inputs.compound_severities),
+        exposed_isos=list(inputs.portfolio_exposed_isos),
+        strategy_disabled=False,
+        strategy_floor=_strategy_floor(strategy_id),
+    )
+
+
+@router.get("/portfolio_geo_risk", response_model=Optional[PortfolioGeoRiskOut])
+async def get_portfolio_geo_risk(
+    portfolio_id: str = Query(..., description="Portfolio identifier"),
+) -> Optional[PortfolioGeoRiskOut]:
+    """Latest geopolitical-exposure snapshot for a portfolio."""
+    db = get_db_manager()
+    from prometheus.risk.geo_exposure import PortfolioGeoRiskStorage
+
+    storage = PortfolioGeoRiskStorage(db_manager=db)
+    snap = storage.latest(portfolio_id)
+    if snap is None:
+        return None
+    return PortfolioGeoRiskOut(
+        snapshot_id=snap.snapshot_id,
+        portfolio_id=snap.portfolio_id,
+        as_of_date=snap.as_of_date,
+        overall_risk_score=snap.overall_risk_score,
+        conflict_risk=snap.conflict_risk,
+        chokepoint_risk=snap.chokepoint_risk,
+        sovereign_risk=snap.sovereign_risk,
+        sector_risk=snap.sector_risk,
+        ticker_count=snap.ticker_count,
+        exposure=snap.exposure,
+        decision_id=snap.decision_id,
+        computed_at=snap.computed_at,
+    )
+
+
+@router.get("/divergence", response_model=List[DivergenceSignalRow])
+async def get_divergence_signals(
+    as_of_date: Optional[date] = Query(
+        None,
+        description="Date to read signals for; defaults to the most recent date with persisted scans.",
+    ),
+    min_severity: str = Query(
+        "SIGNIFICANT",
+        description="Minimum severity to return: NONE | MILD | SIGNIFICANT | EXTREME.",
+    ),
+    limit: int = Query(50, ge=1, le=500),
+) -> List[DivergenceSignalRow]:
+    """Return narrative-vs-reality divergence signals from Apatheon's intel
+    layer that Prometheus has persisted as decision candidates.
+
+    Each row carries:
+      * ``trading_signal`` — ``FADE_NARRATIVE`` (short news-driven exposure
+        as physical reality reprices it down) or ``FRONT_RUN_REALITY``
+        (long reality-exposed names ahead of media catching up).
+      * ``decision_id`` (when severity is SIGNIFICANT or EXTREME) — link
+        back to ``engine_decisions`` for outcome tracking.
+    """
+    db = get_db_manager()
+
+    # Resolve the most recent date if not supplied.
+    target_date = as_of_date
+    if target_date is None:
+        with db.get_runtime_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT MAX(as_of_date) FROM divergence_signals")
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        target_date = row[0] if row and row[0] is not None else None
+    if target_date is None:
+        return []
+
+    from prometheus.signals.divergence import DivergenceStorage
+
+    storage = DivergenceStorage(db_manager=db)
+    signals = storage.list_recent(
+        as_of_date=target_date,
+        min_severity=min_severity,
+        limit=limit,
+    )
+
+    def _rationale(row_severity: str, trading_signal: str) -> Optional[str]:
+        if trading_signal == "FADE_NARRATIVE":
+            return (
+                "News overstates reality — short narrative-driven exposure; "
+                "expect convergence DOWN within the entity's convergence window."
+            )
+        if trading_signal == "FRONT_RUN_REALITY":
+            return (
+                "Reality leads narrative — long reality-exposed names before "
+                "media catches up."
+            )
+        return None
+
+    return [
+        DivergenceSignalRow(
+            signal_id=s.signal_id,
+            as_of_date=s.as_of_date,
+            entity_type=s.entity_type,
+            entity_id=s.entity_id,
+            behavioral_score=s.behavioral_score,
+            narrative_score=s.narrative_score,
+            divergence=s.divergence,
+            abs_divergence=s.abs_divergence,
+            direction=s.direction,
+            severity=s.severity,
+            trading_signal=s.trading_signal,
+            decision_id=s.decision_id,
+            computed_at=s.computed_at,
+            rationale=_rationale(s.severity, s.trading_signal),
+        )
+        for s in signals
+    ]
 
 
 @router.get("/docs")

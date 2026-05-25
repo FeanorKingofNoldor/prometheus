@@ -5,6 +5,7 @@ export interface PortfolioSummary {
   portfolio_id: string;
   mode: string;
   latest_date: string | null;
+  latest_timestamp: string | null;
   num_positions: number;
   total_market_value: number;
 }

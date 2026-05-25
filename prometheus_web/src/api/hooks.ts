@@ -22,6 +22,44 @@ export const useRegime = () =>
 export const useStability = () =>
   useQuery({ queryKey: ["status", "stability"], queryFn: () => api.get("/status/stability") });
 
+export const useDivergenceSignals = (minSeverity: string = "SIGNIFICANT") =>
+  useQuery({
+    queryKey: ["status", "divergence", minSeverity],
+    queryFn: () => api.get(`/status/divergence?min_severity=${minSeverity}&limit=20`),
+    refetchInterval: 60_000,
+  });
+
+export const useConvergenceSignals = (minConfidence: number = 0.5) =>
+  useQuery({
+    queryKey: ["status", "convergence", minConfidence],
+    queryFn: () => api.get(`/status/convergence?min_confidence=${minConfidence}&limit=20`),
+    refetchInterval: 60_000,
+  });
+
+export const useCompoundPressure = (minSeverity: string = "MODERATE") =>
+  useQuery({
+    queryKey: ["status", "compound_pressure", minSeverity],
+    queryFn: () => api.get(`/status/compound_pressure?min_severity=${minSeverity}&limit=20`),
+    refetchInterval: 60_000,
+  });
+
+export const usePortfolioGeoRisk = (portfolioId: string) =>
+  useQuery({
+    queryKey: ["status", "portfolio_geo_risk", portfolioId],
+    queryFn: () => api.get(`/status/portfolio_geo_risk?portfolio_id=${portfolioId}`),
+    enabled: !!portfolioId,
+    refetchInterval: 5 * 60_000,
+  });
+
+export const useRiskDampener = (portfolioId: string, strategyId: string = "US_EQ_CORE_LONG_EQ") =>
+  useQuery({
+    queryKey: ["status", "risk_dampener", portfolioId, strategyId],
+    queryFn: () =>
+      api.get(`/status/risk_dampener?portfolio_id=${portfolioId}&strategy_id=${strategyId}`),
+    enabled: !!portfolioId,
+    refetchInterval: 5 * 60_000,
+  });
+
 export const useFragilityList = () =>
   useQuery({ queryKey: ["status", "fragility"], queryFn: () => api.get("/status/fragility") });
 
@@ -35,7 +73,7 @@ export const useUniverse = (strategyId = DEFAULT_STRATEGY) =>
   useQuery({ queryKey: ["status", "universe", strategyId], queryFn: () => api.get(`/status/universe?strategy_id=${strategyId}`) });
 
 export const usePortfolios = () =>
-  useQuery({ queryKey: ["status", "portfolios"], queryFn: () => api.get("/status/portfolios") });
+  useQuery({ queryKey: ["status", "portfolios"], queryFn: () => api.get("/status/portfolios"), refetchInterval: 30_000 });
 
 export const usePortfolio = (portfolioId = DEFAULT_PORTFOLIO) =>
   useQuery({ queryKey: ["status", "portfolio", portfolioId], queryFn: () => api.get(`/status/portfolio?portfolio_id=${portfolioId}`), refetchInterval: 30_000 });

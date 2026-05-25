@@ -170,11 +170,12 @@ def create_paper_broker(
 ) -> PaperBroker:
     """Create a PaperBroker instance for PAPER trading.
 
-    This creates a PaperBroker with IbkrClientImpl configured for paper trading,
-    loading credentials from environment variables:
-    - IBKR_PAPER_USERNAME (default: xubtmn245)
+    This creates a PaperBroker with IbkrClientImpl configured for paper
+    trading, loading credentials from environment variables (no hardcoded
+    defaults — `load_credentials` raises if any are missing):
+    - IBKR_PAPER_USERNAME
     - IBKR_PAPER_PASSWORD
-    - IBKR_PAPER_ACCOUNT (default: DUN807925)
+    - IBKR_PAPER_ACCOUNT
 
     Args:
         gateway_type: Gateway type (GATEWAY or TWS), defaults to GATEWAY

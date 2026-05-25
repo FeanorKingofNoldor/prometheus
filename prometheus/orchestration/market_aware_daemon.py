@@ -25,10 +25,11 @@ import argparse
 import os
 import random
 import signal
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from apatheon.core.database import DatabaseManager, get_db_manager
 from apatheon.core.ids import generate_uuid
@@ -37,6 +38,7 @@ from apatheon.core.market_state import MarketState, get_market_state
 from apatheon.core.time import TradingCalendar, TradingCalendarConfig
 from apatheon.data_ingestion.daily_orchestrator import (
     check_price_data_freshness,
+    find_trailing_coverage_gaps,
     is_data_ready_for_market,
     run_daily_ingestion,
 )
@@ -466,6 +468,20 @@ def execute_job(
                     "ingest_prices: data ready for %s on %s (%s)",
                     job.market_id, execution.as_of_date, freshness_msg,
                 )
+                # Non-blocking diagnostic: a past day that fully failed to
+                # ingest leaves a permanent hole that the universe's
+                # trailing-history filter punishes for weeks (it silently
+                # collapsed the universe to a single name). Surface such
+                # holes loudly so they can be backfilled. The universe
+                # filter itself is now gap-tolerant, so this only warns.
+                gaps = find_trailing_coverage_gaps(db_manager, execution.as_of_date)
+                if gaps:
+                    logger.warning(
+                        "ingest_prices: %d under-covered day(s) in the trailing "
+                        "price window — backfill recommended: %s",
+                        len(gaps),
+                        ", ".join(f"{d.isoformat()}({n})" for d, n in gaps[:10]),
+                    )
                 return True, None
             else:
                 # Not enough data yet — EODHD may not have published.
@@ -628,6 +644,34 @@ def execute_job(
                 logger.warning("snapshot_positions: failed (non-blocking): %s", exc)
             return True, None
 
+        elif job.job_type == "geo_exposure_scan":
+            # Score the live IBKR portfolio for geopolitical exposure.
+            # Non-blocking: failure does not stop finalize.
+            try:
+                from prometheus.risk.geo_exposure import run_geo_exposure_scan
+                portfolio_id = os.environ.get("PROMETHEUS_PRIMARY_PORTFOLIO", "IBKR_PAPER")
+                result = run_geo_exposure_scan(
+                    portfolio_id=portfolio_id,
+                    as_of_date=execution.as_of_date,
+                    db_manager=db_manager,
+                )
+                if result.snapshot is not None:
+                    logger.info(
+                        "[geo_risk] scan job done portfolio=%s overall=%.1f decision=%s",
+                        portfolio_id,
+                        result.snapshot.overall_risk_score,
+                        result.decision_logged,
+                    )
+                else:
+                    logger.info(
+                        "[geo_risk] scan job: no holdings for %s on %s",
+                        portfolio_id,
+                        execution.as_of_date.isoformat(),
+                    )
+            except Exception as exc:
+                logger.warning("geo_exposure_scan: failed (non-blocking): %s", exc)
+            return True, None
+
         elif job.job_type == "finalize":
             # Mark the run COMPLETED.  Handles all terminal predecessor phases:
             # OPTIONS_DONE (normal), EXECUTION_DONE (options skipped/failed),
@@ -760,6 +804,57 @@ def _execute_intel_job(
         elif job.job_type == "intel_log_health":
             from prometheus.monitoring.report_service import generate_log_report
             generate_log_report("log_daily")
+            return True, None
+
+        elif job.job_type == "intel_divergence_scan":
+            from prometheus.signals.divergence import run_divergence_scan
+            result = run_divergence_scan(as_of_date=execution.as_of_date)
+            logger.info(
+                "[divergence] scan job done date=%s persisted=%d decisions=%d sig=%d ext=%d",
+                execution.as_of_date.isoformat(),
+                result.rows_persisted,
+                result.decisions_logged,
+                len(result.significant),
+                len(result.extreme),
+            )
+            return True, None
+
+        elif job.job_type == "intel_convergence_scan":
+            from prometheus.signals.convergence import run_convergence_scan
+            result = run_convergence_scan(as_of_date=execution.as_of_date)
+            logger.info(
+                "[convergence] scan job done date=%s persisted=%d decisions=%d confident=%d",
+                execution.as_of_date.isoformat(),
+                result.rows_persisted,
+                result.decisions_logged,
+                len(result.confident),
+            )
+            return True, None
+
+        elif job.job_type == "intel_compound_pressure_scan":
+            from prometheus.signals.compound_pressure import run_compound_pressure_scan
+            result = run_compound_pressure_scan(as_of_date=execution.as_of_date)
+            logger.info(
+                "[compound] scan job done date=%s targets=%d persisted=%d decisions=%d high+=%d",
+                execution.as_of_date.isoformat(),
+                result.targets_scanned,
+                result.rows_persisted,
+                result.decisions_logged,
+                len(result.high_or_above),
+            )
+            return True, None
+
+        elif job.job_type == "intel_beneficiary_scan":
+            from prometheus.signals.beneficiary import run_beneficiary_scan
+            result = run_beneficiary_scan(as_of_date=execution.as_of_date)
+            logger.info(
+                "[beneficiary] scan job done date=%s victims=%d persisted=%d decisions=%d asym=%d",
+                execution.as_of_date.isoformat(),
+                result.victims_scanned,
+                result.rows_persisted,
+                result.decisions_logged,
+                len(result.asymmetric),
+            )
             return True, None
 
         else:
@@ -1118,6 +1213,10 @@ class MarketAwareDaemon:
         # immediately on SIGTERM instead of waiting up to poll_interval_seconds.
         import threading as _threading
         self._shutdown_event = _threading.Event()
+        # Separate "wake up, but don't shutdown" event used by the
+        # signal listener to short-circuit the poll interval when an
+        # EXTREME divergence or CRITICAL compound alert arrives.
+        self._wake_event = _threading.Event()
 
         # Track active DAGs: {market_id: (DAG, dag_id)}
         self.active_dags: Dict[str, Tuple[DAG, str]] = {}
@@ -1153,6 +1252,77 @@ class MarketAwareDaemon:
 
         signal.signal(signal.SIGTERM, _signal_handler)
         signal.signal(signal.SIGINT, _signal_handler)
+
+    def _on_signal_alert(self, alert: Any) -> None:
+        """Callback invoked by the LISTEN/NOTIFY listener thread.
+
+        Sets ``_wake_event`` so the main loop's interruptible sleep
+        returns early and re-evaluates DAGs immediately instead of
+        waiting for the next poll tick.  Heavy work (running the actual
+        jobs) still happens on the main thread to avoid contending for
+        the DB pool.
+        """
+        logger.info(
+            "MarketAwareDaemon: signal alert source=%s severity=%s entity=%s:%s — waking poll loop",
+            getattr(alert, "source", "?"),
+            getattr(alert, "severity", "?"),
+            getattr(alert, "entity_type", "?"),
+            getattr(alert, "entity_id", "?"),
+        )
+        self._wake_event.set()
+
+    def _interruptible_sleep(self, timeout_seconds: float) -> str:
+        """Sleep up to ``timeout_seconds``, but wake early on shutdown or
+        signal-alert.  Returns ``"shutdown"`` if the daemon should stop,
+        ``"wake"`` if a signal alert arrived, ``"timeout"`` otherwise.
+        """
+        # Wait on shutdown first — if it's already set, return immediately.
+        if self._shutdown_event.is_set():
+            return "shutdown"
+        if self._wake_event.is_set():
+            self._wake_event.clear()
+            return "wake"
+
+        # Use a short polling loop so we honour both events without
+        # threading.Event.wait() supporting "wait on multiple events".
+        # Sleeping in 200ms slices keeps shutdown latency low while
+        # avoiding a busy-wait.
+        end_time = max(0.0, timeout_seconds)
+        slice_s = 0.2
+        elapsed = 0.0
+        while elapsed < end_time:
+            wait_for = min(slice_s, end_time - elapsed)
+            if self._shutdown_event.wait(timeout=wait_for):
+                return "shutdown"
+            if self._wake_event.is_set():
+                self._wake_event.clear()
+                return "wake"
+            elapsed += wait_for
+        return "timeout"
+
+    def _start_signal_listener(self) -> "Any | None":
+        """Try to start the Postgres LISTEN/NOTIFY listener.
+
+        Returns the listener handle on success; ``None`` (and logs) on
+        failure so the daemon falls back to pure polling.
+        """
+        if os.environ.get("PROMETHEUS_DISABLE_SIGNAL_LISTENER", "").lower() in {
+            "1", "true", "yes", "on",
+        }:
+            logger.info("MarketAwareDaemon: signal listener disabled via env")
+            return None
+        try:
+            from prometheus.orchestration.signal_listener import SignalAlertListener
+
+            listener = SignalAlertListener(
+                db_manager=self.db_manager,
+                on_alert=self._on_signal_alert,
+            )
+            listener.start()
+            return listener
+        except Exception:
+            logger.exception("MarketAwareDaemon: failed to start signal listener")
+            return None
 
     def _initialize_dags(self, as_of_date: date) -> None:
         """Initialize or refresh DAGs for all configured markets."""
@@ -1232,8 +1402,6 @@ class MarketAwareDaemon:
         """
         if not self._orphaned_threads:
             return
-        from datetime import timedelta as _timedelta
-
         from prometheus.orchestration.clock import now_utc as _now_utc
 
         still_running: List[Tuple[str, "threading.Thread", datetime]] = []
@@ -1627,8 +1795,13 @@ class MarketAwareDaemon:
                         break
 
                     # Interruptible sleep between iterations so SIGTERM exits
-                    # promptly even mid-catch-up.
-                    if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                    # promptly even mid-catch-up.  Signal alerts (wake event)
+                    # also break the sleep but don't exit the loop — they
+                    # let the next iteration evaluate immediately.
+                    sleep_outcome = self._interruptible_sleep(
+                        self.config.poll_interval_seconds,
+                    )
+                    if sleep_outcome == "shutdown":
                         break
                 else:
                     logger.warning(
@@ -1690,11 +1863,18 @@ class MarketAwareDaemon:
         as_of_date = self.config.as_of_date or datetime.now(timezone.utc).date()
         self._initialize_dags(as_of_date)
 
+        # Start the LISTEN/NOTIFY listener so EXTREME divergence and
+        # CRITICAL compound-pressure rows trigger an immediate wake-up
+        # instead of waiting up to one poll_interval.  Failure to start
+        # is non-fatal — the 60s poll loop still runs.
+        signal_listener = self._start_signal_listener()
+
         logger.info(
-            "MarketAwareDaemon: starting markets=%s as_of_date=%s poll_interval=%ds",
+            "MarketAwareDaemon: starting markets=%s as_of_date=%s poll_interval=%ds listener=%s",
             ",".join(self.config.markets),
             as_of_date,
             self.config.poll_interval_seconds,
+            "on" if signal_listener is not None else "off",
         )
 
         cycle_count = 0
@@ -1771,10 +1951,27 @@ class MarketAwareDaemon:
                                         has_failures,
                                         as_of_date,
                                     )
+                                    failed_jobs = [
+                                        {
+                                            "job_id": e.job_id,
+                                            "error": (e.error_message or "")[:500],
+                                        }
+                                        for e in dag_execs
+                                        if e.status == JobStatus.FAILED
+                                    ]
+                                    reap_error = {
+                                        "reason": "date_rollover_zombie_reap",
+                                        "stuck_phase": stale_run.phase.value,
+                                        "dag_id": dag_id,
+                                        "n_jobs": len(dag_execs),
+                                        "n_failed_jobs": len(failed_jobs),
+                                        "failed_jobs": failed_jobs[:10],
+                                    }
                                     update_phase(
                                         self.db_manager,
                                         stale_run.run_id,
                                         RunPhase.FAILED,
+                                        error=reap_error,
                                     )
                         except Exception:
                             logger.exception("MarketAwareDaemon: failed to finalize stale runs")
@@ -1818,16 +2015,23 @@ class MarketAwareDaemon:
 
                 self._run_cycle(as_of_date)
 
-                # Interruptible sleep: returns True if the event fires before
-                # the timeout, so SIGTERM exits the loop within one second
-                # instead of waiting the full poll_interval.
-                if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                # Interruptible sleep: SIGTERM and signal alerts both
+                # break out, but only "shutdown" exits the loop.  Signal
+                # alerts cause the next cycle to start immediately.
+                if self._interruptible_sleep(self.config.poll_interval_seconds) == "shutdown":
                     break
 
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("MarketAwareDaemon: cycle %d failed: %s", cycle_count, exc)
-                if self._shutdown_event.wait(timeout=self.config.poll_interval_seconds):
+                if self._interruptible_sleep(self.config.poll_interval_seconds) == "shutdown":
                     break
+
+        # Stop the LISTEN/NOTIFY listener (no-op if it never started).
+        if signal_listener is not None:
+            try:
+                signal_listener.stop(timeout=5.0)
+            except Exception:
+                logger.exception("MarketAwareDaemon: signal listener stop failed")
 
         # Mark any jobs that were mid-flight at shutdown as FAILED so they
         # don't appear orphaned in RUNNING state on next startup. The actual

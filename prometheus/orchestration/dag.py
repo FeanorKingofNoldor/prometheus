@@ -419,6 +419,26 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     )
 
     # ========================================================================
+    # Phase 6c: Geo-exposure scan — calls Apatheon's analyze_exposure on the
+    # freshly snapshotted IBKR holdings to compute conflict / chokepoint /
+    # sovereign / sector risk for the live portfolio. Runs after the
+    # position snapshot so it scores today's actual book.
+    # ========================================================================
+
+    jobs[job_id("geo_exposure_scan")] = JobMetadata(
+        job_id=job_id("geo_exposure_scan"),
+        job_type="geo_exposure_scan",
+        market_id=market_id,
+        required_state=MarketState.POST_CLOSE,
+        dependencies=(job_id("snapshot_positions"),),
+        run_phase=RunPhase.OPTIONS_DONE,
+        priority=JobPriority.OPTIONAL,
+        timeout_seconds=300,
+        max_retries=1,
+        retry_delay_seconds=60,
+    )
+
+    # ========================================================================
     # Phase 7: Finalize — marks run COMPLETED regardless of whether options
     # or snapshot succeeded or were skipped.
     # ========================================================================
@@ -428,7 +448,7 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         job_type="finalize",
         market_id=market_id,
         required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("snapshot_positions"),),
+        dependencies=(job_id("geo_exposure_scan"),),
         run_phase=RunPhase.COMPLETED,
         priority=JobPriority.CRITICAL,
         timeout_seconds=60,
@@ -539,6 +559,65 @@ def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
         max_retries=2,
         retry_delay_seconds=120,
         timeout_seconds=300,  # First run ~180s (cold SQL cache), subsequent <1s
+    )
+
+    # Divergence scan — pulls Apatheon's narrative-vs-reality scans into
+    # Prometheus's divergence_signals table and logs SIGNIFICANT/EXTREME
+    # results to engine_decisions so Iris can score realised outcomes.
+    jobs[f"intel_divergence_scan_{date_str}"] = JobMetadata(
+        job_id=f"intel_divergence_scan_{date_str}",
+        job_type="intel_divergence_scan",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"intel_flash_check_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,  # Pure DB + graph reads, ~10–60s
+    )
+
+    # Convergence scan — runs after divergence so it can link decision_ids
+    # for jointly-scored hypotheses (when narrative *and* convergence
+    # timing both fire on the same entity).
+    jobs[f"intel_convergence_scan_{date_str}"] = JobMetadata(
+        job_id=f"intel_convergence_scan_{date_str}",
+        job_type="intel_convergence_scan",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"intel_divergence_scan_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=120,
+        timeout_seconds=300,
+    )
+
+    # Compound-pressure scan — encirclement detection across watched
+    # sovereigns; HIGH/CRITICAL alerts log decisions for portfolio
+    # defensive shifts.
+    jobs[f"intel_compound_pressure_scan_{date_str}"] = JobMetadata(
+        job_id=f"intel_compound_pressure_scan_{date_str}",
+        job_type="intel_compound_pressure_scan",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"intel_flash_check_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=180,
+        timeout_seconds=900,  # Graph propagation across ~11 targets
+    )
+
+    # Beneficiary / Cui Bono scan — runs analyze_beneficiaries on each
+    # active conflict, persists top-K per victim, logs decisions.
+    jobs[f"intel_beneficiary_scan_{date_str}"] = JobMetadata(
+        job_id=f"intel_beneficiary_scan_{date_str}",
+        job_type="intel_beneficiary_scan",
+        market_id=None,
+        required_state=None,
+        dependencies=(f"intel_flash_check_{date_str}",),
+        priority=JobPriority.OPTIONAL,
+        max_retries=2,
+        retry_delay_seconds=180,
+        timeout_seconds=600,
     )
 
     # Daily SITREP — heavy (4 analysts + synthesis via Ollama)
