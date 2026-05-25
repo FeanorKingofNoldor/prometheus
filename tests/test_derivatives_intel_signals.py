@@ -90,7 +90,7 @@ class _FakeDb:
         self.geo: list[dict[str, Any]] = []
 
     @contextmanager
-    def get_connection(self):
+    def get_runtime_connection(self):
         yield _FakeConnection(self)
 
 

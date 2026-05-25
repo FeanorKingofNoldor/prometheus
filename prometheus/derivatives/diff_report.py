@@ -69,7 +69,7 @@ def load_shadow_decisions(
     db_manager: DatabaseManager, as_of_date: date,
 ) -> list[ShadowDecisionRow]:
     """Pull every shadow row for a date."""
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -111,7 +111,7 @@ def load_legacy_options_decisions(
     into one ``LegacyOption`` per order.
     """
     out: list[LegacyOption] = []
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

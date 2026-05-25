@@ -87,7 +87,8 @@ def _vix_to_proxy_frag(vix: float) -> float:
 
 
 def _load_price(db: DatabaseManager, as_of: date, instrument_id: str) -> float:
-    with db.get_connection() as conn:
+    """Prices live in the historical DB."""
+    with db.get_historical_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -103,7 +104,8 @@ def _load_price(db: DatabaseManager, as_of: date, instrument_id: str) -> float:
 
 
 def _load_sector_shi(db: DatabaseManager, as_of: date) -> dict[str, float]:
-    with db.get_connection() as conn:
+    """sector_health_daily lives in the runtime DB."""
+    with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -124,7 +126,7 @@ def _load_sector_shi(db: DatabaseManager, as_of: date) -> dict[str, float]:
 
 def _load_vix_5d_change_pct(db: DatabaseManager, as_of: date) -> float:
     """Percent change in VIX over the trailing 5 trading days."""
-    with db.get_connection() as conn:
+    with db.get_historical_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

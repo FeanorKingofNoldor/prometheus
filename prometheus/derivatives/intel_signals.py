@@ -187,7 +187,7 @@ def merge_into_signals(
 
 
 def _load_divergence(db: DatabaseManager, as_of: date) -> list[dict]:
-    with db.get_connection() as conn:
+    with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -208,7 +208,7 @@ def _load_divergence(db: DatabaseManager, as_of: date) -> list[dict]:
 
 
 def _load_convergence(db: DatabaseManager, as_of: date) -> list[dict]:
-    with db.get_connection() as conn:
+    with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -230,7 +230,7 @@ def _load_convergence(db: DatabaseManager, as_of: date) -> list[dict]:
 
 
 def _load_compound_pressure(db: DatabaseManager, as_of: date) -> list[dict]:
-    with db.get_connection() as conn:
+    with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -253,7 +253,7 @@ def _load_compound_pressure(db: DatabaseManager, as_of: date) -> list[dict]:
 def _load_portfolio_geo_risk(
     db: DatabaseManager, as_of: date, portfolio_id: str | None,
 ) -> dict | None:
-    with db.get_connection() as conn:
+    with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             if portfolio_id:
                 cur.execute(

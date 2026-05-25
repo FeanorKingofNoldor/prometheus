@@ -120,7 +120,7 @@ def record_position_open(
     as_of = _as_of(as_of_date)
     md_json = Json(dict(metadata)) if metadata else None
 
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -227,7 +227,7 @@ def record_position_close(
     now = _now()
     as_of = _as_of(as_of_date)
 
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -352,7 +352,7 @@ def update_position_mark(
     args.append(now)
     args.append(position_id)
 
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"UPDATE options_positions SET {', '.join(sets)} WHERE position_id = %s",
@@ -553,7 +553,7 @@ def get_open_positions(
 ) -> list[OptionPositionRow]:
     """Return all currently open positions for a portfolio + mode."""
 
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

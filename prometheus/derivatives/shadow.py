@@ -68,7 +68,7 @@ def record_shadow_result(
     mhi = _maybe_float(signals.get("mhi"))
 
     rows = 0
-    with db_manager.get_connection() as conn:
+    with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             for sleeve_result in sleeve_results:
                 for d in sleeve_result.directives:
