@@ -10,12 +10,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from apatheon.core.config import get_config
 from apatheon.core.database import get_db_manager
 from apatheon.core.logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
-from apatheon.core.config import get_config
 from prometheus.assessment.model_basic import BasicAssessmentModel
 from prometheus.books.registry import (
     AllocatorSleeveSpec,
@@ -921,6 +921,741 @@ async def get_meta_policy_decisions(
         )
 
     return out
+
+
+# ============================================================================
+# Notifications inbox (migration 0100)
+# ============================================================================
+
+
+class NotificationItem(BaseModel):
+    """A single notification row from the inbox."""
+
+    notification_id: int
+    created_at: datetime
+    as_of_date: Optional[date]
+    kind: str
+    severity: str
+    title: str
+    body: Optional[str]
+    source_table: Optional[str]
+    source_id: Optional[str]
+    link_path: Optional[str]
+    read_at: Optional[datetime]
+    dismissed_at: Optional[datetime]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NotificationListResponse(BaseModel):
+    """Paginated list of notifications."""
+
+    items: List[NotificationItem]
+    unread_count: int
+    total: int
+
+
+def _row_to_notification(row: tuple) -> NotificationItem:
+    (
+        notification_id, created_at, as_of_date, kind, severity, title, body,
+        source_table, source_id, link_path, read_at, dismissed_at, metadata_json,
+    ) = row
+    return NotificationItem(
+        notification_id=notification_id,
+        created_at=created_at,
+        as_of_date=as_of_date,
+        kind=kind,
+        severity=severity,
+        title=title,
+        body=body,
+        source_table=source_table,
+        source_id=source_id,
+        link_path=link_path,
+        read_at=read_at,
+        dismissed_at=dismissed_at,
+        metadata=metadata_json or {},
+    )
+
+
+@meta_router.get("/notifications", response_model=NotificationListResponse)
+async def list_notifications(
+    unread_only: bool = Query(False, description="Return only unread+undismissed."),
+    include_dismissed: bool = Query(False, description="Include dismissed notifications."),
+    kind: Optional[str] = Query(None, description="Filter by notification kind."),
+    severity: Optional[str] = Query(None, description="Filter by severity (info|warning|critical)."),
+    limit: int = Query(100, ge=1, le=500),
+) -> NotificationListResponse:
+    """Notifications inbox for the alerting loop (migration 0100)."""
+    db = get_db_manager()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if unread_only:
+        where.append("read_at IS NULL AND dismissed_at IS NULL")
+    elif not include_dismissed:
+        where.append("dismissed_at IS NULL")
+    if kind:
+        where.append("kind = %s")
+        params.append(kind)
+    if severity:
+        where.append("severity = %s")
+        params.append(severity)
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT notification_id, created_at, as_of_date, kind, severity,
+                       title, body, source_table, source_id, link_path,
+                       read_at, dismissed_at, metadata_json
+                FROM notifications
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+
+            cur.execute(
+                "SELECT COUNT(*) FROM notifications "
+                "WHERE read_at IS NULL AND dismissed_at IS NULL"
+            )
+            unread_row = cur.fetchone()
+            unread_count = int(unread_row[0]) if unread_row else 0
+
+            cur.execute("SELECT COUNT(*) FROM notifications WHERE dismissed_at IS NULL")
+            total_row = cur.fetchone()
+            total = int(total_row[0]) if total_row else 0
+        finally:
+            cur.close()
+
+    return NotificationListResponse(
+        items=[_row_to_notification(r) for r in rows],
+        unread_count=unread_count,
+        total=total,
+    )
+
+
+@meta_router.post("/notifications/{notification_id}/read", response_model=NotificationItem)
+async def mark_notification_read(
+    notification_id: int = Path(..., description="Notification ID."),
+) -> NotificationItem:
+    """Mark a single notification as read."""
+    from prometheus.meta.notifications import mark_read
+
+    db = get_db_manager()
+    mark_read(db, notification_id)  # idempotent; returns False if already read
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT notification_id, created_at, as_of_date, kind, severity,
+                       title, body, source_table, source_id, link_path,
+                       read_at, dismissed_at, metadata_json
+                FROM notifications WHERE notification_id = %s
+                """,
+                (notification_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"notification {notification_id} not found")
+    return _row_to_notification(row)
+
+
+@meta_router.post("/notifications/{notification_id}/dismiss", response_model=NotificationItem)
+async def dismiss_notification(
+    notification_id: int = Path(..., description="Notification ID."),
+) -> NotificationItem:
+    """Dismiss a single notification (hides it from the default inbox view)."""
+    from prometheus.meta.notifications import dismiss
+
+    db = get_db_manager()
+    dismiss(db, notification_id)  # idempotent
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT notification_id, created_at, as_of_date, kind, severity,
+                       title, body, source_table, source_id, link_path,
+                       read_at, dismissed_at, metadata_json
+                FROM notifications WHERE notification_id = %s
+                """,
+                (notification_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"notification {notification_id} not found")
+    return _row_to_notification(row)
+
+
+# ============================================================================
+# Persisted meta history (migration 0099)
+# ============================================================================
+
+
+class FeedbackInsightRow(BaseModel):
+    """A persisted row from meta_feedback_insights."""
+
+    insight_id: int
+    as_of_date: date
+    category: str
+    severity: str
+    message: str
+    metric_name: Optional[str]
+    metric_value: Optional[float]
+    benchmark: Optional[float]
+    deviation: Optional[float]
+    lookback_days: Optional[int]
+    created_at: datetime
+
+
+class FeedbackInsightsResponse(BaseModel):
+    items: List[FeedbackInsightRow]
+    distinct_dates: int
+
+
+@meta_router.get("/feedback_insights", response_model=FeedbackInsightsResponse)
+async def list_feedback_insights(
+    days: int = Query(30, ge=1, le=180, description="Lookback days from latest."),
+    severity: Optional[str] = Query(None, description="Filter (info|warning|critical)."),
+    limit: int = Query(200, ge=1, le=1000),
+) -> FeedbackInsightsResponse:
+    """Historical feedback insights — persisted daily by the autopilot loop."""
+    db = get_db_manager()
+
+    where: List[str] = ["as_of_date >= CURRENT_DATE - (%s || ' days')::interval"]
+    params: List[Any] = [int(days)]
+    if severity:
+        where.append("severity = %s")
+        params.append(severity)
+    where_sql = "WHERE " + " AND ".join(where)
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT insight_id, as_of_date, category, severity, message,
+                       metric_name, metric_value, benchmark, deviation,
+                       lookback_days, created_at
+                FROM meta_feedback_insights
+                {where_sql}
+                ORDER BY as_of_date DESC, severity DESC, insight_id DESC
+                LIMIT %s
+                """,
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT as_of_date) FROM meta_feedback_insights
+                {where_sql}
+                """,
+                params,
+            )
+            n_dates_row = cur.fetchone()
+        finally:
+            cur.close()
+
+    n_dates = int(n_dates_row[0]) if n_dates_row else 0
+    items = [
+        FeedbackInsightRow(
+            insight_id=r[0],
+            as_of_date=r[1],
+            category=r[2],
+            severity=r[3],
+            message=r[4],
+            metric_name=r[5],
+            metric_value=r[6],
+            benchmark=r[7],
+            deviation=r[8],
+            lookback_days=r[9],
+            created_at=r[10],
+        )
+        for r in rows
+    ]
+    return FeedbackInsightsResponse(items=items, distinct_dates=n_dates)
+
+
+class WeeklyReportRow(BaseModel):
+    """A persisted row from weekly_reports."""
+
+    report_id: int
+    week_start: date
+    week_end: date
+    strategy_id: Optional[str]
+    period_return: Optional[float]
+    period_sharpe: Optional[float]
+    period_max_drawdown: Optional[float]
+    n_trades: int
+    n_winners: int
+    n_losers: int
+    has_markdown: bool
+    created_at: datetime
+
+
+class WeeklyReportsResponse(BaseModel):
+    items: List[WeeklyReportRow]
+
+
+@meta_router.get("/weekly_reports", response_model=WeeklyReportsResponse)
+async def list_weekly_reports(
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy (NULL means portfolio-wide)."),
+    limit: int = Query(26, ge=1, le=104, description="Max number of weeks."),
+) -> WeeklyReportsResponse:
+    """Historical weekly rollups — persisted Mondays by the autopilot loop."""
+    db = get_db_manager()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if strategy_id:
+        if strategy_id.upper() == "NULL":
+            where.append("strategy_id IS NULL")
+        else:
+            where.append("strategy_id = %s")
+            params.append(strategy_id)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT report_id, week_start, week_end, strategy_id,
+                       period_return, period_sharpe, period_max_drawdown,
+                       n_trades, n_winners, n_losers,
+                       (markdown IS NOT NULL) AS has_markdown,
+                       created_at
+                FROM weekly_reports
+                {where_sql}
+                ORDER BY week_end DESC, strategy_id NULLS FIRST
+                LIMIT %s
+                """,
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+    items = [
+        WeeklyReportRow(
+            report_id=r[0],
+            week_start=r[1],
+            week_end=r[2],
+            strategy_id=r[3],
+            period_return=r[4],
+            period_sharpe=r[5],
+            period_max_drawdown=r[6],
+            n_trades=r[7] or 0,
+            n_winners=r[8] or 0,
+            n_losers=r[9] or 0,
+            has_markdown=bool(r[10]),
+            created_at=r[11],
+        )
+        for r in rows
+    ]
+    return WeeklyReportsResponse(items=items)
+
+
+@meta_router.get("/weekly_reports/{report_id}")
+async def get_weekly_report_detail(
+    report_id: int = Path(..., description="Persisted weekly report ID."),
+) -> Dict[str, Any]:
+    """Full weekly report (incl. markdown + JSON payload) by ID."""
+    db = get_db_manager()
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT report_id, week_start, week_end, strategy_id,
+                       period_return, period_sharpe, period_max_drawdown,
+                       n_trades, n_winners, n_losers, report_json, markdown,
+                       created_at
+                FROM weekly_reports
+                WHERE report_id = %s
+                """,
+                (int(report_id),),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"weekly report {report_id} not found")
+    return {
+        "report_id": row[0],
+        "week_start": row[1].isoformat() if row[1] else None,
+        "week_end": row[2].isoformat() if row[2] else None,
+        "strategy_id": row[3],
+        "period_return": row[4],
+        "period_sharpe": row[5],
+        "period_max_drawdown": row[6],
+        "n_trades": row[7] or 0,
+        "n_winners": row[8] or 0,
+        "n_losers": row[9] or 0,
+        "report_json": row[10] or {},
+        "markdown": row[11],
+        "created_at": row[12].isoformat() if row[12] else None,
+    }
+
+
+# ============================================================================
+# Diagnostic reports + signal validations history (migration 0099)
+# ============================================================================
+
+
+class DiagnosticReportRow(BaseModel):
+    """A persisted row from meta_diagnostic_reports."""
+
+    report_id: int
+    as_of_date: date
+    strategy_id: str
+    has_underperformers: bool
+    has_high_risk: bool
+    num_runs_analysed: int
+    created_at: datetime
+
+
+class DiagnosticReportsResponse(BaseModel):
+    items: List[DiagnosticReportRow]
+
+
+@meta_router.get("/diagnostic_reports", response_model=DiagnosticReportsResponse)
+async def list_diagnostic_reports(
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy."),
+    days: int = Query(30, ge=1, le=180),
+    only_with_findings: bool = Query(False, description="Only reports with underperformers or high risk."),
+    limit: int = Query(200, ge=1, le=1000),
+) -> DiagnosticReportsResponse:
+    """Historical diagnostic reports — persisted daily by the autopilot loop."""
+    db = get_db_manager()
+
+    where: List[str] = ["as_of_date >= CURRENT_DATE - (%s || ' days')::interval"]
+    params: List[Any] = [int(days)]
+    if strategy_id:
+        where.append("strategy_id = %s")
+        params.append(strategy_id)
+    if only_with_findings:
+        where.append("(has_underperformers OR has_high_risk)")
+    where_sql = "WHERE " + " AND ".join(where)
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT report_id, as_of_date, strategy_id,
+                       has_underperformers, has_high_risk,
+                       num_runs_analysed, created_at
+                FROM meta_diagnostic_reports
+                {where_sql}
+                ORDER BY as_of_date DESC, strategy_id
+                LIMIT %s
+                """,
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+    items = [
+        DiagnosticReportRow(
+            report_id=r[0],
+            as_of_date=r[1],
+            strategy_id=r[2],
+            has_underperformers=bool(r[3]),
+            has_high_risk=bool(r[4]),
+            num_runs_analysed=int(r[5] or 0),
+            created_at=r[6],
+        )
+        for r in rows
+    ]
+    return DiagnosticReportsResponse(items=items)
+
+
+@meta_router.get("/diagnostic_reports/{report_id}")
+async def get_diagnostic_report_detail(
+    report_id: int = Path(..., description="Persisted diagnostic report ID."),
+) -> Dict[str, Any]:
+    """Full diagnostic report JSON (incl. underperformer list, risk flags) by ID."""
+    db = get_db_manager()
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT report_id, as_of_date, strategy_id,
+                       has_underperformers, has_high_risk,
+                       num_runs_analysed, report_json, created_at
+                FROM meta_diagnostic_reports
+                WHERE report_id = %s
+                """,
+                (int(report_id),),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"diagnostic report {report_id} not found")
+    return {
+        "report_id": row[0],
+        "as_of_date": row[1].isoformat() if row[1] else None,
+        "strategy_id": row[2],
+        "has_underperformers": bool(row[3]),
+        "has_high_risk": bool(row[4]),
+        "num_runs_analysed": int(row[5] or 0),
+        "report_json": row[6] or {},
+        "created_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+class SignalValidationRow(BaseModel):
+    """A persisted row from meta_signal_validations."""
+
+    validation_id: int
+    as_of_date: date
+    signal_name: str
+    verdict: str
+    metric_value: Optional[float]
+    threshold: Optional[float]
+    sample_size: Optional[int]
+    lookback_days: Optional[int]
+    details: Dict[str, Any]
+    created_at: datetime
+
+
+class SignalValidationsResponse(BaseModel):
+    items: List[SignalValidationRow]
+    distinct_signals: int
+
+
+@meta_router.get("/signal_validations", response_model=SignalValidationsResponse)
+async def list_signal_validations(
+    signal_name: Optional[str] = Query(None, description="Filter by signal name."),
+    verdict: Optional[str] = Query(None, description="Filter by verdict (e.g. PASS, FAIL, DEGRADED)."),
+    days: int = Query(30, ge=1, le=180),
+    limit: int = Query(200, ge=1, le=1000),
+) -> SignalValidationsResponse:
+    """Historical signal validations — persisted daily by the autopilot loop."""
+    db = get_db_manager()
+
+    where: List[str] = ["as_of_date >= CURRENT_DATE - (%s || ' days')::interval"]
+    params: List[Any] = [int(days)]
+    if signal_name:
+        where.append("signal_name = %s")
+        params.append(signal_name)
+    if verdict:
+        where.append("verdict = %s")
+        params.append(verdict)
+    where_sql = "WHERE " + " AND ".join(where)
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT validation_id, as_of_date, signal_name, verdict,
+                       metric_value, threshold, sample_size, lookback_days,
+                       details_json, created_at
+                FROM meta_signal_validations
+                {where_sql}
+                ORDER BY as_of_date DESC, signal_name
+                LIMIT %s
+                """,
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT signal_name) FROM meta_signal_validations
+                {where_sql}
+                """,
+                params,
+            )
+            distinct_row = cur.fetchone()
+        finally:
+            cur.close()
+
+    n_signals = int(distinct_row[0]) if distinct_row else 0
+    items = [
+        SignalValidationRow(
+            validation_id=r[0],
+            as_of_date=r[1],
+            signal_name=r[2],
+            verdict=r[3],
+            metric_value=r[4],
+            threshold=r[5],
+            sample_size=r[6],
+            lookback_days=r[7],
+            details=r[8] or {},
+            created_at=r[9],
+        )
+        for r in rows
+    ]
+    return SignalValidationsResponse(items=items, distinct_signals=n_signals)
+
+
+# ============================================================================
+# Backtest-vs-live drift (migration 0101)
+# ============================================================================
+
+
+class DriftRow(BaseModel):
+    """One row from the backtest_live_drift table."""
+
+    drift_id: int
+    as_of_date: date
+    strategy_id: str
+    horizon_days: int
+    n_live_outcomes: int
+    backtest_run_id: Optional[str]
+    live_sharpe: Optional[float]
+    backtest_sharpe: Optional[float]
+    sharpe_delta: Optional[float]
+    live_return: Optional[float]
+    backtest_return: Optional[float]
+    return_delta: Optional[float]
+    live_max_drawdown: Optional[float]
+    backtest_max_drawdown: Optional[float]
+    max_drawdown_delta: Optional[float]
+    severity: str
+    notes: Optional[str]
+    created_at: datetime
+
+
+class DriftListResponse(BaseModel):
+    items: List[DriftRow]
+    latest_as_of_date: Optional[date]
+
+
+@meta_router.get("/drift", response_model=DriftListResponse)
+async def list_drift(
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy."),
+    horizon_days: Optional[int] = Query(None, description="Filter by horizon (days)."),
+    latest_only: bool = Query(True, description="Only the most recent as_of_date per strategy/horizon."),
+    limit: int = Query(200, ge=1, le=1000),
+) -> DriftListResponse:
+    """Backtest-vs-live drift rows for the Drift Monitor page."""
+    db = get_db_manager()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if strategy_id:
+        where.append("strategy_id = %s")
+        params.append(strategy_id)
+    if horizon_days:
+        where.append("horizon_days = %s")
+        params.append(int(horizon_days))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    if latest_only:
+        sql = f"""
+            WITH ranked AS (
+              SELECT
+                drift_id, as_of_date, strategy_id, horizon_days,
+                n_live_outcomes, backtest_run_id,
+                live_sharpe, backtest_sharpe, sharpe_delta,
+                live_return, backtest_return, return_delta,
+                live_max_drawdown, backtest_max_drawdown, max_drawdown_delta,
+                severity, notes, created_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY strategy_id, horizon_days
+                  ORDER BY as_of_date DESC
+                ) AS rn
+              FROM backtest_live_drift
+              {where_sql}
+            )
+            SELECT
+              drift_id, as_of_date, strategy_id, horizon_days,
+              n_live_outcomes, backtest_run_id,
+              live_sharpe, backtest_sharpe, sharpe_delta,
+              live_return, backtest_return, return_delta,
+              live_max_drawdown, backtest_max_drawdown, max_drawdown_delta,
+              severity, notes, created_at
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY strategy_id, horizon_days
+            LIMIT %s
+        """
+    else:
+        sql = f"""
+            SELECT
+              drift_id, as_of_date, strategy_id, horizon_days,
+              n_live_outcomes, backtest_run_id,
+              live_sharpe, backtest_sharpe, sharpe_delta,
+              live_return, backtest_return, return_delta,
+              live_max_drawdown, backtest_max_drawdown, max_drawdown_delta,
+              severity, notes, created_at
+            FROM backtest_live_drift
+            {where_sql}
+            ORDER BY as_of_date DESC, strategy_id, horizon_days
+            LIMIT %s
+        """
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (*params, limit))
+            rows = cur.fetchall()
+            cur.execute("SELECT MAX(as_of_date) FROM backtest_live_drift")
+            latest_row = cur.fetchone()
+            latest = latest_row[0] if latest_row else None
+        finally:
+            cur.close()
+
+    items = [
+        DriftRow(
+            drift_id=r[0],
+            as_of_date=r[1],
+            strategy_id=r[2],
+            horizon_days=r[3],
+            n_live_outcomes=r[4] or 0,
+            backtest_run_id=r[5],
+            live_sharpe=r[6],
+            backtest_sharpe=r[7],
+            sharpe_delta=r[8],
+            live_return=r[9],
+            backtest_return=r[10],
+            return_delta=r[11],
+            live_max_drawdown=r[12],
+            backtest_max_drawdown=r[13],
+            max_drawdown_delta=r[14],
+            severity=r[15] or "info",
+            notes=r[16],
+            created_at=r[17],
+        )
+        for r in rows
+    ]
+    return DriftListResponse(items=items, latest_as_of_date=latest)
+
+
+@meta_router.post("/notifications/mark_all_read")
+async def mark_all_notifications_read() -> Dict[str, int]:
+    """Mark every unread+undismissed notification as read."""
+    db = get_db_manager()
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE notifications SET read_at = NOW() "
+                "WHERE read_at IS NULL AND dismissed_at IS NULL"
+            )
+            updated = cur.rowcount or 0
+            conn.commit()
+        finally:
+            cur.close()
+    return {"updated": int(updated)}
 
 
 @meta_router.get("/policy/{market_id}", response_model=MetaPolicyArtifactResponse)

@@ -33,12 +33,17 @@ class _MockCursor:
         self._dispatch = dispatch or {}
         self._result: Any = None
         self.last_sql: str | None = None
+        # Default rowcount for endpoints that branch on it (e.g. mark_read).
+        # Tests can override by including a "__rowcount__" key in dispatch.
+        self.rowcount: int = int(self._dispatch.get("__rowcount__", 1))
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.last_sql = sql
         # Walk through dispatch keys; if the key appears as a substring in the
         # SQL, use its value.
         for key, value in self._dispatch.items():
+            if key == "__rowcount__":
+                continue
             if key in sql:
                 self._result = value
                 return
@@ -57,6 +62,13 @@ class _MockCursor:
     def close(self) -> None:
         pass
 
+    # Context-manager protocol so callers can do `with conn.cursor() as cur:`.
+    def __enter__(self) -> "_MockCursor":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
 
 class _MockConnection:
     def __init__(self, cursor: _MockCursor):
@@ -64,6 +76,12 @@ class _MockConnection:
 
     def cursor(self) -> _MockCursor:
         return self._cursor
+
+    def commit(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
 
 
 def _build_mock_db(runtime_dispatch: Dict[str, Any] | None = None,
@@ -657,6 +675,293 @@ class TestPortfolioEquity:
                 assert abs(day1_to_day2_ret) < 0.01, (
                     f"Flow day should be flat; got {day1_to_day2_ret:.2%} return"
                 )
+
+
+# ============================================================================
+# /meta/notifications (migration 0100 inbox)
+# ============================================================================
+
+
+class TestMetaNotifications:
+    """Tests for the notifications inbox endpoints."""
+
+    @staticmethod
+    def _notif_row(notification_id: int = 1, *, kind: str = "proposal_pending",
+                   severity: str = "warning", read: bool = False, dismissed: bool = False):
+        return (
+            notification_id,
+            datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+            date(2026, 5, 25),
+            kind,
+            severity,
+            "Test notification",
+            "Body text",
+            "engine_decisions",
+            "abc-123",
+            "/intelligence",
+            datetime(2026, 5, 25, 19, 0, tzinfo=timezone.utc) if read else None,
+            datetime(2026, 5, 25, 20, 0, tzinfo=timezone.utc) if dismissed else None,
+            {"foo": "bar"},
+        )
+
+    def test_list_default_excludes_dismissed(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM notifications\n": [self._notif_row(1), self._notif_row(2, kind="critical_insight")],
+            "WHERE read_at IS NULL AND dismissed_at IS NULL": (2,),
+            "WHERE dismissed_at IS NULL": (5,),
+        })
+        resp = client.get("/api/meta/notifications")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["unread_count"] == 2
+        assert data["total"] == 5
+        assert data["items"][0]["title"] == "Test notification"
+        assert data["items"][0]["metadata"] == {"foo": "bar"}
+
+    def test_list_filters_unread_only(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM notifications\n": [self._notif_row(1)],
+            "WHERE read_at IS NULL AND dismissed_at IS NULL": (1,),
+            "WHERE dismissed_at IS NULL": (3,),
+        })
+        resp = client.get("/api/meta/notifications?unread_only=true&kind=proposal_pending&severity=warning")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["kind"] == "proposal_pending"
+
+    def test_mark_read_returns_row(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "UPDATE notifications": None,
+            "WHERE notification_id =": self._notif_row(42, read=True),
+        })
+        resp = client.post("/api/meta/notifications/42/read")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["notification_id"] == 42
+        assert data["read_at"] is not None
+
+    def test_dismiss_returns_row(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "UPDATE notifications": None,
+            "WHERE notification_id =": self._notif_row(7, dismissed=True),
+        })
+        resp = client.post("/api/meta/notifications/7/dismiss")
+        assert resp.status_code == 200
+        assert resp.json()["dismissed_at"] is not None
+
+    def test_mark_read_404_when_missing(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "__rowcount__": 0,
+            "UPDATE notifications": None,
+            "WHERE notification_id =": None,
+        })
+        resp = client.post("/api/meta/notifications/999/read")
+        assert resp.status_code == 404
+
+    def test_mark_all_read_returns_count(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "__rowcount__": 4,
+            "UPDATE notifications": None,
+        })
+        resp = client.post("/api/meta/notifications/mark_all_read")
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": 4}
+
+
+# ============================================================================
+# /meta/feedback_insights + /meta/weekly_reports (migration 0099 history)
+# ============================================================================
+
+
+class TestMetaHistory:
+    """Tests for the persisted history endpoints."""
+
+    def test_feedback_insights_list(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "SELECT COUNT(DISTINCT as_of_date)": (12,),
+            "FROM meta_feedback_insights": [
+                (1, date(2026, 5, 25), "hit_rate", "warning",
+                 "hit rate below 50%", "portfolio_hit_rate",
+                 0.42, 0.5, -0.08, 30,
+                 datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc)),
+            ],
+        })
+        resp = client.get("/api/meta/feedback_insights?days=30")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["distinct_dates"] == 12
+        assert data["items"][0]["category"] == "hit_rate"
+
+    def test_weekly_reports_list(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM weekly_reports": [
+                (7, date(2026, 5, 18), date(2026, 5, 22), None,
+                 0.012, 1.4, -0.02, 45, 26, 19, True,
+                 datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc)),
+            ],
+        })
+        resp = client.get("/api/meta/weekly_reports")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["strategy_id"] is None
+        assert data["items"][0]["has_markdown"] is True
+        assert data["items"][0]["n_trades"] == 45
+
+    def test_weekly_report_detail_404(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={"WHERE report_id =": None})
+        resp = client.get("/api/meta/weekly_reports/999")
+        assert resp.status_code == 404
+
+    def test_weekly_report_detail_returns_markdown(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "WHERE report_id =": (
+                42, date(2026, 5, 18), date(2026, 5, 22), "MAIN",
+                0.02, 1.5, -0.01, 30, 18, 12, {"foo": "bar"},
+                "# Weekly\nbody",
+                datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+            ),
+        })
+        resp = client.get("/api/meta/weekly_reports/42")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["markdown"].startswith("# Weekly")
+        assert data["report_json"] == {"foo": "bar"}
+
+
+# ============================================================================
+# /meta/diagnostic_reports + /meta/signal_validations history
+# ============================================================================
+
+
+class TestMetaDiagnosticsHistory:
+    """Tests for the diagnostics + signal validations history endpoints."""
+
+    def test_list_diagnostic_reports(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM meta_diagnostic_reports": [
+                (1, date(2026, 5, 25), "MAIN", True, False, 30,
+                 datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc)),
+                (2, date(2026, 5, 24), "HEDGE", False, True, 10,
+                 datetime(2026, 5, 24, 18, 0, tzinfo=timezone.utc)),
+            ],
+        })
+        resp = client.get("/api/meta/diagnostic_reports?days=30&only_with_findings=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["items"][0]["has_underperformers"] is True
+
+    def test_diagnostic_report_detail(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "WHERE report_id =": (
+                42, date(2026, 5, 25), "MAIN", True, True, 30,
+                {"underperformers": ["foo"]},
+                datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+            ),
+        })
+        resp = client.get("/api/meta/diagnostic_reports/42")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["report_json"] == {"underperformers": ["foo"]}
+
+    def test_diagnostic_report_detail_404(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={"WHERE report_id =": None})
+        resp = client.get("/api/meta/diagnostic_reports/999")
+        assert resp.status_code == 404
+
+    def test_list_signal_validations(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "SELECT COUNT(DISTINCT signal_name)": (7,),
+            "FROM meta_signal_validations": [
+                (1, date(2026, 5, 25), "divergence", "PASS", 0.85, 0.5, 100, 30,
+                 {"by_sector": {"tech": 0.9}},
+                 datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc)),
+            ],
+        })
+        resp = client.get("/api/meta/signal_validations?days=30")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["distinct_signals"] == 7
+        assert data["items"][0]["signal_name"] == "divergence"
+        assert data["items"][0]["verdict"] == "PASS"
+
+
+# ============================================================================
+# /meta/drift (migration 0101 backtest_live_drift)
+# ============================================================================
+
+
+class TestMetaDrift:
+    """Tests for GET /api/meta/drift."""
+
+    @staticmethod
+    def _drift_row(strategy: str = "MAIN", horizon: int = 5, severity: str = "warning"):
+        return (
+            1, date(2026, 5, 25), strategy, horizon,
+            12, "bt-1",
+            0.8, 1.2, -0.4,
+            0.03, 0.05, -0.02,
+            0.10, 0.08, 0.02,
+            severity, "live underperforming",
+            datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+        )
+
+    def test_returns_latest_per_strategy(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM ranked": [
+                self._drift_row("MAIN", 5, "warning"),
+                self._drift_row("HEDGE", 1, "info"),
+            ],
+            "SELECT MAX(as_of_date)": (date(2026, 5, 25),),
+        })
+        resp = client.get("/api/meta/drift")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["latest_as_of_date"] == "2026-05-25"
+        assert data["items"][0]["sharpe_delta"] == -0.4
+
+    def test_strategy_filter_passes_through(self, client_and_db):
+        client, set_db = client_and_db
+        set_db(runtime_dispatch={
+            "FROM ranked": [self._drift_row("MAIN", 5, "critical")],
+            "SELECT MAX(as_of_date)": (date(2026, 5, 25),),
+        })
+        resp = client.get("/api/meta/drift?strategy_id=MAIN&horizon_days=5")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["severity"] == "critical"
+
+    def test_latest_only_false_uses_flat_query(self, client_and_db):
+        client, set_db = client_and_db
+        # Order matters: more specific substring first so the SELECT MAX query
+        # doesn't get clobbered by the broader FROM backtest_live_drift match.
+        set_db(runtime_dispatch={
+            "SELECT MAX(as_of_date)": (date(2026, 5, 25),),
+            "ORDER BY as_of_date DESC, strategy_id": [
+                self._drift_row("MAIN", 5, "info"),
+                self._drift_row("MAIN", 5, "warning"),
+            ],
+        })
+        resp = client.get("/api/meta/drift?latest_only=false&limit=50")
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) == 2
 
 
 # ============================================================================

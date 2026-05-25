@@ -1,9 +1,20 @@
+import { useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Panel } from "../components/Panel";
 import { KpiCard } from "../components/KpiCard";
 import { DataTable, Column } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
-import { useWeeklyReport, useTradeJournal, useMetaFeedback } from "../api/hooks";
+import { SeverityBadge } from "../components/SeverityBadge";
+import {
+  useWeeklyReport,
+  useTradeJournal,
+  useMetaFeedback,
+  useFeedbackInsights,
+  useWeeklyReports,
+  useWeeklyReportDetail,
+  type FeedbackInsightRow,
+  type WeeklyReportRow,
+} from "../api/hooks";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -40,6 +51,10 @@ export default function TradeMonitor() {
   const weekly = useWeeklyReport();
   const journal = useTradeJournal(63);
   const feedback = useMetaFeedback(63);
+  const insightsHistory = useFeedbackInsights(30);
+  const weeklyHistory = useWeeklyReports();
+  const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+  const reportDetail = useWeeklyReportDetail(selectedReportId);
 
   const w = (weekly.data ?? {}) as Record<string, unknown>;
   const j = (journal.data ?? {}) as Record<string, unknown>;
@@ -222,6 +237,107 @@ export default function TradeMonitor() {
           <pre className="whitespace-pre-wrap text-[11px] text-zinc-400 font-mono max-h-96 overflow-y-auto">
             {String(w.formatted_report)}
           </pre>
+        </Panel>
+      )}
+
+      {/* History: persisted weekly reports */}
+      {(weeklyHistory.data?.items?.length ?? 0) > 0 && (
+        <Panel
+          title="Weekly Report History"
+          tooltip="Persisted weekly_reports rows from migration 0099 — written by the daily orchestrator each Monday."
+        >
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="lg:col-span-1">
+              <DataTable<WeeklyReportRow & Record<string, unknown>>
+                columns={[
+                  { key: "week_end", label: "Week end" },
+                  {
+                    key: "strategy_id",
+                    label: "Strategy",
+                    render: (r) => r.strategy_id ?? "Portfolio",
+                  },
+                  {
+                    key: "period_return",
+                    label: "Return",
+                    align: "right",
+                    render: (r) =>
+                      r.period_return != null
+                        ? fmtPct(r.period_return)
+                        : "—",
+                  },
+                  {
+                    key: "period_sharpe",
+                    label: "Sharpe",
+                    align: "right",
+                    render: (r) =>
+                      r.period_sharpe != null
+                        ? r.period_sharpe.toFixed(2)
+                        : "—",
+                  },
+                ]}
+                data={(weeklyHistory.data?.items ?? []) as (WeeklyReportRow & Record<string, unknown>)[]}
+                onRowClick={(r) => setSelectedReportId(r.report_id)}
+                compact
+                pageSize={15}
+              />
+            </div>
+            <div className="lg:col-span-2">
+              {selectedReportId == null ? (
+                <div className="rounded border border-dashed border-border-dim/50 px-4 py-8 text-center text-xs text-muted">
+                  Select a week to view the persisted report.
+                </div>
+              ) : reportDetail.isLoading ? (
+                <div className="px-4 py-8 text-center text-xs text-muted">Loading…</div>
+              ) : reportDetail.data?.markdown ? (
+                <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded border border-border-dim bg-surface p-3 font-mono text-[11px] text-zinc-300">
+                  {reportDetail.data.markdown}
+                </pre>
+              ) : (
+                <pre className="max-h-96 overflow-y-auto rounded border border-border-dim bg-surface p-3 font-mono text-[11px] text-zinc-300">
+                  {JSON.stringify(reportDetail.data?.report_json ?? {}, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* History: persisted feedback insights */}
+      {(insightsHistory.data?.items?.length ?? 0) > 0 && (
+        <Panel
+          title="Feedback Insight History (30d)"
+          tooltip="Persisted meta_feedback_insights rows — written daily so trends are visible, not just today's snapshot."
+        >
+          <DataTable<FeedbackInsightRow & Record<string, unknown>>
+            columns={[
+              { key: "as_of_date", label: "Date" },
+              {
+                key: "severity",
+                label: "Severity",
+                render: (r) => <SeverityBadge severity={r.severity} />,
+              },
+              { key: "category", label: "Category" },
+              { key: "message", label: "Message" },
+              {
+                key: "metric_value",
+                label: "Value",
+                align: "right",
+                render: (r) =>
+                  r.metric_value != null ? r.metric_value.toFixed(3) : "—",
+              },
+              {
+                key: "benchmark",
+                label: "Target",
+                align: "right",
+                render: (r) =>
+                  r.benchmark != null ? r.benchmark.toFixed(3) : "—",
+              },
+            ]}
+            data={(insightsHistory.data?.items ?? []) as (FeedbackInsightRow & Record<string, unknown>)[]}
+            compact
+            scrollable
+            maxHeight="400px"
+          />
         </Panel>
       )}
     </div>

@@ -14,6 +14,9 @@ import Docs from "./pages/Docs";
 import Intelligence from "./pages/Intelligence";
 import TradeMonitor from "./pages/TradeMonitor";
 import Operations from "./pages/Operations";
+import Notifications from "./pages/Notifications";
+import DriftMonitor from "./pages/DriftMonitor";
+import Diagnostics from "./pages/Diagnostics";
 
 export default function App() {
   return (
@@ -33,6 +36,9 @@ export default function App() {
         <Route path="settings/engine-parameters" element={<EngineParametersSettings />} />
         <Route path="iris" element={<Chat />} />
         <Route path="monitor" element={<TradeMonitor />} />
+        <Route path="notifications" element={<Notifications />} />
+        <Route path="drift" element={<DriftMonitor />} />
+        <Route path="diagnostics" element={<Diagnostics />} />
       </Route>
     </Routes>
     </PortfolioProvider>

@@ -12,6 +12,9 @@ import {
   Brain,
   Activity,
   Server,
+  Bell,
+  TrendingDown,
+  Stethoscope,
 } from "lucide-react";
 
 const links = [
@@ -23,6 +26,9 @@ const links = [
   { to: "/backtests", icon: FlaskConical, label: "Backtests" },
   { to: "/options", icon: LineChart, label: "Options" },
   { to: "/intelligence", icon: Brain, label: "Intelligence" },
+  { to: "/diagnostics", icon: Stethoscope, label: "Diagnostics" },
+  { to: "/drift", icon: TrendingDown, label: "Drift Monitor" },
+  { to: "/notifications", icon: Bell, label: "Notifications" },
   { to: "/logs", icon: ScrollText, label: "Logs & Reports" },
   { to: "/docs", icon: BookOpen, label: "Documentation" },
   { to: "/settings", icon: Settings, label: "Settings" },

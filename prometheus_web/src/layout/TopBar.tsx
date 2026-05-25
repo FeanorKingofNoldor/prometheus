@@ -3,6 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { useOverview, useSyncData, useIbkrStatus } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConnectionLed } from "../components/ConnectionLed";
+import { NotificationsBell } from "../components/NotificationsBell";
 import { usePortfolioContext } from "../context/PortfolioContext";
 
 interface SyncResult {
@@ -191,6 +192,7 @@ export function TopBar() {
             Sync failed
           </span>
         )}
+        <NotificationsBell />
         <span className="tabular-nums">{now.toLocaleTimeString()}</span>
       </div>
     </header>

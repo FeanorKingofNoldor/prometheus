@@ -728,3 +728,263 @@ export const useTradeJournal = (lookbackDays = 63) =>
 
 export const useMetaFeedback = (lookbackDays = 63) =>
   useQuery({ queryKey: ["meta", "feedback", lookbackDays], queryFn: () => api.get(`/meta/feedback?lookback_days=${lookbackDays}`), staleTime: 60_000 });
+
+// ── Notifications inbox (migration 0100) ───────────────────
+export interface NotificationItem {
+  notification_id: number;
+  created_at: string;
+  as_of_date: string | null;
+  kind: string;
+  severity: string;
+  title: string;
+  body: string | null;
+  source_table: string | null;
+  source_id: string | null;
+  link_path: string | null;
+  read_at: string | null;
+  dismissed_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  unread_count: number;
+  total: number;
+}
+
+export const useNotifications = (params: {
+  unreadOnly?: boolean;
+  includeDismissed?: boolean;
+  kind?: string;
+  severity?: string;
+  limit?: number;
+} = {}) => {
+  const qs = new URLSearchParams();
+  if (params.unreadOnly) qs.set("unread_only", "true");
+  if (params.includeDismissed) qs.set("include_dismissed", "true");
+  if (params.kind) qs.set("kind", params.kind);
+  if (params.severity) qs.set("severity", params.severity);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const qsStr = qs.toString();
+  return useQuery<NotificationListResponse>({
+    queryKey: ["meta", "notifications", params],
+    queryFn: () => api.get(`/meta/notifications${qsStr ? `?${qsStr}` : ""}`),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+};
+
+export const useMarkNotificationRead = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/meta/notifications/${id}/read`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["meta", "notifications"] }),
+  });
+};
+
+export const useDismissNotification = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/meta/notifications/${id}/dismiss`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["meta", "notifications"] }),
+  });
+};
+
+export const useMarkAllNotificationsRead = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post(`/meta/notifications/mark_all_read`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["meta", "notifications"] }),
+  });
+};
+
+// ── Backtest-vs-live drift (migration 0101) ────────────────
+export interface DriftRow {
+  drift_id: number;
+  as_of_date: string;
+  strategy_id: string;
+  horizon_days: number;
+  n_live_outcomes: number;
+  backtest_run_id: string | null;
+  live_sharpe: number | null;
+  backtest_sharpe: number | null;
+  sharpe_delta: number | null;
+  live_return: number | null;
+  backtest_return: number | null;
+  return_delta: number | null;
+  live_max_drawdown: number | null;
+  backtest_max_drawdown: number | null;
+  max_drawdown_delta: number | null;
+  severity: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface DriftListResponse {
+  items: DriftRow[];
+  latest_as_of_date: string | null;
+}
+
+// ── Persisted feedback insights + weekly reports (migration 0099) ───
+export interface FeedbackInsightRow {
+  insight_id: number;
+  as_of_date: string;
+  category: string;
+  severity: string;
+  message: string;
+  metric_name: string | null;
+  metric_value: number | null;
+  benchmark: number | null;
+  deviation: number | null;
+  lookback_days: number | null;
+  created_at: string;
+}
+
+export const useFeedbackInsights = (days = 30, severity?: string) => {
+  const qs = new URLSearchParams({ days: String(days) });
+  if (severity) qs.set("severity", severity);
+  return useQuery<{ items: FeedbackInsightRow[]; distinct_dates: number }>({
+    queryKey: ["meta", "feedback_insights", days, severity],
+    queryFn: () => api.get(`/meta/feedback_insights?${qs.toString()}`),
+    staleTime: 60_000,
+  });
+};
+
+export interface WeeklyReportRow {
+  report_id: number;
+  week_start: string;
+  week_end: string;
+  strategy_id: string | null;
+  period_return: number | null;
+  period_sharpe: number | null;
+  period_max_drawdown: number | null;
+  n_trades: number;
+  n_winners: number;
+  n_losers: number;
+  has_markdown: boolean;
+  created_at: string;
+}
+
+export const useWeeklyReports = (strategyId?: string, limit = 26) => {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (strategyId) qs.set("strategy_id", strategyId);
+  return useQuery<{ items: WeeklyReportRow[] }>({
+    queryKey: ["meta", "weekly_reports", strategyId, limit],
+    queryFn: () => api.get(`/meta/weekly_reports?${qs.toString()}`),
+    staleTime: 60_000,
+  });
+};
+
+export const useWeeklyReportDetail = (reportId: number | null) =>
+  useQuery<{
+    report_id: number;
+    week_start: string;
+    week_end: string;
+    strategy_id: string | null;
+    period_return: number | null;
+    period_sharpe: number | null;
+    period_max_drawdown: number | null;
+    n_trades: number;
+    n_winners: number;
+    n_losers: number;
+    report_json: Record<string, unknown>;
+    markdown: string | null;
+    created_at: string;
+  }>({
+    queryKey: ["meta", "weekly_report_detail", reportId],
+    queryFn: () => api.get(`/meta/weekly_reports/${reportId}`),
+    enabled: reportId != null,
+  });
+
+// ── Diagnostic reports + signal validations history (migration 0099) ───
+export interface DiagnosticReportRow {
+  report_id: number;
+  as_of_date: string;
+  strategy_id: string;
+  has_underperformers: boolean;
+  has_high_risk: boolean;
+  num_runs_analysed: number;
+  created_at: string;
+}
+
+export const useDiagnosticReports = (params: {
+  strategyId?: string;
+  days?: number;
+  onlyWithFindings?: boolean;
+  limit?: number;
+} = {}) => {
+  const qs = new URLSearchParams({ days: String(params.days ?? 30) });
+  if (params.strategyId) qs.set("strategy_id", params.strategyId);
+  if (params.onlyWithFindings) qs.set("only_with_findings", "true");
+  if (params.limit) qs.set("limit", String(params.limit));
+  return useQuery<{ items: DiagnosticReportRow[] }>({
+    queryKey: ["meta", "diagnostic_reports", params],
+    queryFn: () => api.get(`/meta/diagnostic_reports?${qs.toString()}`),
+    staleTime: 60_000,
+  });
+};
+
+export const useDiagnosticReportDetail = (reportId: number | null) =>
+  useQuery<{
+    report_id: number;
+    as_of_date: string;
+    strategy_id: string;
+    has_underperformers: boolean;
+    has_high_risk: boolean;
+    num_runs_analysed: number;
+    report_json: Record<string, unknown>;
+    created_at: string;
+  }>({
+    queryKey: ["meta", "diagnostic_report_detail", reportId],
+    queryFn: () => api.get(`/meta/diagnostic_reports/${reportId}`),
+    enabled: reportId != null,
+  });
+
+export interface SignalValidationRow {
+  validation_id: number;
+  as_of_date: string;
+  signal_name: string;
+  verdict: string;
+  metric_value: number | null;
+  threshold: number | null;
+  sample_size: number | null;
+  lookback_days: number | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export const useSignalValidations = (params: {
+  signalName?: string;
+  verdict?: string;
+  days?: number;
+  limit?: number;
+} = {}) => {
+  const qs = new URLSearchParams({ days: String(params.days ?? 30) });
+  if (params.signalName) qs.set("signal_name", params.signalName);
+  if (params.verdict) qs.set("verdict", params.verdict);
+  if (params.limit) qs.set("limit", String(params.limit));
+  return useQuery<{ items: SignalValidationRow[]; distinct_signals: number }>({
+    queryKey: ["meta", "signal_validations", params],
+    queryFn: () => api.get(`/meta/signal_validations?${qs.toString()}`),
+    staleTime: 60_000,
+  });
+};
+
+export const useDrift = (params: {
+  strategyId?: string;
+  horizonDays?: number;
+  latestOnly?: boolean;
+  limit?: number;
+} = {}) => {
+  const qs = new URLSearchParams();
+  if (params.strategyId) qs.set("strategy_id", params.strategyId);
+  if (params.horizonDays) qs.set("horizon_days", String(params.horizonDays));
+  if (params.latestOnly === false) qs.set("latest_only", "false");
+  if (params.limit) qs.set("limit", String(params.limit));
+  const qsStr = qs.toString();
+  return useQuery<DriftListResponse>({
+    queryKey: ["meta", "drift", params],
+    queryFn: () => api.get(`/meta/drift${qsStr ? `?${qsStr}` : ""}`),
+    staleTime: 60_000,
+  });
+};
