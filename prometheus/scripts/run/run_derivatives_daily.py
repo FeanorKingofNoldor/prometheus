@@ -30,14 +30,363 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import re
 import sys
+import uuid
 from datetime import date
 from typing import Any, Dict, Optional, Sequence
 
 from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Shadow-mode helper ───────────────────────────────────────────────
+#
+# Runs the new sleeve-based derivatives pipeline alongside the legacy
+# strategies and persists what it *would* trade into
+# ``derivatives_shadow_decisions``. Read-only — no orders submitted.
+#
+# Gated entirely by the ``PROMETHEUS_DERIVATIVES_SHADOW`` env var. Any
+# failure in this path is logged + swallowed so the live pipeline keeps
+# running. This is the safety contract for Phase 1d → Phase 2 bridging.
+
+
+def _shadow_enabled() -> bool:
+    return os.environ.get("PROMETHEUS_DERIVATIVES_SHADOW", "").lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _make_underlying_price_fn(
+    ib: Any,
+    signals: Dict[str, Any],
+) -> Any:
+    """Return a callable that resolves an underlying's spot price.
+
+    First-pass lookup uses ``signals`` (SPY/VIX already loaded, plus
+    equity_prices populated from positions). Falls back to a one-shot
+    IBKR snapshot for symbols not in the signals dict — the shadow
+    runner only needs a price for whichever underlying a fired
+    template targets, so this is bounded to a few calls.
+    """
+    cache: Dict[str, float] = {}
+
+    def _lookup(symbol: str) -> float:
+        sym = (symbol or "").upper()
+        if sym in cache:
+            return cache[sym]
+
+        # Try signals first (already loaded for SPY / VIX / portfolio).
+        if sym == "SPY":
+            px = float(signals.get("spy_price", 0.0) or 0.0)
+        elif sym == "VIX":
+            px = float(signals.get("vix_level", 0.0) or 0.0)
+        else:
+            px = float(signals.get("equity_prices", {}).get(sym, 0.0) or 0.0)
+            if px <= 0:
+                px = float(signals.get("etf_prices", {}).get(sym, 0.0) or 0.0)
+
+        # On-demand IBKR snapshot for missing symbols (sector ETFs etc).
+        if px <= 0 and ib is not None:
+            try:
+                from prometheus.execution.ib_compat import Stock
+                contract = Stock(sym, "SMART", "USD")
+                qualified = ib.qualifyContracts(contract)
+                if qualified:
+                    ticker = ib.reqMktData(qualified[0], snapshot=True)
+                    ib.sleep(1.5)
+                    last = float(getattr(ticker, "last", 0) or 0)
+                    close = float(getattr(ticker, "close", 0) or 0)
+                    bid = float(getattr(ticker, "bid", 0) or 0)
+                    ask = float(getattr(ticker, "ask", 0) or 0)
+                    mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+                    px = last or close or mid or 0.0
+                    try:
+                        ib.cancelMktData(qualified[0])
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.debug("shadow: spot lookup failed for %s: %s", sym, exc)
+
+        cache[sym] = px
+        return px
+
+    return _lookup
+
+
+_LEGACY_STRATEGY_TO_TEMPLATE: Dict[str, str] = {
+    "protective_put": "hedge.spy_protective_put",
+    "sector_put_spread": "hedge.sector_put_spread",
+    "vix_tail_hedge": "hedge.vix_tail_call",
+    "collar": "hedge.collar",
+    "short_put": "income.spy_short_put",
+    "iron_butterfly": "income.spy_iron_butterfly",
+    "iron_condor": "income.spy_iron_condor",
+    "covered_call": "income.covered_call",
+    "crisis_alpha": "convex.thematic_sector_put",
+}
+
+# Legs per *spread* directive emitted by the new pipeline. Legacy
+# strategies that produce N legs (e.g. sector_put_spread = 2 legs)
+# show up as N positions; we divide by this to recover spread count.
+_TEMPLATE_LEG_COUNT: Dict[str, int] = {
+    "hedge.spy_protective_put": 1,
+    "hedge.sector_put_spread": 2,
+    "hedge.vix_tail_call": 1,
+    "hedge.collar": 2,
+    "income.spy_short_put": 1,
+    "income.spy_iron_butterfly": 4,
+    "income.spy_iron_condor": 4,
+    "income.covered_call": 1,
+    "convex.thematic_sector_put": 1,
+    "convex.vix_escalation_call": 1,
+    "convex.convergence_straddle": 2,
+}
+
+
+def _open_contracts_by_template(existing_options: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """Count open *spreads* per template for the shadow capacity check.
+
+    The legacy ``existing_options`` rows are tagged with ``strategy``
+    (the old per-strategy class name). We map each legacy strategy to
+    its replacement template and divide by the template's leg count to
+    recover the spread count (so a single sector_put_spread with 2
+    legs becomes 1, not 2).
+
+    This is what stops the shadow / cut-over runner from double-firing
+    when legacy already holds the position the new template would
+    open. Unmapped legacy strategies contribute nothing — they aren't
+    replaced by any current template.
+    """
+    raw: Dict[str, int] = {}
+    for opt in existing_options:
+        strategy = str(opt.get("strategy", "") or "")
+        template = _LEGACY_STRATEGY_TO_TEMPLATE.get(strategy)
+        if template is None:
+            continue
+        raw[template] = raw.get(template, 0) + 1
+
+    out: Dict[str, int] = {}
+    for template, legs_count in raw.items():
+        per_spread = _TEMPLATE_LEG_COUNT.get(template, 1)
+        out[template] = max(legs_count // per_spread, 0)
+    return out
+
+
+def _run_shadow_pass(
+    *,
+    ib: Any,
+    discovery: Any,
+    signals: Dict[str, Any],
+    existing_options: Sequence[Dict[str, Any]],
+    as_of_date: date,
+    summary: Dict[str, Any],
+) -> list:
+    """Run the new sleeve pipeline in read-only shadow mode.
+
+    Returns the per-sleeve ``SleeveRunResult`` list so callers can
+    convert directives from cut-over sleeves into legacy
+    ``OptionTradeDirective`` instances for live submission.
+    """
+    from apatheon.core.database import get_db_manager
+
+    from prometheus.derivatives.intel_signals import (
+        load_intel_signals,
+        merge_into_signals,
+    )
+    from prometheus.derivatives.iv_lookup import IvLookupService
+    from prometheus.derivatives.liquidity_filter import LiquidityFilter
+    from prometheus.derivatives.shadow import run_shadow_pass
+
+    nav = float(signals.get("nav", 0.0) or 0.0)
+    if nav <= 0:
+        logger.info("shadow: NAV=0 — skipping shadow pass")
+        return []
+
+    iv_svc = IvLookupService(ib=ib)
+    liq_svc = LiquidityFilter(ib=ib)
+    price_fn = _make_underlying_price_fn(ib, signals)
+    db_manager = get_db_manager()
+    run_id = f"shadow-{as_of_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+
+    # Phase 4a: load Apatheon intel signals and fold them into the
+    # signals dict the sleeve runner will consume. Failure here is
+    # non-fatal — the convex sleeve will skip without intel inputs
+    # but the hedge + income sleeves run unimpaired.
+    try:
+        intel = load_intel_signals(
+            db_manager, as_of_date=as_of_date,
+            portfolio_id="US_OPTIONS_LIVE",
+        )
+        enriched_signals: Dict[str, Any] = dict(merge_into_signals(signals, intel))
+        summary["intel_signals"] = {
+            "divergence_count": len(intel.divergence),
+            "convergence_count": len(intel.convergence),
+            "compound_pressure_count": len(intel.compound_pressure),
+            "geo_risk_score": intel.overall_geo_risk_score(),
+        }
+    except Exception as exc:
+        logger.debug("intel signal load failed (continuing): %s", exc)
+        enriched_signals = signals
+
+    results, rows = run_shadow_pass(
+        db_manager=db_manager,
+        run_id=run_id,
+        as_of_date=as_of_date,
+        nav=nav,
+        signals=enriched_signals,
+        open_contracts_by_template=_open_contracts_by_template(existing_options),
+        underlying_price_fn=price_fn,
+        discovery=discovery,
+        iv_lookup=iv_svc,
+        liquidity=liq_svc,
+    )
+
+    shadow_summary = {
+        "run_id": run_id,
+        "rows_persisted": rows,
+        "per_sleeve": {
+            r.sleeve.value: {"fired": r.fired, "skipped": r.skipped}
+            for r in results
+        },
+    }
+    summary["shadow_derivatives"] = shadow_summary
+    logger.info(
+        "shadow pass complete: run_id=%s rows=%d sleeves=%s",
+        run_id, rows, shadow_summary["per_sleeve"],
+    )
+    return results
+
+
+# ── Cutover wiring (Phase 2.7) ────────────────────────────────────────
+#
+# When a sleeve is in cutover (env-gated), two things happen:
+#   1. Legacy strategies that the sleeve replaces are silenced — their
+#      directives are dropped before risk checks.
+#   2. Directives produced by the new sleeve runner for that sleeve
+#      are converted to OptionTradeDirective and added to the
+#      submission list so they flow through the same risk + submit
+#      path as the legacy directives.
+
+
+def _filter_silenced_directives(
+    all_directives: list,
+    silenced_strategies: "frozenset[str]",
+) -> tuple[list, list]:
+    """Split directives into (kept, dropped) based on the silenced set."""
+    if not silenced_strategies:
+        return all_directives, []
+    kept: list = []
+    dropped: list = []
+    for d in all_directives:
+        strat = getattr(d, "strategy", "")
+        if strat in silenced_strategies:
+            dropped.append(d)
+        else:
+            kept.append(d)
+    return kept, dropped
+
+
+def _sleeve_directives_to_legacy(sleeve_results: list) -> list:
+    """Convert SleeveDirective objects from cut-over sleeves into
+    OptionTradeDirective so they flow through the existing submission
+    path.
+
+    The ``strategy`` field is set to the legacy strategy name (via
+    inverse template mapping) when one exists — this keeps the daily
+    diff report's pairing logic working post-cutover. The full
+    template name lives in ``metadata.template``.
+    """
+    from prometheus.execution.options_strategy import (
+        OptionTradeDirective,
+        TradeAction,
+    )
+
+    # Inverse of _LEGACY_STRATEGY_TO_TEMPLATE — used for outbound tag.
+    template_to_legacy = {v: k for k, v in _LEGACY_STRATEGY_TO_TEMPLATE.items()}
+
+    out: list = []
+    for sleeve_result in sleeve_results:
+        for d in sleeve_result.directives:
+            legacy_strategy = template_to_legacy.get(d.template_name, d.template_name)
+            out.append(OptionTradeDirective(
+                strategy=legacy_strategy,
+                action=TradeAction.OPEN,
+                symbol=d.underlying,
+                right=d.right,
+                expiry=d.expiry,
+                strike=float(d.strike),
+                quantity=int(d.quantity),
+                limit_price=float(d.limit_price),
+                reason=d.reason,
+                metadata={
+                    "sleeve": d.sleeve.value,
+                    "template": d.template_name,
+                    "source": "cutover_pipeline",
+                    **dict(d.trigger_metadata),
+                },
+            ))
+    return out
+
+
+def _reconcile_options_storage(
+    *,
+    ib_unused: Any,
+    options_portfolio: Any,
+    portfolio_id: str,
+    mode: str,
+    summary: Dict[str, Any],
+) -> None:
+    """Write through the in-memory OptionsPortfolio snapshot to the
+    ``options_positions`` table (Phase 2.5). Best-effort: never
+    breaks the live pipeline."""
+    try:
+        from apatheon.core.database import get_db_manager
+
+        from prometheus.execution.options_storage import reconcile_positions
+        db = get_db_manager()
+        snapshot = {
+            entry.instrument_id: entry
+            for entry in options_portfolio.get_all_positions()
+        }
+        result = reconcile_positions(
+            db, portfolio_id=portfolio_id, mode=mode,
+            snapshot=snapshot,
+        )
+        summary["options_storage_reconcile"] = {
+            "opened": result.opened,
+            "updated": result.updated,
+            "closed": result.closed,
+        }
+    except Exception as exc:
+        logger.warning("options_storage reconcile failed (continuing): %s", exc)
+        summary.setdefault("errors", []).append(f"reconcile: {exc}")
+
+
+def _write_daily_diff_report(*, as_of_date: date, summary: Dict[str, Any]) -> None:
+    """Run the shadow-vs-legacy diff and persist the markdown report.
+    Best-effort; never breaks the live pipeline."""
+    try:
+        import os.path
+
+        from apatheon.core.database import get_db_manager
+
+        from prometheus.derivatives.diff_report import run_daily_diff
+        db = get_db_manager()
+        md = run_daily_diff(db, as_of_date)
+        brief_path = f"/app/briefs/derivatives_diff_{as_of_date.isoformat()}.md"
+        if os.path.isdir(os.path.dirname(brief_path)):
+            with open(brief_path, "w") as fh:
+                fh.write(md)
+            summary["diff_report_path"] = brief_path
+            logger.info("diff report written to %s", brief_path)
+        else:
+            summary["diff_report_skipped"] = "briefs directory missing"
+    except Exception as exc:
+        logger.warning("diff report failed (continuing): %s", exc)
+        summary.setdefault("errors", []).append(f"diff_report: {exc}")
 
 
 # ── Signal loader (stub — wired to real pipelines in production) ──────
@@ -422,6 +771,18 @@ def run_derivatives_daily(
         options_portfolio = OptionsPortfolio(ib)
         options_portfolio.sync(broker_positions=positions)
 
+        # Phase 2.5: write through to options_positions for queryable
+        # state across the diff report + audit log. Gated by shadow
+        # mode so we don't toggle persistence independently.
+        if _shadow_enabled():
+            _reconcile_options_storage(
+                ib_unused=ib,
+                options_portfolio=options_portfolio,
+                portfolio_id="US_OPTIONS_LIVE" if not dry_run else "US_OPTIONS_PAPER",
+                mode="LIVE" if not dry_run else "PAPER",
+                summary=summary,
+            )
+
         summary["steps_completed"].append("init_services")
 
         # ── Step 4: Load signals ──────────────────────────────────────
@@ -667,6 +1028,40 @@ def run_derivatives_daily(
         summary["strategy_directives"] = len(all_directives)
         summary["steps_completed"].append("run_strategies")
 
+        # Phase 2.7: silence legacy strategies for any sleeves that
+        # have been cut over to the new pipeline. The new sleeve's
+        # directives get re-added below from the shadow pass results.
+        _cutover_state = None
+        try:
+            from prometheus.derivatives.allocator import (
+                SleeveCutoverState,
+                silenced_strategies,
+            )
+            from prometheus.derivatives.sleeves import Sleeve
+
+            _cutover_state = SleeveCutoverState.from_env()
+            _silenced = silenced_strategies(_cutover_state)
+            if _silenced:
+                kept, dropped = _filter_silenced_directives(all_directives, _silenced)
+                if dropped:
+                    logger.info(
+                        "cutover: silenced %d directives from legacy strategies %s",
+                        len(dropped),
+                        sorted({getattr(d, "strategy", "") for d in dropped}),
+                    )
+                all_directives = kept
+                active = [
+                    s.value for s in Sleeve if _cutover_state.is_active(s)
+                ]
+                summary["cutover"] = {
+                    "active_sleeves": sorted(active),
+                    "silenced_legacy_strategies": sorted(_silenced),
+                    "dropped_directives": len(dropped),
+                }
+        except Exception as exc:
+            logger.warning("cutover silencing failed (continuing): %s", exc)
+            summary.setdefault("errors", []).append(f"cutover_silence: {exc}")
+
         # ── Step 6.5: Position lifecycle management ─────────────────
         lifecycle = PositionLifecycleManager()
         lifecycle_directives = lifecycle.evaluate(
@@ -677,6 +1072,52 @@ def run_derivatives_daily(
 
         summary["lifecycle_directives"] = len(lifecycle_directives)
         summary["steps_completed"].append("lifecycle_management")
+
+        # ── Step 6.6: Shadow-mode derivatives runner ─────────────────
+        # Gated by PROMETHEUS_DERIVATIVES_SHADOW. Read-only by default;
+        # when a sleeve is in cutover, its directives are converted and
+        # injected into all_directives so they go through the same
+        # risk-check + submission path as the legacy directives.
+        _shadow_results: list = []
+        if _shadow_enabled():
+            try:
+                _shadow_results = _run_shadow_pass(
+                    ib=ib,
+                    discovery=discovery,
+                    signals=signals,
+                    existing_options=existing_options,
+                    as_of_date=date.today(),
+                    summary=summary,
+                )
+                summary["steps_completed"].append("shadow_pass")
+            except Exception as exc:
+                logger.warning("shadow pass failed (continuing): %s", exc)
+                summary.setdefault("errors", []).append(f"shadow_pass: {exc}")
+
+        # Phase 2.7 (b): inject directives from cut-over sleeves into
+        # all_directives so they're submitted alongside any surviving
+        # legacy directives. Only sleeves marked active in the cutover
+        # state contribute; the rest stay shadow-only.
+        if _cutover_state is not None and _shadow_results:
+            try:
+                cutover_sleeve_results = [
+                    r for r in _shadow_results
+                    if _cutover_state.is_active(r.sleeve)
+                ]
+                if cutover_sleeve_results:
+                    new_legacy_directives = _sleeve_directives_to_legacy(
+                        cutover_sleeve_results,
+                    )
+                    all_directives.extend(new_legacy_directives)
+                    summary.setdefault("cutover", {})["new_pipeline_directives"] = \
+                        len(new_legacy_directives)
+                    logger.info(
+                        "cutover: injected %d new-pipeline directives into submission",
+                        len(new_legacy_directives),
+                    )
+            except Exception as exc:
+                logger.warning("cutover injection failed (continuing): %s", exc)
+                summary.setdefault("errors", []).append(f"cutover_inject: {exc}")
 
         # ── Step 7: Risk checks (with greeks budget) ─────────────────
         portfolio_greeks = options_portfolio.compute_portfolio_greeks()
@@ -739,6 +1180,24 @@ def run_derivatives_daily(
                         # Instrument ID: SYMBOL_YYMMDD_STRIKEC/P.US
                         exp_short = d.expiry[2:] if len(d.expiry) == 8 else d.expiry
                         instrument_id = f"{d.symbol}_{exp_short}_{d.strike:.0f}{d.right}.US"
+                        # Skip directives without a real limit price.  Logging
+                        # entry_price=0 here corrupts the decision-outcomes
+                        # P&L attribution — the evaluator treats it as "sold
+                        # for zero credit" and synthesises catastrophic
+                        # losses on every SELL leg.  See May 2026 audit:
+                        # 58 legs with entry_price=0 produced -$856K of
+                        # fictitious P&L.  Fix the upstream strategy to
+                        # always set d.limit_price (market orders should
+                        # capture the chain mid at decision time).
+                        entry_px = d.limit_price
+                        if not entry_px or entry_px <= 0:
+                            logger.warning(
+                                "[options.log] skipping decision log for "
+                                "%s %s %s strike=%s qty=%s: missing limit_price "
+                                "(fix the directive emitter so this never happens)",
+                                d.symbol, d.right, d.action.value, d.strike, d.quantity,
+                            )
+                            continue
                         orders_for_log.append({
                             "symbol": d.symbol,
                             "underlying_id": underlying_id,
@@ -748,7 +1207,7 @@ def run_derivatives_daily(
                             "strike": d.strike,
                             "action": "BUY" if d.quantity > 0 else "SELL",
                             "quantity": abs(d.quantity),
-                            "entry_price": d.limit_price or 0.0,
+                            "entry_price": float(entry_px),
                             "strategy": d.strategy,
                             "reason": d.reason,
                             "trade_action": d.action.value,
@@ -776,6 +1235,13 @@ def run_derivatives_daily(
                     )
 
         summary["steps_completed"].append("submit_orders")
+
+        # ── Step 8.5: Daily diff report (Phase 2.6) ──────────────────
+        # Compares what the new sleeve pipeline would have done with
+        # what the legacy strategies actually did, writes to briefs.
+        # Best-effort — never breaks the live pipeline.
+        if _shadow_enabled():
+            _write_daily_diff_report(as_of_date=date.today(), summary=summary)
 
         # ── Step 9: Portfolio status ──────────────────────────────────
         status = options_portfolio.get_status()

@@ -1,5 +1,52 @@
 # Prometheus Development Log
 
+## 2026-05-25 — Derivatives Sleeve Redesign (Phases 0–4)
+
+Replaced the seventeen-class `options_strategy.py` architecture with three
+explicit sleeves (HEDGE/INCOME/CONVEX) summing to the legacy 30% NAV cap.
+Shipped in five phases across one session, all behind env-gated cutover
+flags so production behaviour is unchanged until each sleeve is ready.
+
+### Phase 0 — Scaffolding (50 tests)
+- Migration `0097_options_positions`: `options_positions` + `options_position_events` tables for production options state (mirrors `backtest_options_*`)
+- `derivatives.sizing.size_position()` — single unified sizing function with `SizingResult` provenance flags (`budget_bound`, `capacity_bound`, `greeks_bound`, `skipped_reason`); five reproduction tests prove parity with the legacy per-strategy formulas (protective put, sector put spread, iron condor, covered call, wheel)
+- `derivatives.iv_lookup.IvLookupService` — IBKR live `modelGreeks.impliedVol` with 4-tier fallback (cache → realized vol → VIX-as-sigma) and per-source telemetry counters
+- `derivatives.liquidity_filter.LiquidityFilter` — batched `reqMktData` snapshot, rejects `no_bid` / `wide_spread` / `no_quote` with structured reasons
+
+### Phase 1 — Selection pipeline + shadow harness (37 tests)
+- `derivatives.selection.select_contract()` — chain discovery → DTE selection (third-Friday preferred) → strike window → liquidity filter → IV lookup → delta-by-real-IV → pick. `SelectionTrace` records every candidate, IV source, and rejection
+- `derivatives.sleeves` — `Sleeve` enum, `TemplateConfig` (with `__post_init__` enforcing exactly one of `target_spec_factory` / `spread_spec_factory`), `SleeveConfig`, and `default_sleeves()` factory
+- `derivatives.runner.run_sleeve()` — walks every template, emits `SleeveDirective` / `SleeveSkip` per template per run; one entry guaranteed per template so the audit log is complete
+- `derivatives.shadow` + migration `0098_derivatives_shadow_decisions` + production wiring in `run_derivatives_daily.py` (env-gated by `PROMETHEUS_DERIVATIVES_SHADOW=1`)
+
+### Phase 2 — Hedge sleeve, all production gates (~110 tests)
+- **2.1**: `derivatives.backtest` adapters (`BacktestDiscovery`, `BacktestIvLookup`, `BacktestLiquidityFilter`) + `replay_sleeve_pipeline()` orchestrator + `diff_against_legacy()` — runs production code against synthetic chains in seconds
+- **2.2a**: Multi-leg spread support — `LegSpec` / `SpreadSpec` / `select_spread()`; runner emits N directives per spread sharing a `spread_group_id`. `_max_loss_per_contract` handles verticals (2-leg same-right) and iron condor/butterfly (4-leg pair) with conservative fallback for collars
+- **2.2b**: Three new hedge templates — `hedge.sector_put_spread`, `hedge.vix_tail_call`, `hedge.collar`
+- **2.3a**: Regime gating per template (`allowed_market_states` tuple, new `SKIP_REGIME`)
+- **2.3b**: Greeks-aware sizing — `GreeksHeadroom` / `PerContractGreeks`; runner decrements headroom between templates so collective sleeve fires can't breach the budget. Per-contract greeks computed from BS using the selection's actual IV (not VIX-as-sigma)
+- **2.3c**: Pre-trade margin checker protocol (`NullMarginChecker` / `NotionalMarginChecker`); runner gates each directive after sizing; spread-aware (any leg rejection rejects the whole spread)
+- **2.4**: `SleeveBudgetPlanner` + `SleeveCutoverState` (env-driven) — zeroes legacy category budgets for cut-over sleeves
+- **2.5**: `options_storage.reconcile_positions()` — write-through from in-memory `OptionsPortfolio` to `options_positions` table with insert/update/close + event log
+- **2.6**: Daily shadow-vs-legacy diff report; markdown lands in `/app/briefs/derivatives_diff_YYYY-MM-DD.md` after every options run
+- **2.7**: Cutover wiring — env vars `PROMETHEUS_DERIVATIVES_{HEDGE,INCOME,CONVEX}_CUTOVER` silence legacy strategies for cut-over sleeves and inject the new pipeline's directives into the legacy submission path
+
+### Phase 3 — Income sleeve (16 tests)
+Templates: `income.spy_iron_butterfly`, `income.spy_iron_condor`, `income.covered_call` (reads `signals.equity_positions` to pick the largest holding with ≥100 shares).
+
+### Phase 4 — Convex sleeve + Apatheon intel map (40 tests)
+- `derivatives.intel_signals` — `IntelSignalsSnapshot` loaded from `divergence_signals`, `convergence_signals`, `compound_pressure_alerts`, `portfolio_geo_risk`; `merge_into_signals()` folds them into the signals dict templates consume
+- Templates: `convex.vix_escalation_call` (fires on elevated geo risk + VIX hasn't moved yet), `convex.convergence_straddle` (long straddle on entity proxy when divergence + convergence both flash for same entity)
+- `derivatives.historical_signals` — `make_db_signal_provider(db)` returns a `(date) → signals` callable so the backtest harness can replay any historical day against real Apatheon signal tables, not just stubs
+
+### Audit pass (post-Phase 4)
+Found and fixed: spread margin gating broke spread integrity when one leg rejected (other legs would still submit), `_open_contracts_by_template` always returned empty (would double-fire post-cutover), diff-report pairing key mismatch between shadow and cutover-injected legacy strategy names, `size_position` returned `skipped=True` with no reason on `min_contracts=0`, `_hedge_sector_put_spread_trigger` picked the absolutely weakest sector then bailed on missing ETF instead of falling through to next-weakest, dead loop in `select_spread`, unused threading lock in `LiquidityFilter`, missing `__all__` exports, emojis in the markdown diff report. Extracted `IvLookupLike` / `LiquidityLike` Protocols so backtest adapters type-check cleanly against production signatures.
+
+### State today
+- **Migrations applied** (0097, 0098), **shadow mode live** in production daemon, **cutover flags unset**.
+- **Full suite**: 792 passing, 1 xfailed, no regressions. **mypy clean.** **ruff clean.**
+- **Next gate**: ≥10 trading days of shadow data per sleeve, daily diff review, then flip `PROMETHEUS_DERIVATIVES_HEDGE_CUTOVER=1` for the first cutover.
+
 ## 2026-04-05 — Operations Dashboard, Daemon Reliability, Production Deployment
 
 ### Daemon Reliability

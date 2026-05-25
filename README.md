@@ -60,7 +60,8 @@ prometheus/
 ├── backtest/            # Backtest runner, options backtester, C++ bridge
 ├── books/               # Book registry, sleeve specs
 ├── decisions/           # Decision tracking + outcome evaluation
-├── execution/           # Broker interface, IBKR client, options strategies
+├── derivatives/         # New sleeve-based options pipeline (HEDGE/INCOME/CONVEX) — see CLAUDE.md
+├── execution/           # Broker interface, IBKR client, legacy options strategies
 ├── meta/                # Feedback loop, trade monitor, trade journal
 ├── monitoring/          # FastAPI REST API (port 8200)
 ├── opportunity/         # Lambda/GBT opportunity model

@@ -71,6 +71,32 @@ Uses a **broker factory pattern**: `BrokerInterface` (abstract) → implementati
 - `PaperBroker` / `BacktestBroker` — simulation modes
 - `RiskBroker` — risk-filtered wrapper
 
+### Derivatives Sleeves (`prometheus/derivatives/`)
+Successor to the seventeen per-strategy classes in `execution/options_strategy.py`.
+Three explicit sleeves with fixed NAV budgets sum to the legacy 30% derivatives cap:
+- **HEDGE** (10% NAV) — always-on downside protection
+- **INCOME** (15% NAV) — short-premium when vol is rich
+- **CONVEX** (5% NAV) — Apatheon-signal-driven asymmetric bets
+
+Each sleeve owns a tuple of `TemplateConfig` entries (e.g. `hedge.sector_put_spread`,
+`income.spy_iron_condor`, `convex.convergence_straddle`). The runner
+(`run_sleeve`) walks every template, evaluates its trigger against signals,
+calls `select_contract` / `select_spread` (which goes chain → liquidity filter
+→ live IV → delta-by-IV → pick), and emits `SleeveDirective` rows that survive
+greeks-headroom + margin checks. Two persistence tables back this:
+`options_positions` (mutable state) and `derivatives_shadow_decisions` (per-template-per-day log).
+
+**Operational state today (2026-05-25):** shadow mode is live in production
+(`PROMETHEUS_DERIVATIVES_SHADOW=1`); per-sleeve cutover flags
+(`PROMETHEUS_DERIVATIVES_{HEDGE,INCOME,CONVEX}_CUTOVER`) are unset, so the
+legacy strategies still drive execution while the new pipeline shadow-logs
+every day's would-have-done. A daily diff report lands in `/app/briefs/`.
+Cutover decisions wait on ≥10 days of shadow data per sleeve.
+
+The full template list lives in `prometheus/derivatives/sleeves.py`; the
+adapter that runs the harness against synthetic data is in
+`prometheus/derivatives/backtest.py`.
+
 ### Meta-Orchestrator (`prometheus/meta/`)
 Generates decision proposals, logs them to `engine_decisions`, and tracks realized outcomes vs. decision-time expectations at multiple time horizons (1d, 5d, etc.).
 
