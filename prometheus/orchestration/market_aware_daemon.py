@@ -680,6 +680,26 @@ def execute_job(
                 update_phase(db_manager, run.run_id, RunPhase.COMPLETED)
                 # Post-run health check: validate the run produced meaningful output
                 _run_health_check(db_manager, run, execution.as_of_date, job.market_id)
+                # Autopilot — fire the daily meta loop once per trading
+                # day, gated on US_EQ since it's the primary book and runs
+                # last in CET evening. Failure isolated; never blocks
+                # the finalize.
+                if job.market_id == "US_EQ":
+                    try:
+                        from prometheus.meta.autopilot import run_daily_autopilot
+                        ap = run_daily_autopilot(db_manager, execution.as_of_date)
+                        logger.info(
+                            "Autopilot[US_EQ finalize]: meta=%d drift=%d "
+                            "(warn+=%d) notifs=%d weekly=%s errors=%d",
+                            ap.meta_analysis_rows, ap.drift_rows,
+                            ap.drift_warning_or_worse,
+                            ap.notifications_recorded,
+                            ap.weekly_report_persisted, len(ap.errors),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Autopilot failed after US_EQ finalize (non-blocking)",
+                        )
             return True, None
 
         else:

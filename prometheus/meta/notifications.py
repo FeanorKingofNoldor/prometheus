@@ -175,9 +175,16 @@ def evaluate_daily_alerts(
 def _rule_proposal_pending(
     *, db: DatabaseManager, as_of_date: date, min_confidence: float,
 ) -> AlertEvaluation:
-    """One notification per new proposal created today with sufficient
-    confidence. Severity scales with confidence_score."""
-    recorded = 0
+    """One notification per *group* of new proposals created today.
+
+    Proposals are grouped by ``(proposal_type, target_component)`` —
+    the same fix applied across many strategies (typical when an
+    L5/L63 lambda-factor family all hit the same risk threshold) is
+    the same actionable item, so we emit one notification listing
+    the affected strategies in the body instead of N near-duplicates.
+
+    Severity tracks the maximum confidence in the group.
+    """
     with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -188,36 +195,77 @@ def _rule_proposal_pending(
                 FROM meta_config_proposals
                 WHERE created_at::date = %s
                   AND confidence_score >= %s
+                ORDER BY proposal_type, target_component, strategy_id
                 """,
                 (as_of_date, float(min_confidence)),
             )
             rows = cur.fetchall()
 
+    # Group: (proposal_type, target_component) -> list of (strategy_id,
+    # confidence, sharpe_delta, rationale, proposal_id)
+    groups: dict[tuple[str, str], list[tuple]] = {}
     for row in rows:
         (proposal_id, strategy_id, proposal_type, target_component,
          confidence, sharpe_delta, rationale) = row
+        key = (str(proposal_type or ""), str(target_component or ""))
+        groups.setdefault(key, []).append(
+            (strategy_id, float(confidence or 0),
+             float(sharpe_delta or 0), str(rationale or ""), str(proposal_id))
+        )
+
+    recorded = 0
+    for (proposal_type, target_component), members in groups.items():
+        max_conf = max(m[1] for m in members)
+        median_sharpe = sorted(m[2] for m in members)[len(members) // 2]
         severity = (
-            "critical" if float(confidence or 0) >= 0.75
-            else "warning" if float(confidence or 0) >= 0.5
+            "critical" if max_conf >= 0.75
+            else "warning" if max_conf >= 0.5
             else "info"
         )
-        title = (
-            f"New proposal for {strategy_id}: "
-            f"{proposal_type} on {target_component} "
-            f"(confidence {float(confidence or 0):.0%}, "
-            f"+{float(sharpe_delta or 0):.2f} Sharpe)"
-        )
+
+        n = len(members)
+        if n == 1:
+            (strategy_id, conf, sharpe, rationale, _pid) = members[0]
+            title = (
+                f"New proposal for {strategy_id}: "
+                f"{proposal_type} on {target_component} "
+                f"(confidence {conf:.0%}, +{sharpe:.2f} Sharpe)"
+            )
+            body = rationale
+        else:
+            title = (
+                f"{n} new proposals: {proposal_type} on {target_component} "
+                f"(max confidence {max_conf:.0%}, ~+{median_sharpe:.2f} Sharpe)"
+            )
+            sample = members[0][3]  # rationale of first member
+            strategies_preview = ", ".join(m[0] for m in members[:8])
+            if n > 8:
+                strategies_preview += f", … (+{n - 8} more)"
+            body = (
+                f"Strategies: {strategies_preview}\n\n"
+                f"Sample rationale:\n{sample}"
+            )
+
+        # Stable source_id keys the partial-unique-index dedup: one
+        # notification per (type, target) per day, regardless of how
+        # many strategies appear in the group. source_id is varchar(64);
+        # truncate defensively so long type/target names can't overflow.
+        source_id = f"group:{proposal_type}:{target_component}"[:64]
         if record_notification(
             db, as_of_date=as_of_date, kind=KIND_PROPOSAL_PENDING,
             severity=severity, title=title[:200],
-            body=str(rationale or ""),
+            body=body,
             source_table="meta_config_proposals",
-            source_id=str(proposal_id),
-            link_path=f"/insights/proposals/{proposal_id}",
+            source_id=source_id,
+            link_path="/intelligence",
             metadata={
-                "strategy_id": strategy_id,
-                "confidence": float(confidence or 0),
-                "expected_sharpe_improvement": float(sharpe_delta or 0),
+                "proposal_type": proposal_type,
+                "target_component": target_component,
+                "n_strategies": n,
+                "max_confidence": max_conf,
+                "median_sharpe_delta": median_sharpe,
+                "strategy_ids": [m[0] for m in members],
+                "proposal_ids": [m[4] for m in members],
             },
         ):
             recorded += 1
@@ -326,9 +374,10 @@ def _rule_signal_degradation(
 def _rule_diagnostic_warning(
     *, db: DatabaseManager, as_of_date: date,
 ) -> AlertEvaluation:
-    """One notification per strategy with underperformers or high-risk
-    configs in today's diagnostic report."""
-    recorded = 0
+    """One notification per *flag combination* in today's diagnostic
+    reports. Reports with the same (has_underperformers, has_high_risk)
+    profile collapse to a single notification listing affected strategies.
+    """
     with db.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -339,38 +388,76 @@ def _rule_diagnostic_warning(
                 FROM meta_diagnostic_reports
                 WHERE as_of_date = %s
                   AND (has_underperformers OR has_high_risk)
+                ORDER BY has_underperformers DESC, has_high_risk DESC,
+                         strategy_id
                 """,
                 (as_of_date,),
             )
             rows = cur.fetchall()
 
+    # Group: (has_under, has_risk) -> list of (strategy_id, n_runs, report_id)
+    groups: dict[tuple[bool, bool], list[tuple]] = {}
     for row in rows:
         (report_id, strategy_id, has_under, has_risk, n_runs) = row
+        key = (bool(has_under), bool(has_risk))
+        groups.setdefault(key, []).append(
+            (strategy_id, int(n_runs), str(report_id))
+        )
+
+    recorded = 0
+    for (has_under, has_risk), members in groups.items():
         flags: list[str] = []
         if has_under:
             flags.append("underperforming configs")
         if has_risk:
             flags.append("high-risk configs")
-        title = (
-            f"Diagnostic warning for {strategy_id}: "
-            f"{', '.join(flags)} (n={int(n_runs)} runs analysed)"
-        )
+        flag_label = ", ".join(flags)
+        n = len(members)
+        total_runs = sum(m[1] for m in members)
+
+        if n == 1:
+            (strategy_id, n_runs, _rid) = members[0]
+            title = (
+                f"Diagnostic warning for {strategy_id}: "
+                f"{flag_label} (n={n_runs} runs analysed)"
+            )
+            body = (
+                f"The DiagnosticsEngine flagged {flag_label} for "
+                f"strategy {strategy_id}. Open the diagnostics page for "
+                f"the per-config breakdown."
+            )
+        else:
+            title = (
+                f"{n} strategies flagged: {flag_label} "
+                f"({total_runs} runs analysed)"
+            )
+            strategies_preview = ", ".join(m[0] for m in members[:8])
+            if n > 8:
+                strategies_preview += f", … (+{n - 8} more)"
+            body = (
+                f"Strategies: {strategies_preview}\n\n"
+                f"All {n} share the same diagnostic profile. "
+                f"Open Diagnostics to drill in per strategy."
+            )
+
+        # Stable source_id keys the dedup index: one notification per
+        # (under, risk) flag combination per day. varchar(64) cap respected
+        # by construction since these are short tokens.
+        source_id = f"group:under={has_under}:risk={has_risk}"
         if record_notification(
             db, as_of_date=as_of_date, kind=KIND_DIAGNOSTIC_WARNING,
             severity="warning", title=title[:200],
-            body=(
-                f"The DiagnosticsEngine flagged {', '.join(flags)} for "
-                f"strategy {strategy_id}. Open the diagnostics page for "
-                f"the per-config breakdown."
-            ),
+            body=body,
             source_table="meta_diagnostic_reports",
-            source_id=str(report_id),
-            link_path=f"/insights/diagnostics/{strategy_id}",
+            source_id=source_id,
+            link_path="/diagnostics",
             metadata={
-                "strategy_id": strategy_id,
-                "has_underperformers": bool(has_under),
-                "has_high_risk": bool(has_risk),
-                "num_runs_analysed": int(n_runs),
+                "has_underperformers": has_under,
+                "has_high_risk": has_risk,
+                "n_strategies": n,
+                "total_runs_analysed": total_runs,
+                "strategy_ids": [m[0] for m in members],
+                "report_ids": [m[2] for m in members],
             },
         ):
             recorded += 1

@@ -251,6 +251,77 @@ def test_proposal_pending_records_one_per_proposal_above_threshold():
     assert "max_names" in n["title"]
 
 
+def test_proposal_pending_groups_duplicate_type_target():
+    """N proposals with the same (type, target) collapse to ONE notification."""
+    db = _FakeDb()
+    today = date(2026, 5, 25)
+    for i, strat in enumerate(["A", "B", "C", "D", "E"], start=1):
+        db.proposals.append({
+            "proposal_id": f"p{i}", "strategy_id": strat,
+            "proposal_type": "risk_constraint",
+            "target_component": "max_position_volatility",
+            "confidence_score": 0.6,
+            "expected_sharpe_improvement": 0.15,
+            "rationale": f"Strategy {strat} hit the vol cap",
+            "created_at": datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+        })
+    notifications.evaluate_daily_alerts(db, today)
+    prop_notifs = [n for n in db.notifications if n["kind"] == "proposal_pending"]
+    assert len(prop_notifs) == 1  # 5 proposals → 1 grouped notification
+    n = prop_notifs[0]
+    assert n["severity"] == "warning"
+    assert n["title"].startswith("5 new proposals:")
+    md = n["metadata_json"].adapted
+    assert md["n_strategies"] == 5
+    assert set(md["strategy_ids"]) == {"A", "B", "C", "D", "E"}
+
+
+def test_proposal_pending_distinct_targets_stay_separate():
+    """Different (type, target) tuples MUST stay as separate notifications."""
+    db = _FakeDb()
+    today = date(2026, 5, 25)
+    db.proposals.append({
+        "proposal_id": "p1", "strategy_id": "X",
+        "proposal_type": "risk_constraint",
+        "target_component": "max_position_volatility",
+        "confidence_score": 0.6, "expected_sharpe_improvement": 0.15,
+        "rationale": "",
+        "created_at": datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+    })
+    db.proposals.append({
+        "proposal_id": "p2", "strategy_id": "X",
+        "proposal_type": "universe_adjustment",
+        "target_component": "max_names",
+        "confidence_score": 0.7, "expected_sharpe_improvement": 0.20,
+        "rationale": "",
+        "created_at": datetime(2026, 5, 25, 18, 0, tzinfo=timezone.utc),
+    })
+    notifications.evaluate_daily_alerts(db, today)
+    prop_notifs = [n for n in db.notifications if n["kind"] == "proposal_pending"]
+    assert len(prop_notifs) == 2
+
+
+def test_diagnostic_warning_groups_same_flag_profile():
+    """Strategies with the same (under, risk) flags collapse to one notif."""
+    db = _FakeDb()
+    today = date(2026, 5, 25)
+    for i, strat in enumerate(["LAMBDA_L5", "LAMBDA_L21", "LAMBDA_L63"], start=1):
+        db.diagnostic_reports.append({
+            "report_id": i, "as_of_date": today, "strategy_id": strat,
+            "has_underperformers": True, "has_high_risk": True,
+            "num_runs_analysed": 10,
+        })
+    notifications.evaluate_daily_alerts(db, today)
+    diag_notifs = [
+        n for n in db.notifications if n["kind"] == "diagnostic_warning"
+    ]
+    assert len(diag_notifs) == 1  # 3 strategies → 1 grouped notification
+    md = diag_notifs[0]["metadata_json"].adapted
+    assert md["n_strategies"] == 3
+    assert set(md["strategy_ids"]) == {"LAMBDA_L5", "LAMBDA_L21", "LAMBDA_L63"}
+    assert md["total_runs_analysed"] == 30
+
+
 def test_proposal_pending_severity_critical_at_high_confidence():
     db = _FakeDb()
     today = date(2026, 5, 25)
@@ -375,9 +446,14 @@ def test_diagnostic_warning_fires_on_underperformers_or_high_risk():
     diag_notifs = [
         n for n in db.notifications if n["kind"] == "diagnostic_warning"
     ]
-    assert len(diag_notifs) == 2  # CLEAN doesn't fire
-    strategies = {n["metadata_json"].adapted["strategy_id"] for n in diag_notifs}
-    assert strategies == {"US_EQ_CORE_LONG_EQ", "OTHER"}
+    # CLEAN doesn't fire. The other two have different flag combinations
+    # (underperformers-only vs high-risk-only), so they form distinct
+    # groups and yield two notifications.
+    assert len(diag_notifs) == 2
+    all_strategies = set()
+    for n in diag_notifs:
+        all_strategies.update(n["metadata_json"].adapted["strategy_ids"])
+    assert all_strategies == {"US_EQ_CORE_LONG_EQ", "OTHER"}
 
 
 # ── End-to-end ──────────────────────────────────────────────────────

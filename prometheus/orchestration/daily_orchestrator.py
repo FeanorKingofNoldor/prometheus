@@ -184,65 +184,23 @@ class DailyOrchestrator:
             except Exception:  # pragma: no cover - defensive
                 logger.exception("OUTCOME_EVAL phase failed (non-blocking)")
 
-        # Meta analysis loop — feedback insights, signal validations,
-        # diagnostics + proposals per strategy. Replaces the previous
-        # log-only feedback call and persists every output to the
-        # meta_* tables (migration 0099) so the frontend can surface
-        # them. Failure-isolated by design.
+        # Autopilot loop — feedback insights, signal validations,
+        # diagnostics + proposals per strategy, drift check, alert rules,
+        # and Monday-gated weekly rollup. All four steps live in
+        # `prometheus.meta.autopilot` so the market-aware daemon's
+        # finalize hook can call the same code path (avoiding the need
+        # for a separate cron). Failure-isolated by design.
         try:
-            from prometheus.meta.daily_analysis import run_daily_meta_analysis
-            analysis = run_daily_meta_analysis(self.db_manager, as_of_date)
+            from prometheus.meta.autopilot import run_daily_autopilot
+            ap = run_daily_autopilot(self.db_manager, as_of_date)
             logger.info(
-                "Daily meta analysis: %d rows persisted across %d steps "
-                "(errors=%s)",
-                analysis.total_persisted, len(analysis.steps),
-                analysis.any_errors,
+                "Autopilot: meta=%d drift=%d (warn+=%d) notifs=%d weekly=%s errors=%d",
+                ap.meta_analysis_rows, ap.drift_rows,
+                ap.drift_warning_or_worse, ap.notifications_recorded,
+                ap.weekly_report_persisted, len(ap.errors),
             )
         except Exception:
-            logger.debug("Daily meta analysis failed (non-critical)", exc_info=True)
-
-        # Backtest-vs-live drift comparator — runs before the alert
-        # rules so today's drift rows are available when evaluate_daily_alerts
-        # fires the drift_alert rule.
-        try:
-            from prometheus.meta.drift_monitor import run_daily_drift_check
-            drift = run_daily_drift_check(self.db_manager, as_of_date)
-            if drift.warning_or_worse:
-                logger.warning(
-                    "Backtest-vs-live drift: %d strategies in warning+ severity",
-                    drift.warning_or_worse,
-                )
-        except Exception:
-            logger.debug("Drift check failed (non-critical)", exc_info=True)
-
-        # Alert rules engine — emit notifications into the inbox for
-        # any new proposal, critical insight, multi-day signal
-        # degradation, diagnostic warning, or drift alert from above.
-        try:
-            from prometheus.meta.notifications import evaluate_daily_alerts
-            alerts = evaluate_daily_alerts(self.db_manager, as_of_date)
-            if alerts.total_recorded:
-                logger.info(
-                    "Daily alerts: %d notifications recorded",
-                    alerts.total_recorded,
-                )
-        except Exception:
-            logger.debug("Daily alerts evaluation failed (non-critical)", exc_info=True)
-
-        # Weekly report — Monday post-close rolls up the prior 5 days.
-        if as_of_date.weekday() == 0:  # Monday
-            try:
-                from prometheus.meta.daily_analysis import run_weekly_report
-                weekly = run_weekly_report(self.db_manager, as_of_date)
-                if weekly.error:
-                    logger.warning("Weekly report failed: %s", weekly.error)
-                elif weekly.rows_persisted:
-                    logger.info(
-                        "Weekly report persisted for week ending %s",
-                        as_of_date.isoformat(),
-                    )
-            except Exception:
-                logger.debug("Weekly report failed (non-critical)", exc_info=True)
+            logger.debug("Autopilot loop failed (non-critical)", exc_info=True)
 
         # Trade journal — backfill returns for past entries
         try:
