@@ -122,7 +122,9 @@ def record_notification(
                     source_table, source_id, link_path, md,
                 ),
             )
-            return cur.rowcount > 0
+            inserted = cur.rowcount > 0
+        conn.commit()
+        return inserted
 
 
 def evaluate_daily_alerts(
@@ -476,7 +478,9 @@ def mark_read(db: DatabaseManager, notification_id: int) -> bool:
                 """,
                 (int(notification_id),),
             )
-            return cur.rowcount > 0
+            updated = cur.rowcount > 0
+        conn.commit()
+        return updated
 
 
 def dismiss(db: DatabaseManager, notification_id: int) -> bool:
@@ -491,7 +495,9 @@ def dismiss(db: DatabaseManager, notification_id: int) -> bool:
                 """,
                 (int(notification_id),),
             )
-            return cur.rowcount > 0
+            updated = cur.rowcount > 0
+        conn.commit()
+        return updated
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

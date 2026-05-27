@@ -51,6 +51,12 @@ class _FakeConnection:
     def cursor(self) -> _FakeCursor:
         return _FakeCursor(self._db)
 
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
     def __enter__(self) -> "_FakeConnection":
         return self
 

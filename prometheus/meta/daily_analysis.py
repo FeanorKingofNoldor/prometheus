@@ -302,6 +302,7 @@ def _persist_feedback_insights(
                         int(lookback_days),
                     ),
                 )
+        conn.commit()
     return len(insights)
 
 
@@ -340,6 +341,7 @@ def _persist_signal_validations(
                     ),
                 )
                 rows += 1
+        conn.commit()
     return rows
 
 
@@ -462,6 +464,7 @@ def _persist_weekly_report(
                         Json(report_dict), markdown,
                     ),
                 )
+        conn.commit()
     return 1
 
 
@@ -497,6 +500,7 @@ def _persist_diagnostic_report(
                     n_runs, Json(report_dict),
                 ),
             )
+        conn.commit()
     return 1
 
 

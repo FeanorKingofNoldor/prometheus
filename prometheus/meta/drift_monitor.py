@@ -310,6 +310,7 @@ def _persist(db: DatabaseManager, row: DriftRow) -> None:
                     Json(row.metadata) if row.metadata else None,
                 ),
             )
+        conn.commit()
 
 
 def _latest_backtest_metrics(
