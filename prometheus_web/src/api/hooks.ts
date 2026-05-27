@@ -13,9 +13,6 @@ export const useOverview = () =>
 export const usePipelines = () =>
   useQuery({ queryKey: ["status", "pipelines"], queryFn: () => api.get("/status/pipelines"), refetchInterval: 30_000 });
 
-export const usePipeline = (marketId: string) =>
-  useQuery({ queryKey: ["status", "pipeline", marketId], queryFn: () => api.get(`/status/pipeline?market_id=${marketId}`), enabled: !!marketId });
-
 export const useRegime = () =>
   useQuery({ queryKey: ["status", "regime"], queryFn: () => api.get("/status/regime"), refetchInterval: 30_000 });
 
@@ -60,26 +57,11 @@ export const useRiskDampener = (portfolioId: string, strategyId: string = "US_EQ
     refetchInterval: 5 * 60_000,
   });
 
-export const useFragilityList = () =>
-  useQuery({ queryKey: ["status", "fragility"], queryFn: () => api.get("/status/fragility") });
-
-export const useFragilityDetail = (entityId: string) =>
-  useQuery({ queryKey: ["status", "fragility", entityId], queryFn: () => api.get(`/status/fragility/${entityId}`), enabled: !!entityId });
-
-export const useAssessment = (strategyId = DEFAULT_STRATEGY) =>
-  useQuery({ queryKey: ["status", "assessment", strategyId], queryFn: () => api.get(`/status/assessment?strategy_id=${strategyId}`) });
-
-export const useUniverse = (strategyId = DEFAULT_STRATEGY) =>
-  useQuery({ queryKey: ["status", "universe", strategyId], queryFn: () => api.get(`/status/universe?strategy_id=${strategyId}`) });
-
 export const usePortfolios = () =>
   useQuery({ queryKey: ["status", "portfolios"], queryFn: () => api.get("/status/portfolios"), refetchInterval: 30_000 });
 
 export const usePortfolio = (portfolioId = DEFAULT_PORTFOLIO) =>
   useQuery({ queryKey: ["status", "portfolio", portfolioId], queryFn: () => api.get(`/status/portfolio?portfolio_id=${portfolioId}`), refetchInterval: 30_000 });
-
-export const usePortfolioRisk = (portfolioId = DEFAULT_PORTFOLIO) =>
-  useQuery({ queryKey: ["status", "portfolio_risk", portfolioId], queryFn: () => api.get(`/status/portfolio_risk?portfolio_id=${portfolioId}`) });
 
 export const useExecution = (portfolioId = DEFAULT_PORTFOLIO) =>
   useQuery({ queryKey: ["status", "execution", portfolioId], queryFn: () => api.get(`/status/execution?portfolio_id=${portfolioId}`), refetchInterval: 30_000 });
@@ -109,9 +91,6 @@ export const useOptionsCampaigns = () =>
 
 export const useOptionsCampaignSummary = (id: string) =>
   useQuery({ queryKey: ["options", "campaigns", id, "summary"], queryFn: () => api.get(`/options/campaigns/${id}/summary`), enabled: !!id });
-
-export const useOptionsCampaignDistribution = (id: string) =>
-  useQuery({ queryKey: ["options", "campaigns", id, "distribution"], queryFn: () => api.get(`/options/campaigns/${id}/distribution`), enabled: !!id });
 
 // ── Backtests ───────────────────────────────────────────
 export const useBacktestRuns = () =>
@@ -148,11 +127,6 @@ export const useApplyConfig = () => {
   });
 };
 
-export const useScheduleDag = () =>
-  useMutation({ mutationFn: (params: Record<string, unknown>) => api.post("/control/schedule_dag", params) });
-
-export const useCreateSynthetic = () =>
-  useMutation({ mutationFn: (params: Record<string, unknown>) => api.post("/control/create_synthetic_dataset", params) });
 type SyncDataParams = {
   sources?: string[];
   portfolioId?: string;
@@ -257,33 +231,6 @@ export const useRevertChange = () => {
   });
 };
 
-// ── Entities ────────────────────────────────────────────
-export const useEntityTypes = () =>
-  useQuery({ queryKey: ["entities", "types"], queryFn: () => api.get("/entities/types") });
-
-export const useEntitySectors = (issuerType?: string) =>
-  useQuery({ queryKey: ["entities", "sectors", issuerType], queryFn: () => api.get(`/entities/sectors${issuerType ? `?issuer_type=${issuerType}` : ""}`) });
-
-export const useEntityCountries = () =>
-  useQuery({ queryKey: ["entities", "countries"], queryFn: () => api.get("/entities/countries") });
-
-export const useEntities = (params?: string) =>
-  useQuery({ queryKey: ["entities", "list", params], queryFn: () => api.get(`/entities${params ? `?${params}` : ""}`) });
-
-export const useEntityDetail = (id: string) =>
-  useQuery({ queryKey: ["entities", id], queryFn: () => api.get(`/entities/${id}`), enabled: !!id });
-
-export const useCompareEntityPrices = (ids: string[], days = 365, metric = "close") =>
-  useQuery({
-    queryKey: ["entities", "compare_prices", ids.join(","), days, metric],
-    queryFn: () => api.get(`/entities/compare_prices?ids=${ids.join(",")}&days=${days}&metric=${metric}`),
-    enabled: ids.length > 0,
-    staleTime: 60_000,
-  });
-
-export const useEntityProfiles = (id: string) =>
-  useQuery({ queryKey: ["entities", id, "profiles"], queryFn: () => api.get(`/entities/${id}/profiles`), enabled: !!id });
-
 // ── Meta ────────────────────────────────────────────────
 export const useConfigs = () =>
   useQuery({ queryKey: ["meta", "configs"], queryFn: () => api.get("/meta/configs") });
@@ -298,15 +245,8 @@ export const useEngineParameters = () =>
 export const usePerformance = (engineName = "regime") =>
   useQuery({ queryKey: ["meta", "performance", engineName], queryFn: () => api.get(`/meta/performance?engine_name=${engineName}`) });
 
-export const usePolicy = (marketId: string) =>
-  useQuery({ queryKey: ["meta", "policy", marketId], queryFn: () => api.get(`/meta/policy/${marketId}`), enabled: !!marketId });
-
 export const usePolicyDecisions = (marketId = DEFAULT_MARKET) =>
   useQuery({ queryKey: ["meta", "policy_decisions", marketId], queryFn: () => api.get(`/meta/policy/decisions?market_id=${marketId}`) });
-
-// ── Market Overview ──────────────────────────────────────
-export const useMarketOverview = () =>
-  useQuery({ queryKey: ["status", "market_overview"], queryFn: () => api.get("/status/market_overview"), staleTime: 60_000 });
 
 // ── Portfolio Equity ─────────────────────────────────────
 export const usePortfolioEquity = (portfolioId: string, benchmark = "SPY.US") =>
@@ -359,155 +299,15 @@ export const useSetLlmConfig = () => {
   });
 };
 
-export const useLlmHealth = () =>
-  useQuery({ queryKey: ["iris", "llm_health"], queryFn: () => api.get("/iris/llm/health"), enabled: false });
-
 // ── Nation ───────────────────────────────────────────────
 // Geo data changes infrequently — cache aggressively (5 min stale, 10 min GC).
 const GEO_STALE = 5 * 60_000;
 const GEO_GC    = 10 * 60_000;
 
-export const useNationList = () =>
-  useQuery({ queryKey: ["nation", "list"], queryFn: () => api.get("/nation/list"), staleTime: GEO_STALE, gcTime: GEO_GC });
-
-export const useNationMapSummary = () =>
-  useQuery({ queryKey: ["nation", "map-summary"], queryFn: () => api.get("/nation/map-summary"), staleTime: GEO_STALE, gcTime: GEO_GC });
-
-export const useNationScores = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "scores"], queryFn: () => api.get(`/nation/${nation}/scores`), enabled: !!nation });
-
-export const useNationScoreHistory = (nation: string, days = 90) =>
-  useQuery({ queryKey: ["nation", nation, "scores_history", days], queryFn: () => api.get(`/nation/${nation}/scores/history?days=${days}`), enabled: !!nation });
-
-export const useNationIndicators = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "indicators"], queryFn: () => api.get(`/nation/${nation}/indicators`), enabled: !!nation });
-
-export const useNationPersons = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "persons"], queryFn: () => api.get(`/nation/${nation}/persons`), enabled: !!nation });
-
-// ── Nation Industries ────────────────────────────────────
-export const useNationIndustries = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "industries"], queryFn: () => api.get(`/nation/${nation}/industries`), enabled: !!nation, staleTime: GEO_STALE, gcTime: GEO_GC });
-
-export const useNationIndustryHealth = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "industry-health"], queryFn: () => api.get(`/nation/${nation}/industry-health`), enabled: !!nation });
-
-// ── Conflicts ────────────────────────────────────────────
-export const useConflicts = () =>
-  useQuery({ queryKey: ["nation", "conflicts"], queryFn: () => api.get("/nation/conflicts"), staleTime: GEO_STALE, gcTime: GEO_GC });
-
-export const useNationConflicts = (nation: string) =>
-  useQuery({ queryKey: ["nation", nation, "conflicts"], queryFn: () => api.get(`/nation/${nation}/conflicts`), enabled: !!nation, staleTime: GEO_STALE, gcTime: GEO_GC });
-
-// ── Geo Overlays ────────────────────────────────────────
-export const useChokepoints = () =>
-  useQuery({ queryKey: ["nation", "chokepoints"], queryFn: () => api.get("/nation/chokepoints"), staleTime: GEO_STALE, gcTime: GEO_GC });
-
-export const useTradeRoutes = (category?: string) =>
-  useQuery({
-    queryKey: ["nation", "trade-routes", category],
-    queryFn: () => api.get(`/nation/trade-routes${category ? `?category=${category}` : ""}`),
-    staleTime: GEO_STALE,
-    gcTime: GEO_GC,
-  });
-
-export const usePorts = (portType?: string) =>
-  useQuery({
-    queryKey: ["nation", "ports", portType],
-    queryFn: () => api.get(`/nation/ports${portType ? `?port_type=${portType}` : ""}`),
-    staleTime: GEO_STALE,
-    gcTime: GEO_GC,
-  });
-
-export const useResourceInfo = (resource?: string) =>
-  useQuery({
-    queryKey: ["nation", "resource-info", resource],
-    queryFn: () => api.get(`/nation/resource-info${resource ? `?resource=${resource}` : ""}`),
-    staleTime: GEO_STALE,
-    gcTime: GEO_GC,
-  });
-
-export const useNationInfo = (nation?: string) =>
-  useQuery({
-    queryKey: ["nation", "info", nation],
-    queryFn: () => api.get(`/nation/info${nation ? `?nation=${nation}` : ""}`),
-    staleTime: GEO_STALE,
-    gcTime: GEO_GC,
-  });
-
 // ── Live Tracking (vessels + flights) ─────────────────────
 // Shorter poll intervals for real-time data.
 const TRACKING_STALE = 15_000;  // 15s
 const TRACKING_GC    = 30_000;  // 30s
-
-export const useVessels = (category?: string) =>
-  useQuery({
-    queryKey: ["nation", "vessels", category],
-    queryFn: () => api.get(`/nation/vessels${category ? `?category=${category}` : ""}`),
-    refetchInterval: 30_000,
-    staleTime: TRACKING_STALE,
-    gcTime: TRACKING_GC,
-  });
-
-export const useFlights = (category?: string) =>
-  useQuery({
-    queryKey: ["nation", "flights", category],
-    queryFn: () => api.get(`/nation/flights${category ? `?category=${category}` : ""}`),
-    refetchInterval: 15_000,
-    staleTime: TRACKING_STALE,
-    gcTime: TRACKING_GC,
-  });
-
-export const useVesselCount = () =>
-  useQuery({
-    queryKey: ["nation", "vessels", "count"],
-    queryFn: () => api.get("/nation/vessels/count"),
-    refetchInterval: 30_000,
-    staleTime: TRACKING_STALE,
-  });
-
-export const useFlightCount = () =>
-  useQuery({
-    queryKey: ["nation", "flights", "count"],
-    queryFn: () => api.get("/nation/flights/count"),
-    refetchInterval: 15_000,
-    staleTime: TRACKING_STALE,
-  });
-
-export const useNavalDeployments = (category?: string, nation?: string) =>
-  useQuery({
-    queryKey: ["nation", "naval-deployments", category, nation],
-    queryFn: () => {
-      const params = new URLSearchParams();
-      if (category) params.set("category", category);
-      if (nation) params.set("nation", nation);
-      const qs = params.toString();
-      return api.get(`/nation/naval-deployments${qs ? `?${qs}` : ""}`);
-    },
-    staleTime: 5 * 60_000, // 5 min — data changes weekly
-    gcTime: 10 * 60_000,
-  });
-
-export const useResources = (nation?: string, resource?: string) =>
-  useQuery({
-    queryKey: ["nation", "resources", nation, resource],
-    queryFn: () => {
-      const params = new URLSearchParams();
-      if (nation) params.set("nation", nation);
-      if (resource) params.set("resource", resource);
-      const qs = params.toString();
-      return api.get(`/nation/resources${qs ? `?${qs}` : ""}`);
-    },
-    staleTime: GEO_STALE,
-    gcTime: GEO_GC,
-  });
-
-// ── Geo ─────────────────────────────────────────────────
-export const useCountries = () =>
-  useQuery({ queryKey: ["geo", "countries"], queryFn: () => api.get("/geo/countries") });
-
-export const useCountry = (code: string) =>
-  useQuery({ queryKey: ["geo", "country", code], queryFn: () => api.get(`/geo/country/${code}`), enabled: !!code });
 
 // ── Logs ────────────────────────────────────────────────
 export const useSystemLogs = (params?: { level?: string; category?: string; search?: string; limit?: number }) =>
@@ -652,58 +452,6 @@ export const useIntelBriefs = (params?: {
     },
     refetchInterval: 60_000,
   });
-
-export const useIntelBrief = (id: string) =>
-  useQuery({ queryKey: ["intel", "briefs", id], queryFn: () => api.get(`/intel/briefs/${id}`), enabled: !!id });
-
-export const useFlashAlerts = (limit = 20) =>
-  useQuery({
-    queryKey: ["intel", "flash-alerts", limit],
-    queryFn: () => api.get(`/intel/briefs/flash-alerts?limit=${limit}`),
-    refetchInterval: 30_000,
-  });
-
-export const useIntelUnreadCount = () =>
-  useQuery({
-    queryKey: ["intel", "unread-count"],
-    queryFn: () => api.get("/intel/briefs/unread-count"),
-    refetchInterval: 30_000,
-  });
-
-export const useMarkBriefRead = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api.post(`/intel/briefs/${id}/read`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["intel", "briefs"] });
-      qc.invalidateQueries({ queryKey: ["intel", "unread-count"] });
-    },
-  });
-};
-
-export const useGenerateSitrep = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post("/intel/generate/sitrep"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["intel"] }),
-  });
-};
-
-export const useGenerateFlashCheck = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post("/intel/generate/flash-check"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["intel"] }),
-  });
-};
-
-export const useGenerateWeekly = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post("/intel/generate/weekly"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["intel"] }),
-  });
-};
 
 export const useIntelJob = (jobId: string | null) =>
   useQuery({
