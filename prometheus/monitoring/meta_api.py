@@ -7,6 +7,7 @@ This module provides:
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -192,32 +193,126 @@ class MetaPolicyDecisionResponse(BaseModel):
 # ============================================================================
 
 
+# Iris lives in apatheon (the intelligence layer) — Prometheus and Cassandra
+# proxy through to apatheon.api.chat so there is exactly one Iris brain with
+# one tool registry across all three projects. The proxy injects a small
+# "calling_project" context so Phase 2 tools that query Prometheus data
+# (positions, decisions, drift) know which service to call back.
+_APATHEON_BASE = os.environ.get("APATHEON_API_URL", "http://127.0.0.1:8100")
+
+
+def _project_context() -> Dict[str, Any]:
+    """Cross-project context injected into every Iris request from here."""
+    portfolio_id = os.environ.get("PROMETHEUS_PRIMARY_PORTFOLIO", "IBKR_PAPER")
+    return {
+        "calling_project": "prometheus",
+        "prometheus_api_url": "http://127.0.0.1:8200",
+        "portfolio_id": portfolio_id,
+    }
+
+
 @iris_router.post("/chat", response_model=IrisResponse)
-def iris_chat(request: IrisRequest = Body(...)) -> IrisResponse:
-    """Interact with Iris meta-orchestrator.
+async def iris_chat(request: IrisRequest = Body(...)) -> IrisResponse:
+    """Non-streaming Iris chat — proxy to apatheon's /api/chat.
 
-    Iris can explain system behavior, propose experiments, and analyze
-    engine performance. It cannot directly execute changes - all actions
-    require explicit approval via the Control API.
+    Kept for clients that don't want SSE. For the rich multi-tool
+    streaming experience use ``/api/iris/chat/stream`` instead.
     """
-    from prometheus.monitoring.iris_service import iris_chat as _iris_chat
+    import httpx
 
-    history = request.context.get("history", []) if request.context else []
+    history = (
+        request.context.get("history", []) if request.context else []
+    )
+    merged_context = {**(request.context or {}), **_project_context()}
+    payload = {
+        "question": request.question,
+        "context": merged_context,
+        "history": history,
+    }
 
     try:
-        result = _iris_chat(question=request.question, history=history)
-        return IrisResponse(
-            answer=result["answer"],
-            proposals=[IrisProposal(**p) for p in result.get("proposals", [])],
-            sources=result.get("sources", []),
-        )
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"{_APATHEON_BASE}/api/chat", json=payload)
+            r.raise_for_status()
+            body = r.json()
     except Exception as exc:
-        logger.exception("[iris] Chat failed: %s", exc)
+        logger.exception("[iris] proxy to apatheon failed: %s", exc)
         return IrisResponse(
-            answer=f"Iris encountered an error: {exc}. Check LLM configuration in Settings.",
+            answer=f"Iris is unreachable: {exc}. Check apatheon-api status.",
             proposals=[],
             sources=[],
         )
+
+    # apatheon's ChatResponse → IrisResponse shape mapping
+    return IrisResponse(
+        answer=str(body.get("answer", "")),
+        proposals=[
+            IrisProposal(**p) for p in body.get("proposals", [])
+            if isinstance(p, dict) and "proposal_id" in p
+        ],
+        sources=[
+            str(s) for s in body.get("sources", []) if s
+        ],
+    )
+
+
+@iris_router.post("/chat/stream")
+async def iris_chat_stream(request: IrisRequest = Body(...)):
+    """SSE stream proxy from prometheus → apatheon.
+
+    Forwards the request to apatheon's /api/chat/stream and re-streams
+    the SSE events verbatim. The browser sees the same events apatheon
+    natively emits: thinking, tool_call_start, tool_call_result, done,
+    error. No transformation — Iris is the source of truth.
+    """
+    import httpx
+    from fastapi.responses import StreamingResponse
+
+    history = (
+        request.context.get("history", []) if request.context else []
+    )
+    merged_context = {**(request.context or {}), **_project_context()}
+    payload = {
+        "question": request.question,
+        "context": merged_context,
+        "history": history,
+    }
+
+    async def _gen():
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as client:
+                async with client.stream(
+                    "POST",
+                    f"{_APATHEON_BASE}/api/chat/stream",
+                    json=payload,
+                ) as upstream:
+                    if upstream.status_code != 200:
+                        body = await upstream.aread()
+                        yield (
+                            f"data: {{\"type\": \"error\", \"message\": "
+                            f"\"apatheon returned {upstream.status_code}: "
+                            f"{body.decode('utf-8', errors='replace')[:200]}\"}}\n\n"
+                        )
+                        return
+                    async for chunk in upstream.aiter_raw():
+                        if chunk:
+                            yield chunk
+        except Exception as exc:
+            logger.exception("[iris] SSE proxy failed: %s", exc)
+            yield (
+                f"data: {{\"type\": \"error\", \"message\": "
+                f"\"Iris proxy failed: {str(exc)[:200]}\"}}\n\n"
+            )
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ============================================================================
