@@ -191,7 +191,7 @@ export default function IrisOverlay() {
   const fab = !iris.isOpen ? (
     <button
       onClick={handleFab}
-      className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-accent text-zinc-950 shadow-lg shadow-accent/20 transition-all hover:scale-105 hover:shadow-xl hover:shadow-accent/30"
+      className="fixed bottom-6 right-12 z-[80] flex h-12 w-12 items-center justify-center rounded-full bg-accent text-zinc-950 shadow-lg shadow-accent/20 transition-all hover:scale-105 hover:shadow-xl hover:shadow-accent/30"
       title="Open Iris (Ctrl+I)"
       aria-label="Open Iris"
     >
