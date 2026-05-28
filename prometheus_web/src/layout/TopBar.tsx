@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { Brain, RefreshCw } from "lucide-react";
 import { useOverview, useSyncData, useIbkrStatus } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConnectionLed } from "../components/ConnectionLed";
 import { NotificationsBell } from "../components/NotificationsBell";
+import { useOptionalIris } from "../context/IrisContext";
 import { usePortfolioContext } from "../context/PortfolioContext";
 
 interface SyncResult {
@@ -56,6 +57,7 @@ export function TopBar() {
   const { data: overview } = useOverview();
   const ov = overview as Record<string, unknown> | undefined;
   const sync = useSyncData();
+  const iris = useOptionalIris();
   const { data: ibkrRaw, isLoading: ibkrLoading } = useIbkrStatus();
   const ibkr = ibkrRaw as { status: string; mode: string; account: string; endpoints: { label: string; port: number; reachable: boolean; latency_ms?: number; error?: string }[] } | undefined;
   const [syncDetail, setSyncDetail] = useState<string | null>(null);
@@ -191,6 +193,17 @@ export function TopBar() {
           <span className="text-[10px] text-negative" title={String(sync.error)}>
             Sync failed
           </span>
+        )}
+        {iris && (
+          <button
+            onClick={iris.toggle}
+            className="flex h-7 items-center gap-1.5 rounded border border-border-dim bg-accent/10 px-2 text-[10px] font-semibold uppercase tracking-wider text-accent transition-colors hover:bg-accent/20 hover:border-accent"
+            title="Open Iris (Ctrl+I)"
+            aria-label="Open Iris"
+          >
+            <Brain size={13} />
+            Iris
+          </button>
         )}
         <NotificationsBell />
         <span className="tabular-nums">{now.toLocaleTimeString()}</span>
