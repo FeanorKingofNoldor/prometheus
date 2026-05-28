@@ -17,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
-
-from prometheus.orchestration.clock import now_local
 from typing import IO, Optional
 
 from apatheon.core.logging import get_logger
@@ -36,6 +34,7 @@ from prometheus.monitoring.meta_api import iris_router, meta_router
 from prometheus.monitoring.operations_api import router as operations_router
 from prometheus.monitoring.options_api import router as options_router
 from prometheus.monitoring.visualization_api import router as viz_router
+from prometheus.orchestration.clock import now_local
 
 logger = get_logger(__name__)
 
@@ -153,9 +152,8 @@ async def health_check() -> dict:
     """
     from datetime import timedelta
 
-    from fastapi import HTTPException
-
     from apatheon.core.database import get_db_manager
+    from fastapi import HTTPException
 
     from prometheus.orchestration.clock import now_utc
 
@@ -495,8 +493,36 @@ _STATIC_DIR = os.path.join(
     "static",
 )
 if os.path.isdir(_STATIC_DIR) and os.path.isfile(os.path.join(_STATIC_DIR, "index.html")):
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="app")
-    logger.info("Static SPA mounted from %s", _STATIC_DIR)
+    # Mount /assets separately for hash-named bundle files. Anything outside
+    # /assets that's not an API route is a React-Router path (/portfolio,
+    # /iris, /drift, …) and must fall back to index.html so client-side
+    # routing can take over. `StaticFiles(html=True)` only serves index for
+    # the root path, not arbitrary deep links — hence the explicit catch-all
+    # below.
+    _ASSETS_DIR = os.path.join(_STATIC_DIR, "assets")
+    if os.path.isdir(_ASSETS_DIR):
+        app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        # API routes already matched earlier in registration; anything that
+        # reaches here is either a static file at the repo root (favicon,
+        # vite.svg, etc.) or a React-Router path.
+        if full_path.startswith("api/") or full_path == "health":
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        candidate = os.path.join(_STATIC_DIR, full_path)
+        if (
+            full_path
+            and os.path.isfile(candidate)
+            and os.path.commonpath([_STATIC_DIR, os.path.abspath(candidate)]) == _STATIC_DIR
+        ):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
+
+    logger.info("Static SPA mounted from %s (with SPA fallback)", _STATIC_DIR)
 else:
     logger.warning(
         "Static SPA not mounted — %s missing index.html. Run "
