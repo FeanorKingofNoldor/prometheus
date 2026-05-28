@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import IrisOverlay from "../components/IrisOverlay";
 
 export function Layout() {
   return (
@@ -12,6 +13,9 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+      {/* Iris drawer + brain FAB — overlays the whole app, persists state
+          across route changes via IrisProvider in App.tsx. */}
+      <IrisOverlay />
     </div>
   );
 }

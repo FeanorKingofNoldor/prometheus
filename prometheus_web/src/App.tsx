@@ -1,6 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 import { Layout } from "./layout/Layout";
 import { PortfolioProvider } from "./context/PortfolioContext";
+import { IrisProvider } from "./context/IrisContext";
 import Dashboard from "./pages/Dashboard";
 import Portfolio from "./pages/Portfolio";
 import Backtests from "./pages/Backtests";
@@ -21,6 +22,7 @@ import Diagnostics from "./pages/Diagnostics";
 export default function App() {
   return (
     <PortfolioProvider>
+    <IrisProvider>
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
@@ -41,6 +43,7 @@ export default function App() {
         <Route path="diagnostics" element={<Diagnostics />} />
       </Route>
     </Routes>
+    </IrisProvider>
     </PortfolioProvider>
   );
 }
