@@ -24,3 +24,23 @@ Chronology and verdicts:
 Caveats throughout: r=0 (no collateral yield — understates wheel), VIX-proxied flat IV
 surface (no skew), survivorship-biased universe in dip variants, European exercise.
 Adopted spec: see configs/ + the wheel book implementation (task: core+wheel cutover).
+
+## Shotgun round 2 (2026-08-02 evening)
+6. `ballast_sim.py`: bonds/gold/T-bills on the wheel — VALIDATED, the round's best result.
+   All 7 mixes improve Sharpe at both IV factors. Best balance W60/TLT20/GLD20
+   (Sharpe 1.00-1.12, DD -22%); light W80/TLT10/GLD10 keeps CAGR. Structural:
+   bonds hedge growth crashes (GFC corr -0.45) NOT inflation (2022: TLT -31%,
+   corr flipped positive); GOLD covered 2022 (-0.8%). Classic SPY 60/40 worse
+   than every wheel mix.
+7. `shotgun_trend.py`: Faber 200d SMA (Sharpe 0.72 vs 0.55, half the DD, all
+   crisis-era alpha, worst-ever whipsaw 2022 -24%); DUALMOM top-2 EW the only
+   variant beating SPY full-window AND 2020-2026 (0.73/0.89) — diversification
+   not selection; VOLTARGET Sharpe-positive but -3pp CAGR, late in 2008-style grinds.
+8. `shotgun_xs.py`: sector momentum DEAD post-2009 (clean-data negative);
+   trend-filtered variant = cheap crash control, no alpha; LOWVOL and
+   EQUALWEIGHT "wins" are survivorship-inflated (NVDA-in-1999-top-100 ranking
+   artifact documented) — magnitudes untrustworthy without delisting-complete data.
+
+ADOPTED SPEC after both rounds: VIXCOND wheel 60-80% + TLT 10-20% + GLD 10-20%,
+quarterly rebalance. Backfilled TLT/IEF/SHY/BIL/IWM/EFA/EEM 2002+ into prices_daily
+(EODHD) as part of this round.

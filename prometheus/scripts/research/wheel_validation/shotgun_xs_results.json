@@ -1,0 +1,482 @@
+{
+ "meta": {
+  "generated": "2026-08-02",
+  "cost_bps_on_traded_notional": 10.0,
+  "execution": "signal close[t] (period-end), trade close[t+1], new weights earn from t+2; cash earns 0",
+  "turnover_convention": "annual one-way = sum(|dw|)/2 per year",
+  "universe": "top 300 stocks by 1999 avg close*volume (>=100 days, '%.US', ETFs blacklisted); EQUALWEIGHT uses the top 100",
+  "n_stocks_usable": 300,
+  "n_stocks_truncated_before_end": 62,
+  "data_hygiene": {
+   "rows_trimmed": 35536,
+   "instruments_trimmed": [
+    "ACS.US",
+    "APC.US",
+    "AVP.US",
+    "BKNG.US",
+    "BRCM.US",
+    "CMCSK.US",
+    "CVC.US",
+    "DD.US",
+    "DHR.US",
+    "DXC.US",
+    "ESRX.US",
+    "JCI.US",
+    "JWN.US",
+    "KLAC.US",
+    "KSU.US",
+    "LEH.US",
+    "LLTC.US",
+    "LVLT.US",
+    "LXK.US",
+    "MER.US",
+    "MWW.US",
+    "NBL.US",
+    "RAL_old.US",
+    "RHT.US",
+    "ROH.US",
+    "RTN.US",
+    "SNDK_old.US",
+    "SOV.US",
+    "SPLS.US",
+    "SPLS_old.US",
+    "TWX.US",
+    "WMB.US",
+    "XLP.US",
+    "XLU.US",
+    "YHOO.US"
+   ],
+   "instruments_dropped": [],
+   "rules": "longest clean segment; breaks = gap>45cd, any |ln adj_ret|>ln3, or adj-vs-raw return disagreement >1.5x with adj move >1.5x (verbatim dip_wheel_sim.py)"
+  },
+  "caveats": [
+   "volume in DB is split-adjusted, close raw -> 1999 ADV ranking tilts to future splitters",
+   "delisted/truncated names held flat at last price until next rebalance drops them",
+   "SECTORMOM_TREND: 200d SMA unavailable before ~1999-10 counts as pass",
+   "r=0 on cash understates SECTORMOM_TREND in high-rate eras",
+   "worst_year entries flagged partial_year=true cover only part of that calendar year"
+  ]
+ },
+ "strategies": {
+  "SECTORMOM": {
+   "survivorship": "clean (real ETF history from launch; no survivorship)",
+   "windows": {
+    "FULL": {
+     "total_return": 5.381557696522966,
+     "cagr": 0.07083099632716983,
+     "sharpe": 0.45216782485976154,
+     "max_dd": -0.4668349323606802,
+     "years": 27.08,
+     "ann_turnover_oneway": 3.172997654474947,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.29697677048963944,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 7.660645035632427,
+      "cagr": 0.0829736646792738,
+      "sharpe": 0.5113347426623672,
+      "max_dd": -0.5518908920130348,
+      "years": 27.08,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982837,
+       "partial_year": false
+      }
+     }
+    },
+    "1999-2009": {
+     "total_return": 0.6310452809247029,
+     "cagr": 0.04768383531829623,
+     "sharpe": 0.3274136653047685,
+     "max_dd": -0.4668349323606802,
+     "years": 10.5,
+     "ann_turnover_oneway": 2.530464352368025,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.29697677048963944,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": -0.03333808664239013,
+      "cagr": -0.0032232450860008033,
+      "sharpe": 0.0961743752113934,
+      "max_dd": -0.5518908920130348,
+      "years": 10.5,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982837,
+       "partial_year": false
+      }
+     }
+    },
+    "2010-2019": {
+     "total_return": 1.3082775115446874,
+     "cagr": 0.08736065768996193,
+     "sharpe": 0.5900008862035152,
+     "max_dd": -0.20128662157861532,
+     "years": 9.99,
+     "ann_turnover_oneway": 3.4562586460666,
+     "worst_year": {
+      "year": 2015,
+      "return": -0.13156137428058068,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 2.4687525797755034,
+      "cagr": 0.13261932027114143,
+      "sharpe": 0.9220580741365595,
+      "max_dd": -0.19348877118294472,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2018,
+       "return": -0.04569215612309796,
+       "partial_year": false
+      }
+     }
+    },
+    "2020-2026": {
+     "total_return": 0.652132940551412,
+     "cagr": 0.0793345814113986,
+     "sharpe": 0.4779142940362337,
+     "max_dd": -0.3312466133889449,
+     "years": 6.58,
+     "ann_turnover_oneway": 3.7730815971294804,
+     "worst_year": {
+      "year": 2022,
+      "return": -0.03400560514466233,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 1.5162624191257903,
+      "cagr": 0.1506394519493286,
+      "sharpe": 0.7972242234831939,
+      "max_dd": -0.3371739022860678,
+      "years": 6.58,
+      "worst_year": {
+       "year": 2022,
+       "return": -0.18175238035719854,
+       "partial_year": false
+      }
+     }
+    }
+   }
+  },
+  "SECTORMOM_TREND": {
+   "survivorship": "clean (real ETF history from launch; no survivorship)",
+   "windows": {
+    "FULL": {
+     "total_return": 3.6164220450043114,
+     "cagr": 0.058104760293515634,
+     "sharpe": 0.4331714712612527,
+     "max_dd": -0.24789773037776697,
+     "years": 27.08,
+     "ann_turnover_oneway": 3.2380268241479406,
+     "worst_year": {
+      "year": 2015,
+      "return": -0.17467961838110413,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 7.660645035632427,
+      "cagr": 0.0829736646792738,
+      "sharpe": 0.5113347426623672,
+      "max_dd": -0.5518908920130348,
+      "years": 27.08,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982837,
+       "partial_year": false
+      }
+     }
+    },
+    "1999-2009": {
+     "total_return": 0.8117086716429123,
+     "cagr": 0.05821578971645236,
+     "sharpe": 0.43548457577046445,
+     "max_dd": -0.24789773037776697,
+     "years": 10.5,
+     "ann_turnover_oneway": 2.581226100840855,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.13643898993133619,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": -0.03333808664239013,
+      "cagr": -0.0032232450860008033,
+      "sharpe": 0.0961743752113934,
+      "max_dd": -0.5518908920130348,
+      "years": 10.5,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982837,
+       "partial_year": false
+      }
+     }
+    },
+    "2010-2019": {
+     "total_return": 0.674293511806126,
+     "cagr": 0.05295732520417218,
+     "sharpe": 0.4064101149056869,
+     "max_dd": -0.2275135257578711,
+     "years": 9.99,
+     "ann_turnover_oneway": 3.6520580766180464,
+     "worst_year": {
+      "year": 2015,
+      "return": -0.17467961838110413,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 2.4687525797755034,
+      "cagr": 0.13261932027114143,
+      "sharpe": 0.9220580741365595,
+      "max_dd": -0.19348877118294472,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2018,
+       "return": -0.04569215612309796,
+       "partial_year": false
+      }
+     }
+    },
+    "2020-2026": {
+     "total_return": 0.4833986440107596,
+     "cagr": 0.06179727619556763,
+     "sharpe": 0.44554802040136776,
+     "max_dd": -0.1973413771044259,
+     "years": 6.58,
+     "ann_turnover_oneway": 3.6624364975202037,
+     "worst_year": {
+      "year": 2022,
+      "return": -0.09625336831549758,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 1.5162624191257903,
+      "cagr": 0.1506394519493286,
+      "sharpe": 0.7972242234831939,
+      "max_dd": -0.3371739022860678,
+      "years": 6.58,
+      "worst_year": {
+       "year": 2022,
+       "return": -0.18175238035719854,
+       "partial_year": false
+      }
+     }
+    }
+   }
+  },
+  "LOWVOL": {
+   "survivorship": "SURVIVORSHIP-INFLATED: universe is today's-survivors backfilled; delisted low-vol blowups (utilities/financials that died) are absent, and the DD/vol profile of a real-time universe would be worse",
+   "windows": {
+    "FULL": {
+     "total_return": 13.188761770337429,
+     "cagr": 0.10496682819124392,
+     "sharpe": 0.7989259968609298,
+     "max_dd": -0.36021702590123383,
+     "years": 26.57,
+     "ann_turnover_oneway": 0.7967150951893008,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.17081630407476767,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 7.176477863649847,
+      "cagr": 0.08228368460396718,
+      "sharpe": 0.5072952216645077,
+      "max_dd": -0.5518908920130348,
+      "years": 26.57,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982826,
+       "partial_year": false
+      }
+     }
+    },
+    "2000-2009": {
+     "total_return": 1.4118778733732054,
+     "cagr": 0.09209827229944789,
+     "sharpe": 0.6812793576411827,
+     "max_dd": -0.33112658112092996,
+     "years": 9.99,
+     "ann_turnover_oneway": 0.7772651620065238,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.17081630407476767,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": -0.08737863015018066,
+      "cagr": -0.009107951078847432,
+      "sharpe": 0.07109196419014413,
+      "max_dd": -0.5518908920130348,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982826,
+       "partial_year": false
+      }
+     }
+    },
+    "2010-2019": {
+     "total_return": 2.733577471790531,
+     "cagr": 0.14099329257234428,
+     "sharpe": 1.2921242686906635,
+     "max_dd": -0.11342730264449252,
+     "years": 9.99,
+     "ann_turnover_oneway": 0.731180155798274,
+     "worst_year": {
+      "year": 2018,
+      "return": 0.012415747246255604,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 2.468752579775504,
+      "cagr": 0.13261932027114143,
+      "sharpe": 0.9220580741365606,
+      "max_dd": -0.1934887711829446,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2018,
+       "return": -0.04569215612309807,
+       "partial_year": false
+      }
+     }
+    },
+    "2020-2026": {
+     "total_return": 0.5756227873453457,
+     "cagr": 0.07158035734777002,
+     "sharpe": 0.5071573744682494,
+     "max_dd": -0.36021702590123383,
+     "years": 6.58,
+     "ann_turnover_oneway": 0.9269530933601495,
+     "worst_year": {
+      "year": 2023,
+      "return": -0.01998479097122985,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 1.5162624191257907,
+      "cagr": 0.15063945194932882,
+      "sharpe": 0.7972242234831973,
+      "max_dd": -0.3371739022860678,
+      "years": 6.58,
+      "worst_year": {
+       "year": 2022,
+       "return": -0.18175238035719854,
+       "partial_year": false
+      }
+     }
+    }
+   }
+  },
+  "EQUALWEIGHT": {
+   "survivorship": "SURVIVORSHIP-INFLATED: basket = 1999's top-100 dollar-volume names that still exist in today's DB, further tilted to future splitters (split-adjusted volume x raw close ranking)",
+   "windows": {
+    "FULL": {
+     "total_return": 31.344105177791135,
+     "cagr": 0.1397658688277632,
+     "sharpe": 0.7430452876233673,
+     "max_dd": -0.49215625595582135,
+     "years": 26.57,
+     "ann_turnover_oneway": 0.36445323817830577,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.3219192538774208,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 7.176477863649847,
+      "cagr": 0.08228368460396718,
+      "sharpe": 0.5072952216645077,
+      "max_dd": -0.5518908920130348,
+      "years": 26.57,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982826,
+       "partial_year": false
+      }
+     }
+    },
+    "2000-2009": {
+     "total_return": 1.3892902824808417,
+     "cagr": 0.09107046704755595,
+     "sharpe": 0.4726738728582477,
+     "max_dd": -0.49215625595582135,
+     "years": 9.99,
+     "ann_turnover_oneway": 0.4770575219974741,
+     "worst_year": {
+      "year": 2008,
+      "return": -0.3219192538774208,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": -0.08737863015018066,
+      "cagr": -0.009107951078847432,
+      "sharpe": 0.07109196419014413,
+      "max_dd": -0.5518908920130348,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2008,
+       "return": -0.36794719036982826,
+       "partial_year": false
+      }
+     }
+    },
+    "2010-2019": {
+     "total_return": 3.873673852291165,
+     "cagr": 0.17184587871630863,
+     "sharpe": 1.12350467340959,
+     "max_dd": -0.18698454220121685,
+     "years": 9.99,
+     "ann_turnover_oneway": 0.26559525447344445,
+     "worst_year": {
+      "year": 2018,
+      "return": -0.017228240707477083,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 2.468752579775504,
+      "cagr": 0.13261932027114143,
+      "sharpe": 0.9220580741365606,
+      "max_dd": -0.1934887711829446,
+      "years": 9.99,
+      "worst_year": {
+       "year": 2018,
+       "return": -0.04569215612309807,
+       "partial_year": false
+      }
+     }
+    },
+    "2020-2026": {
+     "total_return": 1.7132369233884788,
+     "cagr": 0.1639021803820433,
+     "sharpe": 0.8768951676047723,
+     "max_dd": -0.33354642190542605,
+     "years": 6.58,
+     "ann_turnover_oneway": 0.3441369759047295,
+     "worst_year": {
+      "year": 2022,
+      "return": -0.09389210619833044,
+      "partial_year": false
+     },
+     "spy": {
+      "total_return": 1.5162624191257907,
+      "cagr": 0.15063945194932882,
+      "sharpe": 0.7972242234831973,
+      "max_dd": -0.3371739022860678,
+      "years": 6.58,
+      "worst_year": {
+       "year": 2022,
+       "return": -0.18175238035719854,
+       "partial_year": false
+      }
+     }
+    }
+   }
+  }
+ }
+}

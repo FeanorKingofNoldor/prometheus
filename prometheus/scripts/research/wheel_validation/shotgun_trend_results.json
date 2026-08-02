@@ -1,0 +1,514 @@
+{
+ "meta": {
+  "generated": "2026-08-02T21:32:04",
+  "data_source": "prometheus_historical.prices_daily (adjusted_close)",
+  "fill_model": "signal close t -> fill close t+1 (next-day-open proxy) -> earns from day t+2",
+  "costs": "5 bps * sum|dw| on tradeable legs; cash leg free; SPY->SHY switch = 10 bps",
+  "sharpe_rf": 0.0,
+  "notes": [
+   "SPY history in DB starts 1996-12-09 (not 1993); irrelevant for the 1998-01 windows.",
+   "GLD enters DUALMOM ranking only once it has a full 12-1 lookback (~2005-11).",
+   "First/last calendar years of a slice may be partial for worst_year.",
+   "pct_time_invested = mean risk-asset weight x 100 (SHY/cash = not invested)."
+  ]
+ },
+ "strategies": {
+  "FABER": {
+   "window": [
+    "1998-01-01",
+    "2026-07-31"
+   ],
+   "metrics": {
+    "full": {
+     "n_days": 7188,
+     "start": "1998-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 8.67,
+     "sharpe": 0.72,
+     "max_dd_pct": -29.16,
+     "trades": 39,
+     "pct_time_invested": 75.9,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -24.23
+     }
+    },
+    "era_to_2009": {
+     "n_days": 3019,
+     "start": "1998-01-02",
+     "end": "2009-12-31",
+     "cagr_pct": 8.73,
+     "sharpe": 0.73,
+     "max_dd_pct": -19.03,
+     "trades": 11,
+     "pct_time_invested": 65.5,
+     "worst_year": {
+      "year": 2002,
+      "return_pct": -3.05
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 8.19,
+     "sharpe": 0.69,
+     "max_dd_pct": -20.99,
+     "trades": 14,
+     "pct_time_invested": 85.9,
+     "worst_year": {
+      "year": 2015,
+      "return_pct": -8.33
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 9.31,
+     "sharpe": 0.75,
+     "max_dd_pct": -29.16,
+     "trades": 14,
+     "pct_time_invested": 79.6,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -24.23
+     }
+    }
+   },
+   "spy_benchmark": {
+    "full": {
+     "n_days": 7188,
+     "start": "1998-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 9.25,
+     "sharpe": 0.55,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "era_to_2009": {
+     "n_days": 3019,
+     "start": "1998-01-02",
+     "end": "2009-12-31",
+     "cagr_pct": 2.85,
+     "sharpe": 0.24,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 13.45,
+     "sharpe": 0.93,
+     "max_dd_pct": -19.35,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2018,
+      "return_pct": -4.57
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 15.23,
+     "sharpe": 0.8,
+     "max_dd_pct": -33.72,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -18.18
+     }
+    }
+   }
+  },
+  "DUALMOM_top1": {
+   "window": [
+    "2005-01-01",
+    "2026-07-31"
+   ],
+   "metrics": {
+    "full": {
+     "n_days": 5428,
+     "start": "2005-01-03",
+     "end": "2026-07-31",
+     "cagr_pct": 11.69,
+     "sharpe": 0.65,
+     "max_dd_pct": -34.99,
+     "trades": 78,
+     "pct_time_invested": 98.1,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -24.62
+     }
+    },
+    "era_to_2009": {
+     "n_days": 1259,
+     "start": "2005-01-03",
+     "end": "2009-12-31",
+     "cagr_pct": 9.15,
+     "sharpe": 0.52,
+     "max_dd_pct": -34.99,
+     "trades": 22,
+     "pct_time_invested": 98.3,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -2.29
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 11.87,
+     "sharpe": 0.72,
+     "max_dd_pct": -29.47,
+     "trades": 32,
+     "pct_time_invested": 99.1,
+     "worst_year": {
+      "year": 2016,
+      "return_pct": -7.19
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 13.4,
+     "sharpe": 0.68,
+     "max_dd_pct": -28.56,
+     "trades": 24,
+     "pct_time_invested": 96.3,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -24.62
+     }
+    }
+   },
+   "spy_benchmark": {
+    "full": {
+     "n_days": 5428,
+     "start": "2005-01-03",
+     "end": "2026-07-31",
+     "cagr_pct": 10.8,
+     "sharpe": 0.64,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "era_to_2009": {
+     "n_days": 1259,
+     "start": "2005-01-03",
+     "end": "2009-12-31",
+     "cagr_pct": 0.39,
+     "sharpe": 0.14,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 13.45,
+     "sharpe": 0.93,
+     "max_dd_pct": -19.35,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2018,
+      "return_pct": -4.57
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 15.23,
+     "sharpe": 0.8,
+     "max_dd_pct": -33.72,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -18.18
+     }
+    }
+   }
+  },
+  "DUALMOM_top2ew": {
+   "window": [
+    "2005-01-01",
+    "2026-07-31"
+   ],
+   "metrics": {
+    "full": {
+     "n_days": 5428,
+     "start": "2005-01-03",
+     "end": "2026-07-31",
+     "cagr_pct": 10.12,
+     "sharpe": 0.73,
+     "max_dd_pct": -21.05,
+     "trades": 78,
+     "pct_time_invested": 94.6,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -17.63
+     }
+    },
+    "era_to_2009": {
+     "n_days": 1259,
+     "start": "2005-01-03",
+     "end": "2009-12-31",
+     "cagr_pct": 5.62,
+     "sharpe": 0.46,
+     "max_dd_pct": -20.88,
+     "trades": 20,
+     "pct_time_invested": 91.7,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -4.9
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 10.12,
+     "sharpe": 0.75,
+     "max_dd_pct": -21.05,
+     "trades": 34,
+     "pct_time_invested": 98.3,
+     "worst_year": {
+      "year": 2016,
+      "return_pct": -10.39
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 13.69,
+     "sharpe": 0.89,
+     "max_dd_pct": -20.07,
+     "trades": 24,
+     "pct_time_invested": 91.2,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -17.63
+     }
+    }
+   },
+   "spy_benchmark": {
+    "full": {
+     "n_days": 5428,
+     "start": "2005-01-03",
+     "end": "2026-07-31",
+     "cagr_pct": 10.8,
+     "sharpe": 0.64,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "era_to_2009": {
+     "n_days": 1259,
+     "start": "2005-01-03",
+     "end": "2009-12-31",
+     "cagr_pct": 0.39,
+     "sharpe": 0.14,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 13.45,
+     "sharpe": 0.93,
+     "max_dd_pct": -19.35,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2018,
+      "return_pct": -4.57
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 15.23,
+     "sharpe": 0.8,
+     "max_dd_pct": -33.72,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -18.18
+     }
+    }
+   }
+  },
+  "VOLTARGET": {
+   "window": [
+    "1998-01-01",
+    "2026-07-31"
+   ],
+   "metrics": {
+    "full": {
+     "n_days": 7188,
+     "start": "1998-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 6.2,
+     "sharpe": 0.63,
+     "max_dd_pct": -34.63,
+     "trades": 1016,
+     "pct_time_invested": 70.8,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -14.45
+     }
+    },
+    "era_to_2009": {
+     "n_days": 3019,
+     "start": "1998-01-02",
+     "end": "2009-12-31",
+     "cagr_pct": 2.02,
+     "sharpe": 0.24,
+     "max_dd_pct": -34.63,
+     "trades": 428,
+     "pct_time_invested": 63.4,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -14.45
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 9.05,
+     "sharpe": 0.91,
+     "max_dd_pct": -11.94,
+     "trades": 337,
+     "pct_time_invested": 79.8,
+     "worst_year": {
+      "year": 2015,
+      "return_pct": -3.89
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 9.8,
+     "sharpe": 0.92,
+     "max_dd_pct": -13.09,
+     "trades": 251,
+     "pct_time_invested": 70.6,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -10.18
+     }
+    }
+   },
+   "spy_benchmark": {
+    "full": {
+     "n_days": 7188,
+     "start": "1998-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 9.25,
+     "sharpe": 0.55,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "era_to_2009": {
+     "n_days": 3019,
+     "start": "1998-01-02",
+     "end": "2009-12-31",
+     "cagr_pct": 2.85,
+     "sharpe": 0.24,
+     "max_dd_pct": -55.19,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2008,
+      "return_pct": -36.79
+     }
+    },
+    "2010_2019": {
+     "n_days": 2516,
+     "start": "2010-01-04",
+     "end": "2019-12-31",
+     "cagr_pct": 13.45,
+     "sharpe": 0.93,
+     "max_dd_pct": -19.35,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2018,
+      "return_pct": -4.57
+     }
+    },
+    "2020_2026": {
+     "n_days": 1653,
+     "start": "2020-01-02",
+     "end": "2026-07-31",
+     "cagr_pct": 15.23,
+     "sharpe": 0.8,
+     "max_dd_pct": -33.72,
+     "trades": 0,
+     "pct_time_invested": 100.0,
+     "worst_year": {
+      "year": 2022,
+      "return_pct": -18.18
+     }
+    }
+   }
+  }
+ },
+ "sanity_faber": {
+  "faber_2008_return_pct": 5.39,
+  "spy_2008_return_pct": -36.79,
+  "faber_full_cagr_pct": 8.67,
+  "spy_full_cagr_pct": 9.25,
+  "faber_full_maxdd_pct": -29.16,
+  "spy_full_maxdd_pct": -55.19,
+  "passes": true
+ }
+}
