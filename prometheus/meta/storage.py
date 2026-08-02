@@ -2,7 +2,7 @@
 
 This module provides a thin abstraction around the runtime database for
 recording engine decisions/outcomes and reading backtest metrics used by
-:class:`MetaOrchestrator`.
+the meta layer (decision tracking, proposals, autopilot).
 """
 
 from __future__ import annotations

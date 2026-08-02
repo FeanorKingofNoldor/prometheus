@@ -1,28 +1,14 @@
 """Prometheus v2 – Meta-Orchestrator (Iris) package.
 
-This package contains the minimal Meta-Orchestrator implementation used
-for evaluating and selecting sleeves based on backtest results.
+Decision tracking, outcome evaluation, proposal generation, and the
+daily autopilot loop.  (The legacy sleeve-grid ``MetaOrchestrator``
+engine was removed 2026-08 with the core+wheel simplification.)
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from prometheus.meta.storage import MetaStorage
 from prometheus.meta.types import BacktestRunRecord, DecisionOutcome, EngineDecision, SleeveEvaluation
-
-if TYPE_CHECKING:  # pragma: no cover
-    # Imported lazily at runtime to avoid circular imports (meta -> backtest -> decisions -> meta).
-    from prometheus.meta.engine import MetaOrchestrator as MetaOrchestrator
-
-
-def __getattr__(name: str):  # pragma: no cover - exercised implicitly
-    if name == "MetaOrchestrator":
-        from prometheus.meta.engine import MetaOrchestrator
-
-        return MetaOrchestrator
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 __all__ = [
     "EngineDecision",
@@ -30,5 +16,4 @@ __all__ = [
     "BacktestRunRecord",
     "SleeveEvaluation",
     "MetaStorage",
-    "MetaOrchestrator",
 ]

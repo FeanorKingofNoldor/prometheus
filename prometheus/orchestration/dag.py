@@ -621,57 +621,6 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     return dag
 
 
-def build_global_dag(as_of_date: date, regional_dags: list[DAG]) -> DAG:
-    """Build a global DAG that depends on regional DAGs completing.
-
-    This creates cross-market jobs that run after all regional markets
-    have completed their pipelines (e.g., global regime analysis).
-
-    Args:
-        as_of_date: Trading date
-        regional_dags: List of regional DAGs this depends on
-
-    Returns:
-        Global DAG instance
-    """
-    dag_id = f"global_daily_{as_of_date.isoformat()}"
-    date_str = as_of_date.isoformat()
-
-    jobs: dict[str, JobMetadata] = {}
-
-    # Collect all "run_signals" jobs from regional DAGs as dependencies
-    regional_signals = []
-    for regional_dag in regional_dags:
-        for job_id, job in regional_dag.jobs.items():
-            if job.job_type == "run_signals":
-                regional_signals.append(job_id)
-
-    # Global regime job depends on all regional signals completing
-    if regional_signals:
-        jobs[f"global_regime_{date_str}"] = JobMetadata(
-            job_id=f"global_regime_{date_str}",
-            job_type="global_regime",
-            market_id=None,  # Global job
-            dependencies=tuple(regional_signals),
-            priority=JobPriority.STANDARD,
-        )
-
-    dag = DAG(
-        dag_id=dag_id,
-        market_id="GLOBAL",
-        as_of_date=as_of_date,
-        jobs=jobs,
-    )
-
-    # Global DAGs reference jobs from other DAGs, so skip missing dep check
-    errors = dag.validate(skip_missing_deps=True)
-    if errors:
-        logger.error("Global DAG validation failed: %s", errors)
-        raise ValueError(f"Invalid global DAG: {errors}")
-
-    return dag
-
-
 def build_intel_dag(as_of_date: date, is_sunday: bool = False) -> DAG:
     """Build an intelligence-generation DAG.
 

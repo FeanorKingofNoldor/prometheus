@@ -10,13 +10,7 @@ Each config loader follows the same pattern:
 
 from __future__ import annotations
 
-import os
-import textwrap
-from unittest.mock import MagicMock, patch
-
-import pytest
 import yaml
-
 
 # ---------------------------------------------------------------------------
 # Issue 1: SectorAllocatorConfig
@@ -239,111 +233,6 @@ class TestSectorAllocatorConfigCanonicalYAML:
 
 # ---------------------------------------------------------------------------
 # Issue 3: Iris system prompt dynamic assembly
-# ---------------------------------------------------------------------------
-
-
-class TestIrisSystemPrompt:
-    """Test that the Iris system prompt is assembled at call time."""
-
-    def test_build_system_prompt_returns_string(self):
-        from prometheus.monitoring.iris_service import build_system_prompt
-
-        # Mock get_db_manager so we don't need a real DB.
-        with patch("prometheus.monitoring.iris_service.get_db_manager") as mock_db:
-            mock_db.side_effect = Exception("no DB")
-            prompt = build_system_prompt()
-
-        assert isinstance(prompt, str)
-        assert "Iris" in prompt
-        assert "meta-orchestrator" in prompt
-
-    def test_fallback_when_no_db(self):
-        """When DB is unavailable, the fallback description is used."""
-        from prometheus.monitoring.iris_service import (
-            _FALLBACK_ALPHA_DESCRIPTION,
-            build_system_prompt,
-        )
-
-        with patch("prometheus.monitoring.iris_service.get_db_manager") as mock_db:
-            mock_db.side_effect = Exception("connection refused")
-            prompt = build_system_prompt()
-
-        assert _FALLBACK_ALPHA_DESCRIPTION in prompt
-
-    def test_prompt_does_not_contain_hardcoded_performance_claims(self):
-        """The old hardcoded '12-17% CAGR, 0.9 Sharpe' must NOT appear."""
-        from prometheus.monitoring.iris_service import build_system_prompt
-
-        with patch("prometheus.monitoring.iris_service.get_db_manager") as mock_db:
-            mock_db.side_effect = Exception("no DB")
-            prompt = build_system_prompt()
-
-        assert "12-17% CAGR" not in prompt
-        assert "0.9 Sharpe" not in prompt
-
-    def test_prompt_uses_live_data_when_available(self):
-        """When DB returns scorecard data, the prompt includes it."""
-        from prometheus.monitoring.iris_service import build_system_prompt
-
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (
-            "PORTFOLIO",  # engine_name
-            25,           # n_names
-            100,          # n_decisions
-            0.0045,       # avg_return
-            0.620,        # hit_rate
-            "2026-04-10", # latest_date
-        )
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_db.get_runtime_connection.return_value = mock_conn
-
-        with patch("prometheus.monitoring.iris_service.get_db_manager", return_value=mock_db):
-            prompt = build_system_prompt()
-
-        assert "25 names" in prompt
-        assert "62%" in prompt  # hit rate
-        assert "2026-04-10" in prompt
-
-    def test_build_system_prompt_is_not_the_static_constant(self):
-        """Prove the prompt is assembled per-call, not a static import."""
-        from prometheus.monitoring.iris_service import (
-            SYSTEM_PROMPT,
-            build_system_prompt,
-        )
-
-        # With live data, built prompt differs from the static fallback.
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (
-            "PORTFOLIO", 20, 50, 0.003, 0.550, "2026-04-01",
-        )
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_db.get_runtime_connection.return_value = mock_conn
-
-        with patch("prometheus.monitoring.iris_service.get_db_manager", return_value=mock_db):
-            dynamic = build_system_prompt()
-
-        # The dynamic prompt should contain live data not in the static one.
-        assert "20 names" in dynamic
-        assert "20 names" not in SYSTEM_PROMPT
-
-    def test_template_has_no_hardcoded_claims(self):
-        """The template itself should not contain specific CAGR/Sharpe numbers."""
-        from prometheus.monitoring.iris_service import _SYSTEM_PROMPT_TEMPLATE
-
-        assert "12-17%" not in _SYSTEM_PROMPT_TEMPLATE
-        assert "0.9 Sharpe" not in _SYSTEM_PROMPT_TEMPLATE
-
-
-# ---------------------------------------------------------------------------
-# Issue 4: MarketSituationConfig
 # ---------------------------------------------------------------------------
 
 
@@ -667,8 +556,8 @@ class TestConvictionConfigCanonicalYAML:
 
     def test_canonical_yaml_matches_defaults(self):
         from prometheus.portfolio.config import (
-            ConvictionDefaults,
             DEFAULT_CONVICTION_CONFIG_PATH,
+            ConvictionDefaults,
             load_conviction_config,
         )
 
@@ -1285,58 +1174,3 @@ class TestLambdaFeatureWindowsEnvOverride:
 # ---------------------------------------------------------------------------
 
 
-class TestIrisToolsEnvOverride:
-    """Test PROMETHEUS_IRIS_TOOLS env var override."""
-
-    def test_default_tools_list(self):
-        from prometheus.monitoring.iris_service import _IRIS_TOOLS_DEFAULT, _resolve_iris_tools
-
-        tools = _resolve_iris_tools()
-        assert tools == _IRIS_TOOLS_DEFAULT
-        assert "get_current_date" in tools
-        assert "search_web" in tools
-        assert "query_fred_data" in tools
-        assert "get_nation_indicators" in tools
-        assert "search_wikipedia" in tools
-
-    def test_env_override_replaces_tools(self, monkeypatch):
-        from prometheus.monitoring.iris_service import _resolve_iris_tools
-
-        monkeypatch.setenv("PROMETHEUS_IRIS_TOOLS", "tool_a,tool_b,tool_c")
-        tools = _resolve_iris_tools()
-        assert tools == ["tool_a", "tool_b", "tool_c"]
-
-    def test_env_override_strips_whitespace(self, monkeypatch):
-        from prometheus.monitoring.iris_service import _resolve_iris_tools
-
-        monkeypatch.setenv("PROMETHEUS_IRIS_TOOLS", " tool_a , tool_b , tool_c ")
-        tools = _resolve_iris_tools()
-        assert tools == ["tool_a", "tool_b", "tool_c"]
-
-    def test_env_override_ignores_empty_entries(self, monkeypatch):
-        from prometheus.monitoring.iris_service import _resolve_iris_tools
-
-        monkeypatch.setenv("PROMETHEUS_IRIS_TOOLS", "tool_a,,tool_b,")
-        tools = _resolve_iris_tools()
-        assert tools == ["tool_a", "tool_b"]
-
-    def test_env_override_empty_string_falls_back_to_default(self, monkeypatch):
-        from prometheus.monitoring.iris_service import _IRIS_TOOLS_DEFAULT, _resolve_iris_tools
-
-        monkeypatch.setenv("PROMETHEUS_IRIS_TOOLS", "")
-        tools = _resolve_iris_tools()
-        assert tools == _IRIS_TOOLS_DEFAULT
-
-    def test_module_level_constant_preserved(self):
-        """_IRIS_TOOLS module-level constant still matches defaults for backward compat."""
-        from prometheus.monitoring.iris_service import _IRIS_TOOLS, _IRIS_TOOLS_DEFAULT
-
-        assert _IRIS_TOOLS == _IRIS_TOOLS_DEFAULT
-
-    def test_resolve_returns_copy(self):
-        """Mutating the returned list should not affect the default."""
-        from prometheus.monitoring.iris_service import _IRIS_TOOLS_DEFAULT, _resolve_iris_tools
-
-        tools = _resolve_iris_tools()
-        tools.append("extra")
-        assert "extra" not in _IRIS_TOOLS_DEFAULT
