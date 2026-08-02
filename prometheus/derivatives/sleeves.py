@@ -24,10 +24,84 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import date as _date
 from enum import Enum
 from typing import Any
 
+from prometheus.calendar.event_calendar import near_iv_event
 from prometheus.derivatives.selection import LegSpec, SpreadSpec, TargetSpec
+
+# ── IV-event guard helper ────────────────────────────────────────────
+
+
+def _check_iv_percentile_guard(
+    underlying: str,
+    signals: Mapping[str, Any],
+    *,
+    max_pct: float = 0.80,
+) -> "TriggerResult | None":
+    """Skip long-debit fires when IV is at/above the rich-vol percentile.
+
+    Returns ``None`` (pass-through) when there's not enough history yet,
+    or when the percentile is below ``max_pct``. Phase 5.5.
+    """
+    from prometheus.calendar.iv_percentile import is_iv_rich
+    today = signals.get("as_of_date")
+    if not today:
+        intel = signals.get("intel")
+        today = getattr(intel, "as_of_date", None) or _date.today()
+    if isinstance(today, str):
+        try:
+            today = _date.fromisoformat(today)
+        except ValueError:
+            return None
+    rich = is_iv_rich(underlying, today, threshold=max_pct)
+    if rich is not True:
+        return None
+    return TriggerResult(
+        False,
+        f"{underlying} IV percentile ≥ {max_pct:.0%} — vol overpriced, skip long debit",
+        {"iv_percentile_skipped": True, "iv_percentile_threshold": max_pct,
+         "iv_percentile_underlying": underlying},
+    )
+
+
+def _check_iv_event_guard(
+    underlying: str,
+    signals: Mapping[str, Any],
+    *,
+    window_days: int = 2,
+) -> "TriggerResult | None":
+    """Skip long-debit fires too close to an IV-sensitive event.
+
+    Returns a fire=False TriggerResult when ``underlying`` is within
+    ``window_days`` of its next IV-event; ``None`` otherwise. Apply at
+    the END of a long-debit template trigger, after picking the
+    underlying — short-premium templates DON'T apply this guard (they
+    want to be short into the crush).
+    """
+    today = signals.get("as_of_date")
+    # Fall back to the intel snapshot's date if signals doesn't carry one
+    # explicitly (test fixtures, intel-only callers).
+    if not today:
+        intel = signals.get("intel")
+        today = getattr(intel, "as_of_date", None) or _date.today()
+    if isinstance(today, str):
+        try:
+            today = _date.fromisoformat(today)
+        except ValueError:
+            return None
+    event = near_iv_event(underlying, today, window_days=window_days)
+    if event is None:
+        return None
+    return TriggerResult(
+        False,
+        (f"near {event.kind.value} on {event.event_date.isoformat()} "
+         f"({underlying} IV-sensitive — avoid premium crush)"),
+        {"iv_event_skipped": event.kind.value,
+         "iv_event_date": event.event_date.isoformat(),
+         "iv_event_underlying": underlying},
+    )
 
 # ── Sleeve identity ──────────────────────────────────────────────────
 
@@ -36,6 +110,7 @@ class Sleeve(str, Enum):
     HEDGE = "HEDGE"
     INCOME = "INCOME"
     CONVEX = "CONVEX"
+    COMMODITY = "COMMODITY"
 
 
 # ── Trigger contract ─────────────────────────────────────────────────
@@ -97,6 +172,11 @@ class TemplateConfig:
     close_at_dte: int = 7
     profit_target_pct: float | None = None     # None = no take-profit
     stop_loss_multiplier: float | None = None  # None = no stop
+    # Trailing stop: close when give-back from peak unrealized gain
+    # exceeds this fraction of the peak. e.g. 0.30 = "give back at most
+    # 30% of peak gain". None = no trailing stop. Best for convex bets
+    # whose winners can run hard.
+    trailing_stop_pct: float | None = None
     # Default fallback IV when IbkrLive / cache / realized all fail.
     fallback_iv: float = 0.22
 
@@ -543,6 +623,12 @@ def _convex_thematic_sector_put_trigger(signals: Mapping[str, Any]) -> TriggerRe
         return TriggerResult(False, f"compound severity={severity!r} below HIGH")
     if not sector_etf:
         return TriggerResult(False, "compound HIGH but no target_sector_etf")
+    guard = _check_iv_event_guard(str(sector_etf), signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard(str(sector_etf), signals)
+    if pct_guard:
+        return pct_guard
     return TriggerResult(
         True,
         f"compound {severity} on {sector_etf}",
@@ -570,6 +656,7 @@ _CONVEX_THEMATIC_SECTOR_PUT = TemplateConfig(
     close_at_dte=14,
     profit_target_pct=2.0,        # 200% — convex bets go big or go home
     stop_loss_multiplier=1.0,     # full debit
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
     fallback_iv=0.30,             # sector ETFs are vol-ier than SPY
 )
 
@@ -599,6 +686,12 @@ def _convex_vix_escalation_call_trigger(signals: Mapping[str, Any]) -> TriggerRe
             f"vix already moved {vix_5d_change_pct:.0%} in 5d — "
             "no asymmetry left",
         )
+    guard = _check_iv_event_guard("VIX", signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard("VIX", signals)
+    if pct_guard:
+        return pct_guard
     return TriggerResult(
         True,
         f"geo_risk={geo_score:.1f} elevated but vix={vix:.1f} "
@@ -632,6 +725,7 @@ _CONVEX_VIX_ESCALATION_CALL = TemplateConfig(
     close_at_dte=21,
     profit_target_pct=3.0,        # 300% — let convex bets ride if they hit
     stop_loss_multiplier=1.0,     # full debit
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
     fallback_iv=0.80,             # VIX vol-of-vol
 )
 
@@ -690,6 +784,12 @@ def _convex_convergence_straddle_trigger(signals: Mapping[str, Any]) -> TriggerR
             False, f"no straddle proxy mapping for {entity_id}",
         )
 
+    guard = _check_iv_event_guard(str(proxy), signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard(str(proxy), signals)
+    if pct_guard:
+        return pct_guard
     return TriggerResult(
         True,
         f"convergence on {entity_id} in "
@@ -729,6 +829,315 @@ _CONVEX_CONVERGENCE_STRADDLE = TemplateConfig(
     close_at_dte=14,
     profit_target_pct=1.5,        # 150% — straddles need bigger move
     stop_loss_multiplier=0.7,     # take loss at 70% of debit
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
+    fallback_iv=0.30,
+)
+
+
+# ── COMMODITY sleeve ─────────────────────────────────────────────────
+#
+# Four templates, each anchored on a commodity Apatheon has strong
+# signal on: crude (chokepoints + conflict), nat gas (Russia/LNG),
+# gold (sanctions/conflict premium), wheat (Black Sea / export bans).
+#
+# All four use futures-options (FOP) — long calls only — so the sleeve
+# is purely long-debit; max loss = premium paid. Triggers read the
+# IntelSignalsSnapshot (same pattern as convex.convergence_straddle).
+#
+# Initial wiring uses divergence signals scoped to relevant entities;
+# Phase 2 extends with structured chokepoint_status / conflict_status
+# fields once those are surfaced into the runner signals dict.
+
+
+# Crude-carrying chokepoints → preferred underlying.
+# BZ (Brent) for Mid-East / Suez signal; CL (WTI) for everything else.
+# Keys match canonical Apatheon chokepoint ids (lowercase) — uppercased
+# at lookup time since divergence rows come through .upper().
+_CRUDE_CHOKEPOINT_UNDERLYING: Mapping[str, str] = {
+    "HORMUZ": "BZ",
+    "BAB_EL_MANDEB": "BZ",
+    "SUEZ": "BZ",
+    "MALACCA": "CL",
+    "PANAMA": "CL",
+    "CAPE_GOOD_HOPE": "BZ",
+    "BOSPORUS": "BZ",
+}
+
+# LNG-carrying chokepoints relevant to NG.
+_LNG_CHOKEPOINTS: frozenset[str] = frozenset({
+    "HORMUZ", "SUEZ", "MALACCA", "PANAMA",
+})
+
+
+def _commodity_crude_chokepoint_trigger(signals: Mapping[str, Any]) -> TriggerResult:
+    intel = signals.get("intel")
+    if intel is None:
+        return TriggerResult(False, "no intel snapshot in signals")
+    extreme = intel.extreme_divergences()
+    if not extreme:
+        return TriggerResult(False, "no extreme divergences")
+    # Filter to CHOKEPOINTs that carry crude AND show real-side stress.
+    cands = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CHOKEPOINT"
+        and str(d.get("entity_id", "")).upper() in _CRUDE_CHOKEPOINT_UNDERLYING
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    if not cands:
+        return TriggerResult(False, "no crude-carrying chokepoint divergence")
+    cands.sort(key=lambda d: float(d.get("abs_divergence", 0.0)), reverse=True)
+    top = cands[0]
+    cp_id = str(top["entity_id"]).upper()
+    underlying = _CRUDE_CHOKEPOINT_UNDERLYING[cp_id]
+    # IV-event guard: skip if within window of an EIA petroleum or OPEC
+    # release for the chosen underlying. Pays the IV crush otherwise.
+    guard = _check_iv_event_guard(underlying, signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard(underlying, signals)
+    if pct_guard:
+        return pct_guard
+    return TriggerResult(
+        True,
+        f"crude chokepoint {cp_id} divergence "
+        f"{float(top.get('abs_divergence', 0.0)):.2f} → long {underlying} call",
+        {"chokepoint": cp_id, "underlying": underlying,
+         "abs_divergence": float(top.get("abs_divergence", 0.0))},
+    )
+
+
+def _commodity_crude_chokepoint_target(
+    signals: Mapping[str, Any], trigger: Mapping[str, Any],
+) -> TargetSpec:
+    underlying = str(trigger["underlying"])
+    exchange = "NYMEX"
+    return TargetSpec(
+        underlying=underlying, right="C",
+        target_delta=0.25, min_dte=30, max_dte=60,
+        sec_type="FOP", exchange=exchange,
+        strike_width_pct=0.20,
+    )
+
+
+_COMMODITY_CRUDE_CHOKEPOINT_CALL = TemplateConfig(
+    name="commodity.crude_chokepoint_call",
+    sleeve=Sleeve.COMMODITY,
+    trigger=_commodity_crude_chokepoint_trigger,
+    target_spec_factory=_commodity_crude_chokepoint_target,
+    sizing_pct_of_sleeve=0.30,    # 30% of COMMODITY sleeve = 1.5% NAV
+    is_long=True,
+    max_concurrent=2,
+    allowed_market_states=(),     # any regime — chokepoint stress is regime-agnostic
+    close_at_dte=14,
+    profit_target_pct=1.5,        # 150% — convex bet
+    stop_loss_multiplier=1.0,     # full debit
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
+    fallback_iv=0.35,             # crude IV
+)
+
+
+def _commodity_natgas_supply_trigger(signals: Mapping[str, Any]) -> TriggerResult:
+    intel = signals.get("intel")
+    if intel is None:
+        return TriggerResult(False, "no intel snapshot in signals")
+    extreme = intel.extreme_divergences()
+    if not extreme:
+        return TriggerResult(False, "no extreme divergences")
+    # (a) Russia-Ukraine conflict escalation, (b) LNG chokepoint stress.
+    russia_div = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CONFLICT"
+        and str(d.get("entity_id", "")).upper() in ("RUSSIA_UKRAINE",)
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    lng_cp = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CHOKEPOINT"
+        and str(d.get("entity_id", "")).upper() in _LNG_CHOKEPOINTS
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    if not russia_div and not lng_cp:
+        return TriggerResult(False, "no Russia-conflict or LNG-chokepoint divergence")
+    src = (russia_div + lng_cp)[0]
+    guard = _check_iv_event_guard("NG", signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard("NG", signals)
+    if pct_guard:
+        return pct_guard
+    return TriggerResult(
+        True,
+        f"natgas trigger: {src.get('entity_type')}/{src.get('entity_id')} "
+        f"div={float(src.get('abs_divergence', 0.0)):.2f}",
+        {"source_entity": (str(src.get("entity_type")), str(src.get("entity_id"))),
+         "abs_divergence": float(src.get("abs_divergence", 0.0))},
+    )
+
+
+def _commodity_natgas_supply_target(
+    signals: Mapping[str, Any], _trigger: Mapping[str, Any],
+) -> TargetSpec:
+    return TargetSpec(
+        underlying="NG", right="C",
+        target_delta=0.25, min_dte=30, max_dte=60,
+        sec_type="FOP", exchange="NYMEX",
+        strike_width_pct=0.25,
+    )
+
+
+_COMMODITY_NATGAS_SUPPLY_CALL = TemplateConfig(
+    name="commodity.natgas_supply_call",
+    sleeve=Sleeve.COMMODITY,
+    trigger=_commodity_natgas_supply_trigger,
+    target_spec_factory=_commodity_natgas_supply_target,
+    sizing_pct_of_sleeve=0.25,    # 25% of COMMODITY sleeve = 1.25% NAV
+    is_long=True,
+    max_concurrent=1,
+    allowed_market_states=(),
+    close_at_dte=14,
+    profit_target_pct=1.5,
+    stop_loss_multiplier=1.0,
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
+    fallback_iv=0.55,             # NG IV runs hotter than crude
+)
+
+
+# Tier-1 sovereigns where sanctions/conflict-premium signal drives gold.
+_GOLD_TRIGGER_SOVEREIGNS: frozenset[str] = frozenset({
+    "RUS", "IRN", "CHN", "PRK", "VEN",
+})
+_GOLD_TRIGGER_CONFLICTS: frozenset[str] = frozenset({
+    "RUSSIA_UKRAINE", "IRAN_WAR_2026", "ISRAEL_GAZA", "SOUTH_CHINA_SEA",
+})
+
+
+def _commodity_gold_sanctions_trigger(signals: Mapping[str, Any]) -> TriggerResult:
+    intel = signals.get("intel")
+    if intel is None:
+        return TriggerResult(False, "no intel snapshot in signals")
+    extreme = intel.extreme_divergences()
+    sovereign_div = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "SOVEREIGN"
+        and str(d.get("entity_id", "")).upper() in _GOLD_TRIGGER_SOVEREIGNS
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    conflict_div = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CONFLICT"
+        and str(d.get("entity_id", "")).upper() in _GOLD_TRIGGER_CONFLICTS
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    if not sovereign_div and not conflict_div:
+        return TriggerResult(False, "no sanctions-tier sovereign or crisis-band conflict divergence")
+    src = (conflict_div + sovereign_div)[0]
+    guard = _check_iv_event_guard("GC", signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard("GC", signals)
+    if pct_guard:
+        return pct_guard
+    return TriggerResult(
+        True,
+        f"gold trigger: {src.get('entity_type')}/{src.get('entity_id')} "
+        f"div={float(src.get('abs_divergence', 0.0)):.2f}",
+        {"source_entity": (str(src.get("entity_type")), str(src.get("entity_id"))),
+         "abs_divergence": float(src.get("abs_divergence", 0.0))},
+    )
+
+
+def _commodity_gold_sanctions_target(
+    signals: Mapping[str, Any], _trigger: Mapping[str, Any],
+) -> TargetSpec:
+    return TargetSpec(
+        underlying="GC", right="C",
+        target_delta=0.20, min_dte=60, max_dte=90,
+        sec_type="FOP", exchange="COMEX",
+        strike_width_pct=0.30,
+    )
+
+
+_COMMODITY_GOLD_SANCTIONS_CALL = TemplateConfig(
+    name="commodity.gold_sanctions_call",
+    sleeve=Sleeve.COMMODITY,
+    trigger=_commodity_gold_sanctions_trigger,
+    target_spec_factory=_commodity_gold_sanctions_target,
+    sizing_pct_of_sleeve=0.25,    # 25% of COMMODITY sleeve = 1.25% NAV
+    is_long=True,
+    max_concurrent=1,
+    allowed_market_states=(),
+    close_at_dte=21,
+    profit_target_pct=2.0,        # 200% — gold convex re-rates can be big
+    stop_loss_multiplier=1.0,
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
+    fallback_iv=0.18,             # gold IV is moderate
+)
+
+
+_WHEAT_TRIGGER_CHOKEPOINTS: frozenset[str] = frozenset({
+    "BOSPORUS", "SUEZ", "BAB_EL_MANDEB", "CAPE_GOOD_HOPE",
+})
+
+
+def _commodity_wheat_blacksea_trigger(signals: Mapping[str, Any]) -> TriggerResult:
+    intel = signals.get("intel")
+    if intel is None:
+        return TriggerResult(False, "no intel snapshot in signals")
+    extreme = intel.extreme_divergences()
+    conflict_div = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CONFLICT"
+        and str(d.get("entity_id", "")).upper() in ("RUSSIA_UKRAINE",)
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    cp_div = [
+        d for d in extreme
+        if str(d.get("entity_type", "")).upper() == "CHOKEPOINT"
+        and str(d.get("entity_id", "")).upper() in _WHEAT_TRIGGER_CHOKEPOINTS
+        and str(d.get("trading_signal", "")).upper() == "FRONT_RUN_REALITY"
+    ]
+    if not conflict_div and not cp_div:
+        return TriggerResult(False, "no Black Sea conflict or grain-corridor chokepoint divergence")
+    src = (conflict_div + cp_div)[0]
+    guard = _check_iv_event_guard("ZW", signals)
+    if guard:
+        return guard
+    pct_guard = _check_iv_percentile_guard("ZW", signals)
+    if pct_guard:
+        return pct_guard
+    return TriggerResult(
+        True,
+        f"wheat trigger: {src.get('entity_type')}/{src.get('entity_id')} "
+        f"div={float(src.get('abs_divergence', 0.0)):.2f}",
+        {"source_entity": (str(src.get("entity_type")), str(src.get("entity_id"))),
+         "abs_divergence": float(src.get("abs_divergence", 0.0))},
+    )
+
+
+def _commodity_wheat_blacksea_target(
+    signals: Mapping[str, Any], _trigger: Mapping[str, Any],
+) -> TargetSpec:
+    return TargetSpec(
+        underlying="ZW", right="C",
+        target_delta=0.25, min_dte=30, max_dte=60,
+        sec_type="FOP", exchange="CBOT",
+        strike_width_pct=0.25,
+    )
+
+
+_COMMODITY_WHEAT_BLACKSEA_CALL = TemplateConfig(
+    name="commodity.wheat_blacksea_call",
+    sleeve=Sleeve.COMMODITY,
+    trigger=_commodity_wheat_blacksea_trigger,
+    target_spec_factory=_commodity_wheat_blacksea_target,
+    sizing_pct_of_sleeve=0.20,    # 20% of COMMODITY sleeve = 1% NAV
+    is_long=True,
+    max_concurrent=1,
+    allowed_market_states=(),
+    close_at_dte=14,
+    profit_target_pct=1.5,
+    stop_loss_multiplier=1.0,
+    trailing_stop_pct=0.30,       # give back at most 30% of peak gain
     fallback_iv=0.30,
 )
 
@@ -765,19 +1174,29 @@ _DEFAULT_CONVEX = SleeveConfig(
     ),
 )
 
+_DEFAULT_COMMODITY = SleeveConfig(
+    sleeve=Sleeve.COMMODITY, nav_pct=0.05,
+    templates=(
+        _COMMODITY_CRUDE_CHOKEPOINT_CALL,
+        _COMMODITY_NATGAS_SUPPLY_CALL,
+        _COMMODITY_GOLD_SANCTIONS_CALL,
+        _COMMODITY_WHEAT_BLACKSEA_CALL,
+    ),
+)
+
 
 def default_sleeves() -> dict[Sleeve, SleeveConfig]:
-    """Return the default seed set of three sleeves.
+    """Return the default seed set of sleeves.
 
     Phases 2-4 expand each sleeve's template tuple with the full
     production templates (sector put spreads, iron butterflies, VIX
-    escalation calls, etc.). For Phase 1 we ship one template per
-    sleeve as a worked example.
+    escalation calls, etc.).
     """
     return {
         Sleeve.HEDGE: _DEFAULT_HEDGE,
         Sleeve.INCOME: _DEFAULT_INCOME,
         Sleeve.CONVEX: _DEFAULT_CONVEX,
+        Sleeve.COMMODITY: _DEFAULT_COMMODITY,
     }
 
 

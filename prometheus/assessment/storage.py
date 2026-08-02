@@ -46,8 +46,15 @@ class InstrumentScoreStorage:
             created_at      TIMESTAMPTZ
         )
 
-    No uniqueness is enforced beyond ``score_id``; each engine run may
-    emit a fresh set of scores for the same strategy/market/date.
+    No uniqueness is enforced beyond ``score_id``; each engine run (and
+    each model, since ``model_id`` is stored only in ``metadata``) may emit
+    a fresh set of scores for the same strategy/market/instrument/date.
+    Readers must therefore deduplicate deterministically: the universe
+    loader uses ``SELECT DISTINCT ON (instrument_id) ... ORDER BY
+    instrument_id, created_at DESC`` so the latest write wins. A non-unique
+    covering index (migration 0104) backs that lookup. A unique constraint
+    is intentionally avoided because it would break legitimate multi-model
+    writes.
     """
 
     db_manager: DatabaseManager

@@ -51,6 +51,23 @@ SEVERITY_INFO = "info"
 SEVERITY_WARNING = "warning"
 SEVERITY_CRITICAL = "critical"
 
+# backtest_runs is polluted with hundreds of throwaway grid-search /
+# synthetic strategies (BT_*, CPP_*, LAMBDA_FACT_*, PERF_TEST*). Diffing
+# live performance against those is meaningless, so discovery is gated by
+# an explicit allowlist of strategies that actually trade live.
+DEFAULT_STRATEGY_ALLOWLIST: tuple[str, ...] = (
+    "US_CORE_LONG_EQ",
+    # Regional core long-equity strategies (multi-market rollout).
+    "UK_CORE_LONG_EQ",
+    "EU_CORE_LONG_EQ",
+    "HK_CORE_LONG_EQ",
+    "KR_CORE_LONG_EQ",
+    "AU_CORE_LONG_EQ",
+)
+EXCLUDED_STRATEGY_PREFIXES: tuple[str, ...] = (
+    "BT_", "CPP_", "LAMBDA_FACT_", "PERF_TEST",
+)
+
 
 @dataclass(frozen=True)
 class DriftRow:
@@ -104,19 +121,26 @@ def run_daily_drift_check(
     horizons: Iterable[int] = (21,),
     lookback_days: int = 90,
     min_live_outcomes: int = 30,
+    strategy_allowlist: Iterable[str] | None = None,
 ) -> DriftRunResult:
     """Compute + persist drift for every (strategy, horizon) combo.
 
-    ``strategies`` defaults to whatever strategies have at least one
-    backtest_run *and* live PORTFOLIO decisions. Failure on one
+    ``strategies`` (explicit) wins outright. Otherwise discovery is
+    restricted to ``strategy_allowlist`` (default:
+    ``DEFAULT_STRATEGY_ALLOWLIST``) so grid-search artifacts in
+    backtest_runs never generate drift rows. Failure on one
     (strategy, horizon) does not affect others.
     """
     result = DriftRunResult(as_of_date=as_of_date)
     tracker = LivePerformanceTracker(db_manager=db)
 
+    allowlist = (
+        tuple(strategy_allowlist) if strategy_allowlist is not None
+        else DEFAULT_STRATEGY_ALLOWLIST
+    )
     target_strategies = (
         list(strategies) if strategies is not None
-        else _discover_strategies(db)
+        else _discover_strategies(db, allowlist=allowlist)
     )
 
     for strategy_id in target_strategies:
@@ -166,11 +190,17 @@ def _compute_drift(
     lookback_days: int,
     min_live_outcomes: int,
 ) -> DriftRow:
-    """Compute one (strategy, horizon) drift row."""
+    """Compute one (strategy, horizon) drift row.
+
+    The live side is filtered to *this* strategy's decisions — without the
+    strategy_id filter every strategy would be diffed against the same
+    global live Sharpe, which is exactly the bug this parameter fixes.
+    """
     live = tracker.compute_rolling_performance(
         as_of_date=as_of_date,
         lookback_days=lookback_days,
         horizon_days=horizon_days,
+        strategy_id=strategy_id,
     )
 
     live_n = int(live.get("n", 0) or 0)
@@ -337,8 +367,17 @@ def _latest_backtest_metrics(
             return {"run_id": run_id, "metrics": metrics_json or {}}
 
 
-def _discover_strategies(db: DatabaseManager) -> list[str]:
-    """Strategies with both a backtest row and live PORTFOLIO outcomes."""
+def _discover_strategies(
+    db: DatabaseManager,
+    *,
+    allowlist: tuple[str, ...] = DEFAULT_STRATEGY_ALLOWLIST,
+) -> list[str]:
+    """Strategies with a recent backtest row, filtered to live strategies.
+
+    Only strategies in ``allowlist`` (and never those with an excluded
+    grid-search/synthetic prefix) are returned — the drift comparison is
+    only meaningful for strategies that actually generate live decisions.
+    """
     try:
         with db.get_runtime_connection() as conn:
             with conn.cursor() as cur:
@@ -352,7 +391,13 @@ def _discover_strategies(db: DatabaseManager) -> list[str]:
                     ORDER BY strategy_id
                     """,
                 )
-                return [str(r[0]) for r in cur.fetchall() if r[0]]
+                discovered = [str(r[0]) for r in cur.fetchall() if r[0]]
+        allowed = set(allowlist)
+        return [
+            s for s in discovered
+            if s in allowed
+            and not s.startswith(EXCLUDED_STRATEGY_PREFIXES)
+        ]
     except Exception as exc:
         logger.debug("_discover_strategies failed: %s", exc)
         return []
@@ -392,6 +437,8 @@ def _scrub_nan(obj: Any) -> Any:
 __all__ = [
     "DriftRow",
     "DriftRunResult",
+    "DEFAULT_STRATEGY_ALLOWLIST",
+    "EXCLUDED_STRATEGY_PREFIXES",
     "SEVERITY_INFO",
     "SEVERITY_WARNING",
     "SEVERITY_CRITICAL",

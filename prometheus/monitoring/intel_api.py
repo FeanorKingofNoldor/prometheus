@@ -186,10 +186,11 @@ def _run_sitrep_job(job_id: str) -> None:
 
 def _run_weekly_job(job_id: str) -> None:
     """Background thread for weekly assessment."""
-    from apatheon.intel.pipeline import run_weekly_assessment
+    from apatheon.intel.pipeline import run_situation_report
 
     try:
-        brief = run_weekly_assessment(
+        brief = run_situation_report(
+            "weekly",
             on_progress=lambda step, idx, total: _update_job(job_id, step, idx, total),
         )
         _finish_job(job_id, result=brief)

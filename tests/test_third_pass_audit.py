@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import importlib
 import inspect
-import re
 import sys
 import types
-from datetime import date, datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # HIGH #1: Timezone-aware catchup date check
@@ -29,26 +26,36 @@ import pytest
 
 
 class TestCatchupTimezoneAwareness:
-    """_maybe_morning_catchup must use now_local_dt.date(), not date.today()."""
+    """Catch-up gating must be timezone-consistent (no naive date.today()).
 
-    def test_catchup_source_uses_now_local_dt_date(self):
-        """The catchup method must not call date.today() for the date comparison."""
+    Under the lane scheduler, _maybe_morning_catchup no longer compares
+    as_of_date against "today" at all: the hour/minute gate uses
+    now_local(), and the candidate window derives from the caller's
+    as_of_date anchor. These tests preserve the original intent — no
+    naive-local/UTC date skew can misfire or suppress a catch-up.
+    """
+
+    def test_catchup_source_uses_now_local(self):
+        """The catchup method must not call naive date.today() anywhere;
+        its clock gate must come from now_local()."""
         from prometheus.orchestration.market_aware_daemon import MarketAwareDaemon
 
         source = inspect.getsource(MarketAwareDaemon._maybe_morning_catchup)
         # The old bug: `if as_of_date == date.today():`
         assert "date.today()" not in source, (
-            "_maybe_morning_catchup still uses naive date.today() "
-            "instead of now_local_dt.date()"
+            "_maybe_morning_catchup must not use naive date.today()"
         )
-        # Verify the fix is present
-        assert "now_local_dt.date()" in source, (
-            "_maybe_morning_catchup should compare as_of_date to "
-            "now_local_dt.date() for timezone consistency"
+        # The hour/minute gate is timezone-aware.
+        assert "now_local()" in source, (
+            "_maybe_morning_catchup should gate on now_local() for "
+            "timezone consistency"
         )
 
-    def test_catchup_skips_when_as_of_date_matches_local_today(self):
-        """When as_of_date matches the timezone-aware local date, catchup returns early."""
+    def test_catchup_candidates_anchor_on_as_of_date(self):
+        """The candidate trading-day window derives from the caller's
+        as_of_date (the daemon's UTC anchor), never from the host-local
+        calendar date — timezone-safety successor of the old
+        as_of_date==local-today early-return test."""
         from prometheus.orchestration.market_aware_daemon import (
             MarketAwareDaemon,
             MarketAwareDaemonConfig,
@@ -60,20 +67,30 @@ class TestCatchupTimezoneAwareness:
 
         # Fake now_local returning 08:02 on 2026-04-12 in Berlin
         fake_now = datetime(2026, 4, 12, 8, 2, tzinfo=ZoneInfo("Europe/Berlin"))
-        as_of_date = date(2026, 4, 12)  # same date as the local clock
+        as_of_date = date(2026, 4, 12)
+
+        mock_cal = MagicMock()
+        mock_cal.trading_days_between.return_value = []  # no candidates
+        daemon._calendars["US_EQ"] = mock_cal
 
         with patch(
             "prometheus.orchestration.market_aware_daemon.now_local",
             return_value=fake_now,
         ):
-            # Should return early without trying to build a catchup DAG
             daemon._maybe_morning_catchup(as_of_date)
 
-        # If it returned early, no calendar lookup happened
-        assert not daemon._calendars
+        # Window is [as_of_date - 7d, as_of_date - 1d] — anchored on the
+        # passed date, not any host-local "today".
+        mock_cal.trading_days_between.assert_called_once_with(
+            date(2026, 4, 5), date(2026, 4, 11),
+        )
+        # No candidates → nothing attached.
+        assert daemon.lanes["US_EQ"].catchup is None
 
     def test_catchup_does_not_skip_when_dates_differ(self):
-        """When as_of_date is yesterday, catchup should proceed past the date check."""
+        """When the last trading day has no completed run, catch-up
+        proceeds: it checks the run history and attaches a CatchupState
+        to the market's lane (rather than looping inline as before)."""
         from prometheus.orchestration.market_aware_daemon import (
             MarketAwareDaemon,
             MarketAwareDaemonConfig,
@@ -87,7 +104,7 @@ class TestCatchupTimezoneAwareness:
         as_of_date = date(2026, 4, 9)  # yesterday relative to fake_now
 
         # Mock the calendar to return a trading day so we get past the
-        # "no yesterday candidates" check and into load_latest_run territory.
+        # "no candidates" check and into load_latest_run territory.
         mock_cal = MagicMock()
         mock_cal.trading_days_between.return_value = [date(2026, 4, 8)]
         daemon._calendars["US_EQ"] = mock_cal
@@ -97,21 +114,16 @@ class TestCatchupTimezoneAwareness:
             return_value=fake_now,
         ), patch(
             "prometheus.pipeline.state.load_latest_run",
-            return_value=None,  # no completed run -> would trigger catchup
+            return_value=None,  # no completed run -> triggers catchup
         ) as mock_load:
-            # Patch _catchup_in_progress setter and the pipeline execution to
-            # prevent the full catchup loop from running.
-            daemon._catchup_in_progress = False
-            with patch.object(daemon, "_initialize_dags"):
-                # Will try to run the catchup loop. We just need to verify
-                # it got past the date check.
-                try:
-                    daemon._maybe_morning_catchup(as_of_date)
-                except Exception:
-                    pass  # OK to fail deeper in; we just care it got past date check
+            daemon._maybe_morning_catchup(as_of_date)
 
-        # Verify it got past the date check and reached load_latest_run
+        # It consulted the run history for the missed day...
         mock_load.assert_called_once()
+        # ...and queued a catch-up on the lane for that fixed past date.
+        catchup = daemon.lanes["US_EQ"].catchup
+        assert catchup is not None
+        assert catchup.catchup_date == date(2026, 4, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +193,11 @@ def _load_ibkr_module(monkeypatch):
         def contract_to_instrument_id(contract):
             return getattr(contract, "symbol", "UNKNOWN")
 
+    class _StubContractQualificationError(Exception):
+        pass
+
     mapper_mod.InstrumentMapper = _StubInstrumentMapper  # type: ignore[attr-defined]
+    mapper_mod.ContractQualificationError = _StubContractQualificationError  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
     monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)
@@ -277,44 +293,46 @@ class TestIbkrOrderQuantityValidation:
 class TestBoundedSets:
     """_catchup_done and _zombie_reap_done must be pruned after growing large."""
 
-    def test_catchup_done_pruned_after_60_entries(self):
+    def test_catchup_done_pruned_after_120_entries(self):
+        """_catchup_done is pruned >120 → keep the latest 60. (The bound
+        doubled with the lane scheduler: keys are now per (market, date),
+        so multi-market fleets legitimately hold more live entries.)"""
         from prometheus.orchestration.market_aware_daemon import (
             MarketAwareDaemon,
             MarketAwareDaemonConfig,
         )
 
         db = MagicMock()
-        config = MarketAwareDaemonConfig(markets=["US_EQ"])
+        config = MarketAwareDaemonConfig(markets=["US_EQ"], morning_catchup_hour=8)
         daemon = MarketAwareDaemon(config, db)
 
-        # Manually populate _catchup_done with 61 entries
-        daemon._catchup_done = set()
-        for i in range(61):
+        # Manually populate _catchup_done with 121 entries, including the
+        # key for the day the method is about to consider (so the loop
+        # no-ops and we reach the prune at the tail).
+        yesterday = date(2026, 4, 10)
+        daemon._catchup_done = {f"catchup_US_EQ_{yesterday}"}
+        for i in range(120):
             d = date(2025, 1, 1) + timedelta(days=i)
-            daemon._catchup_done.add(f"catchup_{d}")
+            daemon._catchup_done.add(f"catchup_US_EQ_{d}")
+        assert len(daemon._catchup_done) == 121
 
-        assert len(daemon._catchup_done) == 61
+        mock_cal = MagicMock()
+        mock_cal.trading_days_between.return_value = [yesterday]
+        daemon._calendars["US_EQ"] = mock_cal
 
-        # Source code prunes when > 60. Simulate the prune logic by calling
-        # the method with conditions that trigger the add + prune path.
-        # Alternatively, verify the pruning code exists in the source.
-        source = inspect.getsource(MarketAwareDaemon._maybe_morning_catchup)
-        assert "len(self._catchup_done) > 60" in source, (
-            "_maybe_morning_catchup should prune _catchup_done when > 60 entries"
-        )
-        assert "sorted(self._catchup_done)[-30:]" in source, (
-            "_maybe_morning_catchup should keep only the 30 most recent entries"
-        )
+        with patch(
+            "prometheus.orchestration.market_aware_daemon.now_local",
+            return_value=datetime(2026, 4, 11, 8, 2),
+        ):
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
+
+        # Pruned down to the 60 most recent entries; the freshest key kept.
+        assert len(daemon._catchup_done) == 60
+        assert f"catchup_US_EQ_{yesterday}" in daemon._catchup_done
+        assert f"catchup_US_EQ_{date(2025, 1, 1)}" not in daemon._catchup_done
 
     def test_zombie_reap_done_pruned_after_60_entries(self):
-        from prometheus.orchestration.market_aware_daemon import (
-            MarketAwareDaemon,
-            MarketAwareDaemonConfig,
-        )
-
-        db = MagicMock()
-        config = MarketAwareDaemonConfig(markets=["US_EQ"])
-        daemon = MarketAwareDaemon(config, db)
+        from prometheus.orchestration.market_aware_daemon import MarketAwareDaemon
 
         source = inspect.getsource(MarketAwareDaemon._maybe_reap_zombie_runs)
         assert "len(self._zombie_reap_done) > 60" in source, (
@@ -325,24 +343,24 @@ class TestBoundedSets:
         )
 
     def test_catchup_done_prune_keeps_recent(self):
-        """After pruning, only the 30 lexicographically latest entries remain."""
-        # Simulate the prune logic directly
+        """After pruning, only the 60 lexicographically latest entries remain."""
+        # Simulate the prune logic directly (mirrors _maybe_morning_catchup)
         catchup_done = set()
-        for i in range(65):
+        for i in range(125):
             d = date(2025, 1, 1) + timedelta(days=i)
-            catchup_done.add(f"catchup_{d}")
+            catchup_done.add(f"catchup_US_EQ_{d}")
 
-        assert len(catchup_done) == 65
+        assert len(catchup_done) == 125
 
         # Apply the same prune as in the source
-        if len(catchup_done) > 60:
-            catchup_done = set(sorted(catchup_done)[-30:])
+        if len(catchup_done) > 120:
+            catchup_done = set(sorted(catchup_done)[-60:])
 
-        assert len(catchup_done) == 30
+        assert len(catchup_done) == 60
         # The latest date should be in the set
-        assert f"catchup_{date(2025, 1, 1) + timedelta(days=64)}" in catchup_done
+        assert f"catchup_US_EQ_{date(2025, 1, 1) + timedelta(days=124)}" in catchup_done
         # The earliest date should have been pruned
-        assert f"catchup_{date(2025, 1, 1)}" not in catchup_done
+        assert f"catchup_US_EQ_{date(2025, 1, 1)}" not in catchup_done
 
 
 # ---------------------------------------------------------------------------

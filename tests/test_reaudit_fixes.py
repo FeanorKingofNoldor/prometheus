@@ -23,9 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from prometheus.execution.broker_interface import Order, OrderSide, OrderType, Position
+from prometheus.execution.broker_interface import OrderSide, OrderType, Position
 from prometheus.execution.order_planner import (
-    MIN_ABS_QUANTITY,
     _DEDUP_WINDOW_SECONDS,
     _recent_orders,
     plan_orders,
@@ -266,6 +265,7 @@ class TestTimezoneAwareDatetime:
     def test_param_grid_search_uses_utc(self):
         import inspect
         import re
+
         from prometheus.scripts.grid_search import param_grid_search
         source = inspect.getsource(param_grid_search)
         assert "datetime.now(timezone.utc)" in source
@@ -277,6 +277,7 @@ class TestTimezoneAwareDatetime:
     def test_test_ibkr_paper_uses_utc(self):
         import inspect
         import re
+
         from prometheus.scripts.run import test_ibkr_paper
         source = inspect.getsource(test_ibkr_paper)
         assert "datetime.now(timezone.utc)" in source
@@ -363,10 +364,12 @@ class TestShutdownCheckInRunCycle:
         # Pre-set the shutdown event
         daemon._shutdown_event.set()
 
-        # _run_cycle should return immediately without calling _check_timeouts
-        with patch.object(daemon, "_check_timeouts") as mock_check:
+        # _run_cycle should return immediately without polling the lanes
+        # (_poll_lanes is the lane-model successor of _check_timeouts: it
+        # handles both completions and deadline timeouts).
+        with patch.object(daemon, "_poll_lanes") as mock_poll:
             daemon._run_cycle(date.today())
-            mock_check.assert_not_called()
+            mock_poll.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -404,28 +407,24 @@ class TestRetryBackoffCleanup:
         mock_exec.attempt_number = 2
         mock_exec.error_message = "some error"
 
-        # Pre-seed the retry_backoff dict
-        daemon.retry_backoff["exec-123"] = datetime.now(timezone.utc)
+        # Pre-seed the retry_backoff dict (retry window already elapsed)
+        now = datetime.now(timezone.utc)
+        daemon.retry_backoff["exec-123"] = now - timedelta(seconds=1)
 
-        # Mock external calls
+        # Mock external calls. _select_next_execution is the lane-model
+        # successor of the old _process_market selection loop.
         from prometheus.orchestration import market_aware_daemon as mad
 
         with patch.object(mad, "get_latest_job_execution", return_value=mock_exec), \
              patch.object(mad, "should_retry_job", return_value=False), \
-             patch.object(mad, "update_job_execution_status"):
+             patch.object(mad, "update_job_execution_status") as mock_update:
+            result = daemon._select_next_execution(job, "dag-1", now)
 
-            from prometheus.orchestration.dag import DAG
-            mock_dag = MagicMock(spec=DAG)
-            mock_dag.get_runnable_jobs.return_value = [job]
-
-            with patch.object(daemon, "_get_completed_jobs", return_value=set()), \
-                 patch.object(daemon, "_get_running_job_ids", return_value=set()):
-                daemon._process_market(
-                    "US_EQ", mock_dag, "dag-1",
-                    MagicMock(), date.today(), datetime.now(timezone.utc),
-                )
-
-        # The backoff entry should be cleaned up
+        # Exhausted retries: nothing dispatched, the execution is marked
+        # SKIPPED, and the backoff entry is cleaned up.
+        assert result is None
+        mock_update.assert_called_once()
+        assert mock_update.call_args.args[2] == JobStatus.SKIPPED
         assert "exec-123" not in daemon.retry_backoff
 
 
@@ -467,6 +466,7 @@ class TestModelBasicBareExcepts:
 
     def test_assessment_model_basic_no_bare_pass(self):
         import inspect
+
         from prometheus.assessment import model_basic
         source = inspect.getsource(model_basic)
         # Check that "except Exception:\n                pass" no longer exists
@@ -483,6 +483,7 @@ class TestModelBasicBareExcepts:
 
     def test_portfolio_model_basic_db_init_has_debug(self):
         import inspect
+
         from prometheus.portfolio import model_basic
         source = inspect.getsource(model_basic._load_assessment_confidences)
         assert "logger.debug" in source

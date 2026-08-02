@@ -202,6 +202,35 @@ def _safe_float(val: Optional[str], default: float) -> float:
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+
+def refresh_vol_indices(db_manager, *, start: date) -> int:
+    """Incremental refresh used by the nightly ingest job (best-effort).
+
+    Fetches FRED VIXCLS since ``start`` plus the CBOE term-structure CSVs
+    (full downloads, filtered to ``start``) and upserts into prices_daily.
+    Returns rows written. Raises nothing critical to the caller's pipeline —
+    callers should wrap in try/except and treat failures as warnings.
+    """
+    writer = DataWriter(db_manager=db_manager)
+    written = 0
+
+    fred = FredClient()
+    try:
+        bars = fetch_fred_vix(fred, start=start)
+        if bars:
+            writer.write_prices(bars)
+            written += len(bars)
+    finally:
+        fred.close()
+
+    for instrument_id, url in CBOE_INDICES.items():
+        bars = [b for b in fetch_cboe_csv(instrument_id, url) if b.trade_date >= start]
+        if bars:
+            writer.write_prices(bars)
+            written += len(bars)
+    return written
+
+
 def main() -> None:
     load_dotenv()
 

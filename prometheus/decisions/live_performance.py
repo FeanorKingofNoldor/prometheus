@@ -24,7 +24,30 @@ from typing import Any, Dict, List
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 
+from prometheus.decisions.run_boundary import clamp_window_start, current_run_start
+
 logger = get_logger(__name__)
+
+# Default minimum sample below which an aggregate metric is flagged as
+# noise rather than published as a confident number.
+DEFAULT_MIN_N = 20
+
+# Minimum sample below which correlation-based verdicts (Spearman/Pearson)
+# and severity labels are withheld in favour of INSUFFICIENT_DATA. With
+# fewer than ~100 pairs a rank correlation is dominated by noise, and
+# publishing SIGNAL_VALID / SIGNAL_INVERTED off it teaches the meta layer
+# false lessons.
+MIN_VERDICT_N = 100
+
+# Belt-and-suspenders live-only guard. OPTIONS_SHADOW ("what the new pipeline
+# would have done") must NEVER count in live performance, and any row whose
+# input_refs.mode is explicitly 'shadow' is excluded even if mis-tagged. The
+# COALESCE keeps legacy rows (no mode key) in the live set. Applied to every
+# query that aggregates live PnL / hedge-effectiveness.
+_LIVE_GUARD = (
+    "ed.engine_name <> 'OPTIONS_SHADOW' "
+    "AND COALESCE(ed.input_refs->>'mode', 'live') <> 'shadow'"
+)
 
 
 # ── Spearman helper (no scipy) ────────────────────────────────────────
@@ -87,6 +110,7 @@ class LivePerformanceTracker:
     """
 
     db_manager: DatabaseManager
+    min_n: int = DEFAULT_MIN_N
 
     # ------------------------------------------------------------------
     # 1. Rolling portfolio performance
@@ -97,36 +121,59 @@ class LivePerformanceTracker:
         as_of_date: date,
         lookback_days: int = 90,
         horizon_days: int = 21,
+        strategy_id: str | None = None,
     ) -> Dict[str, Any]:
         """Rolling Sharpe / win-rate / drawdown for the PORTFOLIO engine.
 
         Uses annualised Sharpe = mean(r) / std(r) * sqrt(252 / horizon_days).
 
+        Args:
+            as_of_date: End of the lookback window.
+            lookback_days: Calendar-day lookback (clamped to the current
+                account-reset boundary — pre-reset outcomes never count).
+            horizon_days: Outcome horizon to aggregate.
+            strategy_id: Optional filter on ``engine_decisions.strategy_id``
+                so per-strategy callers (e.g. the drift monitor) don't get
+                the global portfolio Sharpe.
+
         Returns a dict with keys:
             n, sharpe, win_rate, max_drawdown, avg_return, total_pnl,
+            reliable (n >= MIN_VERDICT_N), strategy_id,
             by_strategy (per-engine_name breakdown for all engines).
         """
-        start = as_of_date - timedelta(days=lookback_days)
+        start = clamp_window_start(
+            as_of_date - timedelta(days=lookback_days),
+            current_run_start(self.db_manager),
+        )
+        strategy_filter = "" if strategy_id is None else " AND ed.strategy_id = %s "
         try:
             with self.db_manager.get_runtime_connection() as conn:
                 cur = conn.cursor()
                 # PORTFOLIO engine, specified horizon
+                params: List[Any] = [horizon_days, start, as_of_date]
+                if strategy_id is not None:
+                    params.append(strategy_id)
                 cur.execute(
                     """
                     SELECT dout.realized_return, dout.realized_pnl
                     FROM decision_outcomes dout
                     JOIN engine_decisions ed ON dout.decision_id = ed.decision_id
                     WHERE ed.engine_name = 'PORTFOLIO'
+                      AND """ + _LIVE_GUARD + """
                       AND dout.horizon_days = %s
                       AND (ed.as_of_date + dout.horizon_days) >= %s
                       AND (ed.as_of_date + dout.horizon_days) <= %s
+                    """ + strategy_filter + """
                     ORDER BY ed.as_of_date
                     """,
-                    (horizon_days, start, as_of_date),
+                    tuple(params),
                 )
                 rows = cur.fetchall()
 
                 # All engines breakdown (ignore horizon filter here)
+                params = [start, as_of_date]
+                if strategy_id is not None:
+                    params.append(strategy_id)
                 cur.execute(
                     """
                     SELECT ed.engine_name,
@@ -137,12 +184,14 @@ class LivePerformanceTracker:
                                AS wins
                     FROM decision_outcomes dout
                     JOIN engine_decisions ed ON dout.decision_id = ed.decision_id
-                    WHERE (ed.as_of_date + dout.horizon_days) >= %s
+                    WHERE """ + _LIVE_GUARD + """
+                      AND (ed.as_of_date + dout.horizon_days) >= %s
                       AND (ed.as_of_date + dout.horizon_days) <= %s
+                    """ + strategy_filter + """
                     GROUP BY ed.engine_name
                     ORDER BY ed.engine_name
                     """,
-                    (start, as_of_date),
+                    tuple(params),
                 )
                 by_strategy_rows = cur.fetchall()
                 cur.close()
@@ -196,6 +245,14 @@ class LivePerformanceTracker:
                 "by_strategy": by_strategy,
                 "horizon_days": horizon_days,
                 "lookback_days": lookback_days,
+                "strategy_id": strategy_id,
+                "effective_start": start.isoformat(),
+                "insufficient_sample": n < self.min_n,
+                "min_n": self.min_n,
+                # A rolling Sharpe off <100 outcomes is noise; flag it so
+                # consumers (drift monitor, signal validations) can withhold
+                # verdicts instead of publishing false confidence.
+                "reliable": n >= MIN_VERDICT_N,
             }
         except Exception as exc:
             logger.warning("[live_perf] compute_rolling_performance failed: %s", exc)
@@ -217,7 +274,10 @@ class LivePerformanceTracker:
 
         Returns list of dicts: {regime_label, n, avg_return, win_rate, sharpe}.
         """
-        start = as_of_date - timedelta(days=lookback_days)
+        start = clamp_window_start(
+            as_of_date - timedelta(days=lookback_days),
+            current_run_start(self.db_manager),
+        )
         try:
             with self.db_manager.get_runtime_connection() as conn:
                 cur = conn.cursor()
@@ -262,6 +322,12 @@ class LivePerformanceTracker:
                         "avg_return": sum(returns) / n,
                         "win_rate": sum(1 for r in returns if r > 0) / n,
                         "sharpe": sharpe,
+                        "insufficient_sample": n < self.min_n,
+                        "min_n": self.min_n,
+                        # Per-regime verdicts need real sample mass; anything
+                        # below MIN_VERDICT_N is explicitly INSUFFICIENT_DATA.
+                        "reliable": n >= MIN_VERDICT_N,
+                        "verdict": "OK" if n >= MIN_VERDICT_N else "INSUFFICIENT_DATA",
                     }
                 )
             return results
@@ -286,8 +352,15 @@ class LivePerformanceTracker:
         Expected: ρ < 0 (high fragility → worse outcomes).
 
         Returns: {n, spearman_rho, verdict, entity_id}.
+
+        Verdict policy: SIGNAL_VALID / SIGNAL_INVERTED / SIGNAL_WEAK are only
+        emitted with n >= MIN_VERDICT_N day-pairs; below that the verdict is
+        INSUFFICIENT_DATA (rho is still reported for transparency).
         """
-        start = as_of_date - timedelta(days=lookback_days)
+        start = clamp_window_start(
+            as_of_date - timedelta(days=lookback_days),
+            current_run_start(self.db_manager),
+        )
         try:
             with self.db_manager.get_runtime_connection() as conn:
                 cur = conn.cursor()
@@ -320,13 +393,17 @@ class LivePerformanceTracker:
                     "spearman_rho": float("nan"),
                     "verdict": "INSUFFICIENT_DATA",
                     "entity_id": entity_id,
+                    "reliable": False,
+                    "min_verdict_n": MIN_VERDICT_N,
                 }
 
             fragility = [float(r[1]) for r in rows]
             returns = [float(r[2]) for r in rows]
             rho = _spearman_rho(fragility, returns)
 
-            if math.isnan(rho):
+            if math.isnan(rho) or n < MIN_VERDICT_N:
+                # A Spearman rho from a handful of day-pairs is noise —
+                # never publish SIGNAL_VALID/INVERTED off it.
                 verdict = "INSUFFICIENT_DATA"
             elif rho < -0.2:
                 verdict = "SIGNAL_VALID"   # high fragility → bad outcomes ✓
@@ -340,6 +417,8 @@ class LivePerformanceTracker:
                 "spearman_rho": rho,
                 "verdict": verdict,
                 "entity_id": entity_id,
+                "reliable": n >= MIN_VERDICT_N,
+                "min_verdict_n": MIN_VERDICT_N,
             }
         except Exception as exc:
             logger.warning("[live_perf] validate_fragility_signal failed: %s", exc)
@@ -361,7 +440,10 @@ class LivePerformanceTracker:
 
         Returns: {n_dates, pearson_r, verdict, options_pnl_total, portfolio_pnl_total}.
         """
-        start = as_of_date - timedelta(days=lookback_days)
+        start = clamp_window_start(
+            as_of_date - timedelta(days=lookback_days),
+            current_run_start(self.db_manager),
+        )
         try:
             with self.db_manager.get_runtime_connection() as conn:
                 cur = conn.cursor()
@@ -373,6 +455,7 @@ class LivePerformanceTracker:
                     FROM decision_outcomes dout
                     JOIN engine_decisions ed ON dout.decision_id = ed.decision_id
                     WHERE ed.engine_name IN ('PORTFOLIO', 'OPTIONS')
+                      AND """ + _LIVE_GUARD + """
                       AND (ed.as_of_date + dout.horizon_days) >= %s
                       AND (ed.as_of_date + dout.horizon_days) <= %s
                     GROUP BY (ed.as_of_date + dout.horizon_days), ed.engine_name
@@ -402,6 +485,8 @@ class LivePerformanceTracker:
                     "verdict": "INSUFFICIENT_DATA",
                     "options_pnl_total": sum(v.get("OPTIONS", 0) for v in pivot.values()),
                     "portfolio_pnl_total": sum(v.get("PORTFOLIO", 0) for v in pivot.values()),
+                    "insufficient_sample": True,
+                    "min_n": self.min_n,
                 }
 
             port_pnl = [p[0] for p in paired]
@@ -423,6 +508,9 @@ class LivePerformanceTracker:
                 "verdict": verdict,
                 "options_pnl_total": sum(opt_pnl),
                 "portfolio_pnl_total": sum(port_pnl),
+                "insufficient_sample": n < self.min_n,
+                "min_n": self.min_n,
+                "reliable": n >= MIN_VERDICT_N,
             }
         except Exception as exc:
             logger.warning("[live_perf] compute_hedge_effectiveness failed: %s", exc)

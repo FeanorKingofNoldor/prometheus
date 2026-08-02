@@ -3055,8 +3055,8 @@ The system operates on a **daily cadence**, triggered by market close events. Th
 
 - **Intelligence without capital commitment** — EU/ASIA pipelines run for signal generation (cross-market contagion, macro stress, breadth) but capital trades only in US_EQ.
 - **Regime-adaptive everything** — The regime label flows into strategy allocation budgets, sector put spread thresholds, options strategy activation, and portfolio risk limits.
-- **Defined-risk derivatives** — All 17 options strategies use spreads with defined max loss. No naked short options. Position lifecycle manager enforces profit targets and expiry rolls.
-- **Offensive + defensive** — Options layer includes both hedging strategies (protective put, collar, VIX tail) and profit-seeking strategies (bear put spread, sector decline, bull call spread, momentum call).
+- **Defined-risk derivatives** — Options strategies use spreads with defined max loss. No naked short options. Position lifecycle manager enforces profit targets and expiry rolls.
+- **Offensive + defensive** — Options layer includes hedging strategies (protective put, VIX tail, sector put spread) and profit-seeking strategies (iron condor, iron butterfly, crisis alpha).
 
 ---
 
@@ -3642,73 +3642,38 @@ graph TB
         EQPR["Equity & ETF Prices"]
     end
 
-    ALLOC["Strategy Allocator\\nRegime to Category Budgets\\nDIRECTIONAL · INCOME · HEDGE\\nVOLATILITY · FUTURES\\nPortfolio Greeks Limits\\ndelta · gamma · theta · vega"]
+    ALLOC["Strategy Allocator\\nRegime to Category Budgets\\nINCOME · HEDGE\\nPortfolio Greeks Limits\\ndelta · gamma · theta · vega"]
 
     REG --> ALLOC
     VIX --> ALLOC
     FRAG --> ALLOC
 
-    subgraph CAT_HEDGE["HEDGE (4 strategies)"]
+    subgraph CAT_HEDGE["HEDGE"]
         S_PP["Protective Put"]
-        S_COLLAR["Collar"]
         S_SECTOR_PS["Sector Put Spread\\n(regime-adaptive thresholds)"]
         S_VIX["VIX Tail Hedge"]
+        S_CRISIS["Crisis Alpha\\n(offensive sector puts)"]
     end
 
-    subgraph CAT_INCOME["INCOME (5 strategies)"]
+    subgraph CAT_INCOME["INCOME"]
         S_CC["Covered Call"]
-        S_SP["Short Put (CSP)"]
         S_IC["Iron Condor"]
         S_IB["Iron Butterfly"]
-        S_WHEEL["Wheel"]
-    end
-
-    subgraph CAT_DIR["DIRECTIONAL (5 strategies)"]
-        S_BCS["Bull Call Spread"]
-        S_BPS["Bear Put Spread\\n(offensive bearish)"]
-        S_SD["Sector Decline\\n(offensive sector shorts)"]
-        S_MOM["Momentum Call"]
-        S_LEAPS["LEAPS"]
-    end
-
-    subgraph CAT_VOL["VOLATILITY (2 strategies)"]
-        S_SS["Straddle / Strangle"]
-        S_CAL["Calendar Spread"]
-    end
-
-    subgraph CAT_FUT["FUTURES (1 strategy)"]
-        S_FO["Futures Overlay"]
-        S_FOPT["Futures Options"]
     end
 
     ALLOC --> CAT_HEDGE
     ALLOC --> CAT_INCOME
-    ALLOC --> CAT_DIR
-    ALLOC --> CAT_VOL
-    ALLOC --> CAT_FUT
 
     SHI --> S_SECTOR_PS
-    SHI --> S_SD
-    LAM --> S_BCS
-    LAM --> S_BPS
-    LAM --> S_SP
-    LAM --> S_LEAPS
-    LAM --> S_WHEEL
-    STAB --> S_BCS
-    STAB --> S_BPS
-    FRAG_S --> S_BPS
+    SHI --> S_CRISIS
     VIX --> S_CC
     VIX --> S_VIX
     EQPR --> CAT_INCOME
-    EQPR --> CAT_DIR
 
     LCM["Position Lifecycle Manager\\nRoll near expiry (< 14 DTE)\\nProfit target close (60%)\\nStop-loss management\\nRegime-flip exits"]
 
     CAT_HEDGE --> LCM
     CAT_INCOME --> LCM
-    CAT_DIR --> LCM
-    CAT_VOL --> LCM
-    CAT_FUT --> LCM
 
     IBKR["IBKR Gateway\\n(paper / live)"]
     LCM --> IBKR
@@ -3717,18 +3682,12 @@ graph TB
     classDef alloc fill:#44337a,stroke:#6b46c1,color:#e2e8f0
     classDef hedge fill:#742a2a,stroke:#c53030,color:#e2e8f0
     classDef income fill:#234e52,stroke:#2c7a7b,color:#e2e8f0
-    classDef dir fill:#553c00,stroke:#d69e2e,color:#e2e8f0
-    classDef vol fill:#2a4365,stroke:#3182ce,color:#e2e8f0
-    classDef fut fill:#22543d,stroke:#38a169,color:#e2e8f0
     classDef lifecycle fill:#4a1d96,stroke:#7c3aed,color:#e2e8f0
 
     class REG,VIX,FRAG,SHI,LAM,STAB,FRAG_S,EQPR input
     class ALLOC alloc
-    class S_PP,S_COLLAR,S_SECTOR_PS,S_VIX hedge
-    class S_CC,S_SP,S_IC,S_IB,S_WHEEL income
-    class S_BCS,S_BPS,S_SD,S_MOM,S_LEAPS dir
-    class S_SS,S_CAL vol
-    class S_FO,S_FOPT fut
+    class S_PP,S_SECTOR_PS,S_VIX,S_CRISIS hedge
+    class S_CC,S_IC,S_IB income
     class LCM lifecycle
 ```
 
@@ -3765,65 +3724,41 @@ The `StrategyAllocator` (`prometheus/execution/strategy_allocator.py`) decides w
 
 ## Regime → Strategy Activation
 
-**RISK_ON:** bull_call_spread, momentum_call, leaps, covered_call, short_put, wheel, iron_condor, iron_butterfly, vix_tail_hedge, sector_put_spread
+**RISK_ON:** covered_call, iron_condor, iron_butterfly, vix_tail_hedge
 
-**NEUTRAL:** covered_call, short_put, iron_condor, iron_butterfly, calendar_spread, wheel, vix_tail_hedge, sector_put_spread, sector_decline
+**NEUTRAL:** covered_call, iron_condor, iron_butterfly, vix_tail_hedge
 
-**RECOVERY:** collar, protective_put, covered_call, short_put, straddle_strangle, vix_tail_hedge, futures_overlay, sector_put_spread
+**RECOVERY:** protective_put, covered_call, vix_tail_hedge
 
-**RISK_OFF:** protective_put, sector_put_spread, vix_tail_hedge, collar, futures_overlay, futures_option, bear_put_spread, sector_decline
+**RISK_OFF:** protective_put, sector_put_spread, vix_tail_hedge, crisis_alpha
 
-**CRISIS:** protective_put, vix_tail_hedge, futures_overlay, futures_option, sector_put_spread, bear_put_spread, sector_decline
+**CRISIS:** protective_put, vix_tail_hedge, crisis_alpha
 
 ---
 
-## All 17 Strategies — Detail
+## Legacy Strategies — Detail
+
+These are the legacy pre-cutover (shadow/live) strategies. The successor
+derivatives sleeves (HEDGE / INCOME / CONVEX / COMMODITY) live in
+`prometheus/derivatives/sleeves.py`.
 
 ### HEDGE Category
 
 **Protective Put** — Buy SPY puts when MHI < 0.40. OTM 5%, 45-90 DTE, 2% NAV budget. Rolls at 14 DTE. Closes when MHI recovers.
 
-**Collar** — Buy protective put + sell covered call on large equity positions. Put delta 0.25, call delta 0.25. Min position $25K. 45-90 DTE. Rolls at 14 DTE.
-
 **Sector Put Spread** — Defensive hedge on sector ETFs when SHI drops into "reduce" zone (SHI < 0.40, above kill threshold 0.25). 7% wide spreads. Regime-adaptive: threshold widens +0.10 in CRISIS/RISK_OFF for earlier activation. Max 1% NAV per sector.
 
 **VIX Tail Hedge** — Always-on OTM VIX calls. Strike = VIX + 60% (far OTM, cheap tail insurance). 0.5% NAV per roll, 45-90 DTE. Rolls at 14 DTE.
+
+**Crisis Alpha** — Offensive SPY/sector puts during broad sector deterioration. Multi-bagger by design (profit target 250%), full-debit defined risk, signal + cooldown driven.
 
 ### INCOME Category
 
 **Covered Call** — Sell ~0.20 delta calls on largest equity positions. VIX >= 16 for entry (enough premium). 30-45 DTE, coverage ratio 20%, profit target 80%.
 
-**Short Put (CSP)** — Sell 0.25 delta cash-secured puts on high-conviction names (lambda >= 0.60, STAB >= 0.50). Max 5% buying power per underlying, 10 concurrent positions. Profit target 50%.
-
 **Iron Condor** — Sell OTM put + call spreads on SPY in calm markets (VIX < 22, FRAG < 0.45). ~7% OTM short strikes, $5 wings. 30-45 DTE, profit target 50%.
 
 **Iron Butterfly** — ATM straddle + OTM wings on SPY. Very low vol only (VIX < 16). Higher credit but narrower profit zone. Max 2 positions.
-
-**Wheel** — CSP → assignment → covered call cycle. Lambda >= 0.60, STAB >= 0.55. CSP at 0.28 delta, CC at 0.30 delta. 6% NAV per position, max 5 positions.
-
-### DIRECTIONAL Category
-
-**Bull Call Spread** — Long slightly-ITM call + short OTM call on high-conviction names. Lambda >= 0.65, STAB >= 0.50, RISK_ON only. 7% wide, 3% NAV risk per trade, max 9 positions. Profit target 60%.
-
-**Bear Put Spread** — Long ATM put + short OTM put on fundamentally weak names. Lambda <= 0.35, STAB <= 0.40, FRAG >= 0.50. CRISIS/RISK_OFF only. 7% wide, 2% NAV risk, max 6 positions.
-
-**Sector Decline** — Offensive put spreads on weak sector ETFs. SHI < 0.45, min 3/6 negative signals. Conviction-scaled sizing (more negative signals = larger position). Active in NEUTRAL too for early entry. 1.5% base NAV per trade.
-
-**Momentum Call** — SPY ATM call spreads in confirmed bull markets. RISK_ON + VIX < 20 + positive 63d momentum. Addresses bull-year drag where vol-harvesting underperforms directional rips.
-
-**LEAPS** — Deep ITM calls (0.70-0.80 delta, 6-12 months) as stock replacement. Frees capital while maintaining upside. Lambda >= 0.65, min $50K position value. Rolls at 90 DTE.
-
-### VOLATILITY Category
-
-**Straddle/Strangle** — Buy vol when cheap (VIX <= 18, FRAG >= 0.35). 5% OTM strangle legs preferred. 14-30 DTE, profit target 100%, max loss 50%.
-
-**Calendar Spread** — Front-month short + back-month long at same strike. Profits from vol term structure (min 8% contango). Front 25-35 DTE, back 55-90 DTE.
-
-### FUTURES Category
-
-**Futures Overlay** — ES/NQ futures for portfolio beta management. FRAG >= 0.65 → short ES (max 30% hedge). Lambda aggregate >= 0.70 → long ES (max 15% leverage). Multiplier: $50/point.
-
-**Futures Options** — VX call spreads when FRAG low (expect vol expansion) + ES put spreads as cheap downside protection (MHI < 0.45). Defined-risk FOP trades.
 
 ---
 
@@ -3831,10 +3766,10 @@ The `StrategyAllocator` (`prometheus/execution/strategy_allocator.py`) decides w
 
 Every open option position is managed by the lifecycle system:
 
-- **Roll near expiry** — Positions with < 14 DTE are rolled to the next monthly expiry (except LEAPS which roll at 90 DTE).
-- **Profit target close** — Most strategies close at 50-80% of max profit. Bull/bear spreads close at 60%.
+- **Roll near expiry** — Positions with < 14 DTE are rolled to the next monthly expiry.
+- **Profit target close** — Most strategies close at 50-80% of max profit.
 - **Stop-loss management** — Iron condors and butterflies close at 14 DTE to avoid gamma risk.
-- **Regime-flip exits** — Directional strategies (bull call, momentum call) close if regime flips away from their activation regime. Bear put spreads close if regime turns bullish.
+- **Regime-flip exits** — Strategies close if regime flips away from their activation regime.
 """,
     },
     "database": {

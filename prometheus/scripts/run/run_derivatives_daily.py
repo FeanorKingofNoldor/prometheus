@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import re
 import sys
 import uuid
@@ -40,6 +39,108 @@ from typing import Any, Dict, Optional, Sequence
 from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Error taxonomy ────────────────────────────────────────────────────
+#
+# The daemon treats ANY entry in the returned ``errors`` list as job
+# failure and retries the whole script (up to 3 times). A retry re-runs
+# strategy evaluation and re-submits orders — safe only if nothing was
+# submitted on the failed attempt. So the contract is:
+#
+#   summary["errors"]   — FATAL, pre-submission only (IBKR connect,
+#                         position sync, signal loading). Non-empty
+#                         errors ⇒ the daemon may retry safely.
+#   summary["warnings"] — everything that can fail at/after order
+#                         submission (lifecycle reconcile, shadow pass,
+#                         diff report, cutover bookkeeping, futures roll
+#                         detection, decision logging, status readout).
+#                         Logged loudly but NEVER triggers a retry.
+#
+# Anything appended to ``errors`` must be provably impossible after an
+# order has been placed; when in doubt, classify as a warning.
+
+
+def _record_warning(summary: Dict[str, Any], label: str, exc: BaseException) -> None:
+    """Record a non-fatal failure loudly without triggering a daemon retry."""
+    logger.error(
+        "derivatives daily [%s] failed (non-fatal — will NOT retry): %s",
+        label, exc, exc_info=True,
+    )
+    summary.setdefault("warnings", []).append(f"{label}: {exc}")
+
+
+def _derive_trading_context(*, port: int) -> "tuple[str, str]":
+    """Map the IBKR gateway port to ``(portfolio_id, mode)``.
+
+    4001 is the live gateway; anything else (4002, the paper default) is
+    paper. The daemon maps ``--options-mode`` to the port
+    (``live → 4001``, ``paper``/``dry_run → 4002``), so the port is the
+    single source of truth for which ACCOUNT we are talking to.
+
+    ``dry_run`` deliberately does NOT feed this: it only controls
+    whether orders are submitted. Positions synced from the gateway
+    still belong to the account the port points at, so persisting them
+    under a dry/paper/live label derived from ``dry_run`` (the
+    pre-2026-07 behaviour) mislabeled every paper run as
+    US_OPTIONS_LIVE/mode=LIVE.
+    """
+    live = port == 4001
+    if live:
+        return "US_OPTIONS_LIVE", "LIVE"
+    return "US_OPTIONS_PAPER", "PAPER"
+
+
+def _make_submission_recorder(
+    *,
+    portfolio_id: str,
+    mode: str,
+    as_of_date: date,
+    summary: Dict[str, Any],
+) -> Any:
+    """Build the callback ``_submit_directives`` invokes after each
+    successfully submitted order.
+
+    Persists strategy provenance (contract signature + strategy name)
+    into ``options_position_events`` (event_type=SUBMIT) so the next
+    sync can restore tags onto positions coming back from IBKR — the
+    fix for the position-blind re-entry defect. Runs AFTER the order
+    went out, so any failure here is a post-submission warning (never
+    retried).
+    """
+
+    def _record(directive: Any, instrument_id: str, order_id: Optional[str]) -> None:
+        try:
+            from apatheon.core.database import get_db_manager
+
+            from prometheus.execution.options_storage import record_order_submission
+
+            md = dict(directive.metadata or {})
+            record_order_submission(
+                get_db_manager(),
+                portfolio_id=portfolio_id,
+                mode=mode,
+                instrument_id=instrument_id,
+                symbol=directive.symbol,
+                right=directive.right,
+                expiry=directive.expiry,
+                strike=float(directive.strike),
+                quantity=int(directive.quantity),
+                strategy=str(directive.strategy or ""),
+                order_id=order_id,
+                limit_price=directive.limit_price,
+                sleeve=md.get("sleeve"),
+                template=md.get("template"),
+                as_of_date=as_of_date,
+                metadata={
+                    "action": directive.action.value,
+                    "reason": directive.reason,
+                },
+            )
+        except Exception as exc:
+            _record_warning(summary, "submission_record", exc)
+
+    return _record
 
 
 # ── Shadow-mode helper ───────────────────────────────────────────────
@@ -54,9 +155,12 @@ logger = get_logger(__name__)
 
 
 def _shadow_enabled() -> bool:
-    return os.environ.get("PROMETHEUS_DERIVATIVES_SHADOW", "").lower() in (
-        "1", "true", "yes", "on",
-    )
+    # Shared parser: the tracker reads the SAME flag — divergent token
+    # sets previously let a value like "y" enable one half of shadow
+    # mode and not the other.
+    from prometheus.env_utils import env_flag
+
+    return env_flag("PROMETHEUS_DERIVATIVES_SHADOW", default=False)
 
 
 def _make_underlying_price_fn(
@@ -120,8 +224,6 @@ _LEGACY_STRATEGY_TO_TEMPLATE: Dict[str, str] = {
     "protective_put": "hedge.spy_protective_put",
     "sector_put_spread": "hedge.sector_put_spread",
     "vix_tail_hedge": "hedge.vix_tail_call",
-    "collar": "hedge.collar",
-    "short_put": "income.spy_short_put",
     "iron_butterfly": "income.spy_iron_butterfly",
     "iron_condor": "income.spy_iron_condor",
     "covered_call": "income.covered_call",
@@ -143,6 +245,11 @@ _TEMPLATE_LEG_COUNT: Dict[str, int] = {
     "convex.thematic_sector_put": 1,
     "convex.vix_escalation_call": 1,
     "convex.convergence_straddle": 2,
+    # COMMODITY sleeve — all four are single-leg long FOP calls.
+    "commodity.crude_chokepoint_call": 1,
+    "commodity.natgas_supply_call": 1,
+    "commodity.gold_sanctions_call": 1,
+    "commodity.wheat_blacksea_call": 1,
 }
 
 
@@ -159,11 +266,27 @@ def _open_contracts_by_template(existing_options: Sequence[Dict[str, Any]]) -> D
     when legacy already holds the position the new template would
     open. Unmapped legacy strategies contribute nothing — they aren't
     replaced by any current template.
+
+    Two tagging conventions are recognised:
+
+    * legacy strategy names (``protective_put`` …) mapped to their
+      replacement template via ``_LEGACY_STRATEGY_TO_TEMPLATE``;
+    * positions already tagged with the *template* name directly
+      (``commodity.crude_chokepoint_call`` …). The COMMODITY sleeve is
+      shadow-only with no legacy equivalent, so it has no
+      ``_LEGACY_STRATEGY_TO_TEMPLATE`` row — its positions carry the
+      template name, which we recognise via ``_TEMPLATE_LEG_COUNT``.
     """
     raw: Dict[str, int] = {}
     for opt in existing_options:
         strategy = str(opt.get("strategy", "") or "")
-        template = _LEGACY_STRATEGY_TO_TEMPLATE.get(strategy)
+        # Position tagged with the template name itself (e.g. COMMODITY
+        # FOP positions, or any cut-over sleeve directive whose strategy
+        # tag is the template name) — count it directly.
+        if strategy in _TEMPLATE_LEG_COUNT:
+            template = strategy
+        else:
+            template = _LEGACY_STRATEGY_TO_TEMPLATE.get(strategy)
         if template is None:
             continue
         raw[template] = raw.get(template, 0) + 1
@@ -183,6 +306,7 @@ def _run_shadow_pass(
     existing_options: Sequence[Dict[str, Any]],
     as_of_date: date,
     summary: Dict[str, Any],
+    portfolio_id: str = "US_OPTIONS_LIVE",
 ) -> list:
     """Run the new sleeve pipeline in read-only shadow mode.
 
@@ -218,7 +342,7 @@ def _run_shadow_pass(
     try:
         intel = load_intel_signals(
             db_manager, as_of_date=as_of_date,
-            portfolio_id="US_OPTIONS_LIVE",
+            portfolio_id=portfolio_id,
         )
         enriched_signals: Dict[str, Any] = dict(merge_into_signals(signals, intel))
         summary["intel_signals"] = {
@@ -361,8 +485,7 @@ def _reconcile_options_storage(
             "closed": result.closed,
         }
     except Exception as exc:
-        logger.warning("options_storage reconcile failed (continuing): %s", exc)
-        summary.setdefault("errors", []).append(f"reconcile: {exc}")
+        _record_warning(summary, "reconcile", exc)
 
 
 def _write_daily_diff_report(*, as_of_date: date, summary: Dict[str, Any]) -> None:
@@ -385,8 +508,7 @@ def _write_daily_diff_report(*, as_of_date: date, summary: Dict[str, Any]) -> No
         else:
             summary["diff_report_skipped"] = "briefs directory missing"
     except Exception as exc:
-        logger.warning("diff report failed (continuing): %s", exc)
-        summary.setdefault("errors", []).append(f"diff_report: {exc}")
+        _record_warning(summary, "diff_report", exc)
 
 
 # ── Signal loader (stub — wired to real pipelines in production) ──────
@@ -431,9 +553,9 @@ def _load_signals(
         "sector_shi": {},
         "sector_exposures": {},
         "etf_prices": {},
-        # Futures positions (passed to FuturesOverlayStrategy)
+        # Futures positions
         "futures_positions": {},
-        # Equity prices (for ShortPutStrategy)
+        # Equity prices (single-name option strategies)
         "equity_prices": {},
     }
 
@@ -469,8 +591,15 @@ def _load_signals(
                          getattr(contract, "symbol", str(contract)), exc)
         return None
 
-    def _db_price(instrument_id: str) -> Optional[float]:
-        """Fetch the most recent close from ``prices_daily`` in the historical DB."""
+    def _db_price(instrument_id: str, max_age_days: int = 7) -> Optional[float]:
+        """Fetch the most recent close from ``prices_daily`` in the historical DB.
+
+        Bounded staleness: a row older than ``max_age_days`` calendar days is
+        REFUSED (returns None) rather than silently used — gating short-vol
+        strategies on a months-old VIX print is how positions get sized on a
+        market that no longer exists. Callers fall back to their conservative
+        defaults when this returns None.
+        """
         try:
             from apatheon.core.database import get_db_manager
             db = get_db_manager()
@@ -485,6 +614,14 @@ def _load_signals(
                     if row:
                         p = _valid_price(row[0])
                         if p is not None:
+                            age_days = (date.today() - row[1]).days
+                            if age_days > max_age_days:
+                                logger.warning(
+                                    "DB price for %s is %d days stale (as of %s, bound %dd) — "
+                                    "refusing to use it; caller falls back to safe defaults",
+                                    instrument_id, age_days, row[1], max_age_days,
+                                )
+                                return None
                             logger.info(
                                 "DB price for %s: %.4f (as of %s)",
                                 instrument_id, p, row[1],
@@ -664,12 +801,28 @@ def run_derivatives_daily(
     from prometheus.execution.options_portfolio import OptionsPortfolio
     from prometheus.execution.options_strategy import OptionsStrategyManager
 
+    # Which account (and hence persistence namespace) this run talks to
+    # is derived from the gateway port — NOT from dry_run (see
+    # _derive_trading_context).
+    options_portfolio_id, trading_mode = _derive_trading_context(port=port)
+
     summary: Dict[str, Any] = {
         "date": date.today().isoformat(),
         "dry_run": dry_run,
+        "trading_mode": trading_mode,
+        "options_portfolio_id": options_portfolio_id,
         "steps_completed": [],
+        # FATAL pre-submission failures only — the daemon retries on these.
         "errors": [],
+        # Non-fatal failures (anything at/after order submission) — logged
+        # loudly, never retried. See the error-taxonomy note at module top.
+        "warnings": [],
     }
+
+    # Flipped just before real orders go to IBKR. Once True, any later
+    # exception must be classified as a warning: a daemon retry would
+    # re-evaluate strategies and re-submit the already-placed orders.
+    orders_submitted = False
 
     ib = IB()
 
@@ -771,6 +924,38 @@ def run_derivatives_daily(
         options_portfolio = OptionsPortfolio(ib)
         options_portfolio.sync(broker_positions=positions)
 
+        # Restore strategy provenance BEFORE anything reads the synced
+        # positions. IBKR returns positions untagged; without this every
+        # tag-filtered check (vix_tail_hedge re-entry guard,
+        # condor/butterfly max_positions + margin-used, profit targets,
+        # rolls, regime exits) saw zero owned positions and re-entered
+        # nightly. Tags come from options_positions.strategy plus SUBMIT
+        # events written at order time (options_storage.load_strategy_tags).
+        #
+        # A failure here is FATAL (pre-submission, so the daemon may
+        # retry safely): trading position-blind is exactly the defect
+        # this guards against. Skipped when the account holds no option
+        # positions — nothing to restore.
+        if options_portfolio.get_all_positions():
+            try:
+                from apatheon.core.database import get_db_manager as _get_db
+
+                from prometheus.execution.options_storage import load_strategy_tags
+
+                _tags = load_strategy_tags(
+                    _get_db(),
+                    portfolio_id=options_portfolio_id,
+                    mode=trading_mode,
+                )
+                summary["strategy_tags_restored"] = (
+                    options_portfolio.apply_strategy_tags(_tags)
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"strategy_tag_restore failed — refusing to run "
+                    f"position-blind: {exc}"
+                ) from exc
+
         # Phase 2.5: write through to options_positions for queryable
         # state across the diff report + audit log. Gated by shadow
         # mode so we don't toggle persistence independently.
@@ -778,8 +963,8 @@ def run_derivatives_daily(
             _reconcile_options_storage(
                 ib_unused=ib,
                 options_portfolio=options_portfolio,
-                portfolio_id="US_OPTIONS_LIVE" if not dry_run else "US_OPTIONS_PAPER",
-                mode="LIVE" if not dry_run else "PAPER",
+                portfolio_id=options_portfolio_id,
+                mode=trading_mode,
                 summary=summary,
             )
 
@@ -793,11 +978,17 @@ def run_derivatives_daily(
         summary["steps_completed"].append("load_signals")
 
         # ── Step 5: Check futures rolls ───────────────────────────────
-        roll_directives = futures_mgr.check_rolls()
+        # Non-fatal: roll detection failing must not abort (or retry)
+        # the options pipeline — classified as a warning.
+        roll_directives: list = []
         roll_orders: list = []
-        for rd in roll_directives:
-            orders = futures_mgr.create_roll_orders(rd)
-            roll_orders.extend(orders)
+        try:
+            roll_directives = futures_mgr.check_rolls()
+            for rd in roll_directives:
+                orders = futures_mgr.create_roll_orders(rd)
+                roll_orders.extend(orders)
+        except Exception as exc:
+            _record_warning(summary, "futures_rolls", exc)
 
         summary["roll_directives"] = len(roll_directives)
         summary["roll_orders"] = len(roll_orders)
@@ -837,8 +1028,11 @@ def run_derivatives_daily(
             for opt in existing_options
             if opt.get("strategy") in _spread_strats and opt.get("quantity", 0) < 0
         )
-        # Override buying_power to mean the derivatives budget (NAV × 30%),
-        # not the raw IBKR AvailableFunds figure.
+        # Override buying_power to mean the legacy derivatives budget
+        # (NAV × 30%), not the raw IBKR AvailableFunds figure. The new
+        # sleeve runner enforces its own per-sleeve budgets independently
+        # (HEDGE 10% + INCOME 15% + CONVEX 5% + COMMODITY 5% = 35% total
+        # when all sleeves are in cutover).
         signals["buying_power"] = signals["nav"] * 0.30
 
         allocations = allocator.allocate(
@@ -879,27 +1073,169 @@ def run_derivatives_daily(
                 pass
 
         class _IbkrDirectBroker(BrokerInterface):
-            """Submit option orders via the already-connected ib_insync/ib_async instance."""
+            """Submit option orders via the already-connected ib_insync/ib_async instance.
 
-            # Instrument-id pattern: SYMBOL_YYMMDD_STRIKEC/P.US
-            # e.g.  VIX_260417_32C.US   SPY_260418_560P.US
+            Retry safety: every order gets a deterministic ``orderRef``
+            (sha1 over portfolio/strategy/contract/side/date — see
+            ``prometheus.derivatives.order_refs``), and submission is
+            skipped when a non-terminal trade with the same ref is
+            already working on the connection. A daemon retry of the
+            same cycle therefore cannot double-submit.
+            """
+
+            # Instrument-id patterns:
+            #   Equity option: SYMBOL_YYMMDD_STRIKEC/P.US
+            #     e.g.  VIX_260417_32C.US   SPY_260418_560P.US
+            #   Futures option (FOP): SYMBOL_YYMMDD_STRIKEC/P.FOP
+            #     e.g.  CL_260622_75C.FOP   ZW_260626_410P.FOP
             _OPT_RE = re.compile(r'^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.US$')
+            _FOP_RE = re.compile(r'^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.FOP$')
+
+            # IBKR statuses that mean the order is finished. Anything
+            # else (PendingSubmit, PreSubmitted, Submitted, ...) is a
+            # working order from a previous attempt.
+            _TERMINAL_STATUSES = frozenset(
+                {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+            )
+
+            def __init__(self, *, ib, portfolio_id: str, as_of_date: date) -> None:
+                self._ib = ib
+                self._portfolio_id = portfolio_id
+                self._as_of_date = as_of_date
+
+            def _order_ref(self, order, *, underlying, right, expiry, strike) -> str:
+                from prometheus.derivatives.order_refs import (
+                    deterministic_option_order_ref,
+                )
+                strategy = str((order.metadata or {}).get("strategy", "") or "")
+                return deterministic_option_order_ref(
+                    portfolio_id=self._portfolio_id,
+                    strategy=strategy,
+                    underlying=underlying,
+                    right=right,
+                    expiry=expiry,
+                    strike=strike,
+                    side=order.side.value,
+                    as_of_date=self._as_of_date,
+                )
+
+            def _find_working_trade(self, order_ref: str):
+                """Return a non-terminal trade already carrying this
+                orderRef, or None. Best-effort: a scan failure logs and
+                falls through to submission (``trades()`` is a local
+                list in ib_insync/ib_async, so this should not happen)."""
+                try:
+                    trades = self._ib.trades()
+                except Exception as exc:
+                    logger.warning(
+                        "open-order scan failed (submitting anyway): %s", exc,
+                    )
+                    return None
+                for t in trades:
+                    ref = getattr(getattr(t, "order", None), "orderRef", None)
+                    if ref != order_ref:
+                        continue
+                    status = str(getattr(
+                        getattr(t, "orderStatus", None), "status", "",
+                    ) or "")
+                    if status not in self._TERMINAL_STATUSES:
+                        return t
+                return None
 
             def submit_order(self, order) -> str:
                 from prometheus.execution.broker_interface import OrderSide, OrderType
+                from prometheus.execution.futures_option_specs import get_fop_spec
                 from prometheus.execution.ib_compat import (
+                    FuturesOption,
                     LimitOrder,
                     MarketOrder,
                     Option,
                 )
 
+                fop_match = self._FOP_RE.match(order.instrument_id)
                 m = self._OPT_RE.match(order.instrument_id)
-                if not m:
+                if not m and not fop_match:
                     raise ValueError(
                         f"_IbkrDirectBroker cannot parse instrument_id: "
-                        f"{order.instrument_id!r}  (expected SYMBOL_YYMMDD_STRIKE[CP].US)"
+                        f"{order.instrument_id!r}  (expected SYMBOL_YYMMDD_STRIKE[CP].US "
+                        f"or SYMBOL_YYMMDD_STRIKE[CP].FOP)"
                     )
 
+                # Deterministic ref + duplicate check, shared by both
+                # paths. Computed from the *directive-level* contract
+                # fields (before any qualification fallback) so retries
+                # of the same cycle always reproduce the same ref.
+                _match = fop_match or m
+                _exp_raw = _match.group(2)
+                order_ref = self._order_ref(
+                    order,
+                    underlying=_match.group(1),
+                    right=_match.group(4),
+                    expiry="20" + _exp_raw if len(_exp_raw) == 6 else _exp_raw,
+                    strike=float(_match.group(3)),
+                )
+                working = self._find_working_trade(order_ref)
+                if working is not None:
+                    logger.warning(
+                        "[IBKR] SKIP %s %s x%d — order with ref=%s already "
+                        "working from a previous attempt (status=%s)",
+                        order.side.value, order.instrument_id,
+                        int(order.quantity), order_ref,
+                        getattr(getattr(working, "orderStatus", None), "status", "?"),
+                    )
+                    return order_ref
+
+                # ── FOP path (commodity futures options) ──────────────
+                if fop_match:
+                    fop_symbol = fop_match.group(1)
+                    fop_exp_raw = fop_match.group(2)
+                    fop_expiry = "20" + fop_exp_raw if len(fop_exp_raw) == 6 else fop_exp_raw
+                    fop_strike = float(fop_match.group(3))
+                    fop_right = fop_match.group(4)
+
+                    spec = get_fop_spec(fop_symbol)
+                    if spec is None:
+                        raise RuntimeError(
+                            f"No FOP spec registered for {fop_symbol} "
+                            f"(see prometheus.execution.futures_option_specs)"
+                        )
+
+                    contract = FuturesOption(
+                        symbol=spec.symbol,
+                        lastTradeDateOrContractMonth=fop_expiry,
+                        strike=fop_strike,
+                        right=fop_right,
+                        exchange=spec.exchange,
+                        currency=spec.currency,
+                        multiplier=spec.multiplier,
+                        tradingClass=spec.trading_class,
+                    )
+                    qualified = self._ib.qualifyContracts(contract)
+                    contract = qualified[0] if qualified else None
+                    if not contract or not getattr(contract, "conId", 0):
+                        raise RuntimeError(
+                            f"Could not qualify FOP contract for {order.instrument_id} "
+                            f"(spec exchange={spec.exchange} tc={spec.trading_class} "
+                            f"mult={spec.multiplier})"
+                        )
+
+                    action = "BUY" if order.side == OrderSide.BUY else "SELL"
+                    qty = int(order.quantity)
+                    if order.order_type == OrderType.LIMIT and order.limit_price is not None:
+                        ib_order = LimitOrder(action, qty, round(order.limit_price, 2))
+                    else:
+                        ib_order = MarketOrder(action, qty)
+                    ib_order.tif = "DAY"
+                    ib_order.orderRef = order_ref
+                    trade = self._ib.placeOrder(contract, ib_order)
+                    logger.info(
+                        "[IBKR] Placed FOP %s %s x%d (orderId=%s ref=%s)",
+                        action, order.instrument_id, qty,
+                        trade.order.orderId, order_ref,
+                    )
+                    return str(trade.order.orderId)
+
+                # ── Equity option path (legacy) ───────────────────────
                 symbol = m.group(1)
                 exp_raw = m.group(2)
                 # Accept both YYMMDD (6 digits) and YYYYMMDD (8 digits)
@@ -935,7 +1271,7 @@ def run_derivatives_daily(
                             currency="USD",
                             multiplier="100",
                         )
-                        _q = ib.qualifyContracts(_c)
+                        _q = self._ib.qualifyContracts(_c)
                         _qualified = _q[0] if _q else None
                         if _qualified and getattr(_qualified, "conId", 0):
                             contract = _qualified
@@ -955,7 +1291,7 @@ def run_derivatives_daily(
                         exchange=exchange,
                         currency="USD",
                     )
-                    qualified = ib.qualifyContracts(contract)
+                    qualified = self._ib.qualifyContracts(contract)
                     # ib_async may return [None] (not []) when Error 200 fires;
                     # guard against both empty list and None element.
                     contract = qualified[0] if qualified else None
@@ -974,6 +1310,7 @@ def run_derivatives_daily(
                     ib_order = MarketOrder(action, qty)
 
                 ib_order.tif = "DAY"
+                ib_order.orderRef = order_ref
 
                 # ib_async placeOrder accesses contract.secIdType; if the
                 # field is None (contract qualified but field not set),
@@ -981,15 +1318,55 @@ def run_derivatives_daily(
                 if getattr(contract, "secIdType", None) is None:
                     contract.secIdType = ""
 
-                trade = ib.placeOrder(contract, ib_order)
+                trade = self._ib.placeOrder(contract, ib_order)
                 logger.info(
-                    "[IBKR] Placed %s %s x%d @ %s (orderId=%s)",
+                    "[IBKR] Placed %s %s x%d @ %s (orderId=%s ref=%s)",
                     action, order.instrument_id, qty,
-                    order.limit_price, trade.order.orderId,
+                    order.limit_price, trade.order.orderId, order_ref,
                 )
                 return str(trade.order.orderId)
 
             def cancel_order(self, order_id):
+                """Cancel a working order by orderId (or orderRef, for the
+                skip-path where submit_order returned the ref of an
+                already-working order). Returns True when a cancel was
+                issued — used by the naked-leg guard when a spread leg
+                fails after its sibling was submitted."""
+                try:
+                    wanted = str(order_id)
+                    for t in self._ib.trades():
+                        o = getattr(t, "order", None)
+                        if o is None:
+                            continue
+                        if str(getattr(o, "orderId", "")) != wanted and \
+                                str(getattr(o, "orderRef", "")) != wanted:
+                            continue
+                        status = str(getattr(
+                            getattr(t, "orderStatus", None), "status", "",
+                        ) or "")
+                        if status in self._TERMINAL_STATUSES:
+                            logger.warning(
+                                "[IBKR] cancel_order(%s): order already "
+                                "terminal (status=%s) — nothing to cancel",
+                                order_id, status,
+                            )
+                            return False
+                        self._ib.cancelOrder(o)
+                        logger.warning(
+                            "[IBKR] Cancel issued for orderId=%s ref=%s",
+                            getattr(o, "orderId", "?"),
+                            getattr(o, "orderRef", ""),
+                        )
+                        return True
+                    logger.warning(
+                        "[IBKR] cancel_order(%s): no matching trade found",
+                        order_id,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[IBKR] cancel_order(%s) failed: %s",
+                        order_id, exc, exc_info=True,
+                    )
                 return False
 
             def get_positions(self):
@@ -1059,8 +1436,7 @@ def run_derivatives_daily(
                     "dropped_directives": len(dropped),
                 }
         except Exception as exc:
-            logger.warning("cutover silencing failed (continuing): %s", exc)
-            summary.setdefault("errors", []).append(f"cutover_silence: {exc}")
+            _record_warning(summary, "cutover_silence", exc)
 
         # ── Step 6.5: Position lifecycle management ─────────────────
         lifecycle = PositionLifecycleManager()
@@ -1088,11 +1464,11 @@ def run_derivatives_daily(
                     existing_options=existing_options,
                     as_of_date=date.today(),
                     summary=summary,
+                    portfolio_id=options_portfolio_id,
                 )
                 summary["steps_completed"].append("shadow_pass")
             except Exception as exc:
-                logger.warning("shadow pass failed (continuing): %s", exc)
-                summary.setdefault("errors", []).append(f"shadow_pass: {exc}")
+                _record_warning(summary, "shadow_pass", exc)
 
         # Phase 2.7 (b): inject directives from cut-over sleeves into
         # all_directives so they're submitted alongside any surviving
@@ -1116,8 +1492,7 @@ def run_derivatives_daily(
                         len(new_legacy_directives),
                     )
             except Exception as exc:
-                logger.warning("cutover injection failed (continuing): %s", exc)
-                summary.setdefault("errors", []).append(f"cutover_inject: {exc}")
+                _record_warning(summary, "cutover_inject", exc)
 
         # ── Step 7: Risk checks (with greeks budget) ─────────────────
         portfolio_greeks = options_portfolio.compute_portfolio_greeks()
@@ -1152,8 +1527,28 @@ def run_derivatives_daily(
         else:
             logger.info("Submitting %d approved directives via IBKR...", len(approved))
             # Swap in the real broker so _submit_directives routes to IBKR.
-            strategy_mgr._broker = _IbkrDirectBroker()
-            strategy_mgr._submit_directives(approved)
+            strategy_mgr._broker = _IbkrDirectBroker(
+                ib=ib,
+                portfolio_id=account or options_portfolio_id,
+                as_of_date=date.today(),
+            )
+            # Persist strategy provenance per submitted order so the
+            # next sync can restore tags (see _make_submission_recorder).
+            strategy_mgr._submission_recorder = _make_submission_recorder(
+                portfolio_id=options_portfolio_id,
+                mode=trading_mode,
+                as_of_date=date.today(),
+                summary=summary,
+            )
+            # From here on a retry could double-submit — every later
+            # failure must be a warning, not an error (see taxonomy note).
+            orders_submitted = bool(approved)
+            submission_failures = strategy_mgr._submit_directives(approved)
+            # Leg failures (including naked-leg cancels) surface in the
+            # run summary — at/after submission, so warnings by taxonomy.
+            for msg in submission_failures:
+                summary.setdefault("warnings", []).append(f"submission: {msg}")
+            summary["submission_failures"] = len(submission_failures)
 
             # ── Log options decisions to DecisionTracker ──────────────────
             if approved:
@@ -1229,10 +1624,8 @@ def run_derivatives_daily(
                         orders=orders_for_log,
                         signals_snapshot=signals_snap,
                     )
-                except Exception:
-                    logger.exception(
-                        "Failed to record options decision in tracker (non-fatal)"
-                    )
+                except Exception as exc:
+                    _record_warning(summary, "decision_tracker", exc)
 
         summary["steps_completed"].append("submit_orders")
 
@@ -1257,8 +1650,14 @@ def run_derivatives_daily(
         )
 
     except Exception as exc:
-        logger.error("Derivatives daily failed: %s", exc, exc_info=True)
-        summary["errors"].append(str(exc))
+        if orders_submitted:
+            # Orders already went to IBKR on this attempt — a daemon
+            # retry would re-evaluate and re-submit, so this must NOT
+            # surface as a fatal error.
+            _record_warning(summary, "post_submission", exc)
+        else:
+            logger.error("Derivatives daily failed: %s", exc, exc_info=True)
+            summary["errors"].append(str(exc))
     finally:
         try:
             ib.disconnect()
@@ -1329,7 +1728,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     print(f"\n{'='*60}")
     print(f"Derivatives Daily Summary — {summary['date']}")
     print(f"{'='*60}")
-    print(f"  Mode:                {'DRY RUN' if summary['dry_run'] else 'LIVE'}")
+    print(f"  Mode:                {summary.get('trading_mode', '?')}"
+          f"{' (DRY RUN)' if summary['dry_run'] else ''}")
     print(f"  Steps completed:     {', '.join(summary['steps_completed'])}")
     print(f"  Positions synced:    {summary.get('position_count', 'N/A')}")
     print(f"  NAV:                 ${summary.get('nav', 0):,.0f}")
@@ -1344,10 +1744,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     print(f"  Blocked by risk:     {summary.get('blocked_directives', 0)}")
     print(f"  Greeks within budget:{summary.get('greeks_within_budget', 'N/A')}")
     print(f"  Futures positions:   {summary.get('futures_positions', 0)}")
+    if summary.get("warnings"):
+        print(f"  WARNINGS (no retry): {summary['warnings']}")
     if summary["errors"]:
         print(f"  ERRORS:              {summary['errors']}")
     print(f"{'='*60}")
 
+    # Exit non-zero on FATAL errors only — warnings are post-submission
+    # failures where a retry could double-submit orders.
     if summary["errors"]:
         sys.exit(1)
 

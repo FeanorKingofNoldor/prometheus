@@ -34,7 +34,7 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, Optional, Set
 
 from apatheon.core.logging import get_logger
@@ -71,6 +71,19 @@ class ConvictionConfig:
     decay_multipliers: Dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_DECAY_MULTIPLIERS)
     )
+    # Exit taper: instead of holding full size until conviction crosses
+    # sell_threshold and then liquidating in one day (a cliff exit at
+    # exactly the moment the signal is most negative), scale the hold
+    # weight down linearly once the score is within ``exit_taper_range``
+    # of the threshold. ``exit_taper_floor`` prevents dust positions.
+    # Set exit_taper_range to 0 to restore cliff behaviour.
+    exit_taper_range: float = 5.0
+    exit_taper_floor: float = 0.25
+    # Conviction states older than this many calendar days are treated
+    # as nonexistent when loading (a re-selected name becomes a fresh
+    # NEW entry at half weight instead of resurrecting months-old
+    # scale-up status and entry price).
+    state_max_age_days: int = 45
 
 
 # ── Per-position state ───────────────────────────────────────────────
@@ -86,6 +99,12 @@ class PositionConviction:
     consecutive_selected: int = 0
     is_scaled_up: bool = False
     last_updated: date = field(default_factory=date.today)
+    # Last real target weight actually assigned to this position by the
+    # portfolio model. Persisted so a position kept alive by conviction
+    # (held but not in today's selection) re-uses its own last weight
+    # instead of being silently re-sized to the average of the selected
+    # names every day. ``None`` until a weight has been recorded.
+    last_target_weight: Optional[float] = None
 
 
 # ── Decision output ──────────────────────────────────────────────────
@@ -115,6 +134,14 @@ class ConvictionDecision:
     holds: Dict[str, float] = field(default_factory=dict)
     position_states: Dict[str, PositionConviction] = field(default_factory=dict)
     exit_reasons: Dict[str, str] = field(default_factory=dict)
+    # Final state of positions exited TODAY — persisted as tombstones so
+    # load_latest_states stops resurrecting them tomorrow.
+    exited_states: Dict[str, PositionConviction] = field(default_factory=dict)
+    # Per-instrument exit-taper multiplier (1.0 = no taper). Kept separate
+    # from ``holds`` so the portfolio model can persist the UNtapered base
+    # weight in last_target_weight — otherwise the taper would compound
+    # against its own output day after day.
+    taper_fracs: Dict[str, float] = field(default_factory=dict)
 
 
 # ── Core tracker ─────────────────────────────────────────────────────
@@ -205,16 +232,33 @@ class ConvictionTracker:
                 if exit_reason is not None:
                     decision.exits.add(iid)
                     decision.exit_reasons[iid] = exit_reason
-                    # Don't persist state for exited positions.
+                    # Record the terminal state so storage can write a
+                    # tombstone row; without it yesterday's live row stays
+                    # the "latest" state and the position is resurrected
+                    # (with stale scale-up status and entry price) the
+                    # next time the name is selected.
+                    decision.exited_states[iid] = new_state
                     logger.info(
                         "ConvictionTracker: EXIT %s reason=%s score=%.1f",
                         iid, exit_reason, new_state.conviction_score,
                     )
                     continue
 
-                # Hold
+                # Hold — and taper the traded weight down as conviction
+                # approaches the sell threshold instead of liquidating full
+                # size in one day (a cliff exit at exactly the moment the
+                # signal is most negative).
                 weight_frac = 1.0 if new_state.is_scaled_up else cfg.entry_weight_fraction
+                taper = 1.0
+                if cfg.exit_taper_range > 0:
+                    dist = new_state.conviction_score - cfg.sell_threshold
+                    if dist < cfg.exit_taper_range:
+                        taper = max(
+                            cfg.exit_taper_floor,
+                            dist / cfg.exit_taper_range,
+                        )
                 decision.holds[iid] = weight_frac
+                decision.taper_fracs[iid] = taper
                 decision.position_states[iid] = new_state
 
             elif is_selected:
@@ -315,9 +359,17 @@ class ConvictionStorage:
         portfolio_id: str,
         states: Dict[str, PositionConviction],
         as_of_date: date,
+        exited_states: Optional[Dict[str, PositionConviction]] = None,
     ) -> None:
-        """Upsert conviction states for the given date."""
-        if not states:
+        """Upsert conviction states for the given date.
+
+        ``exited_states`` are written as tombstone rows (``exited_at`` set)
+        so :meth:`load_latest_states` stops returning the position — without
+        a tombstone, yesterday's live row remains the latest state forever
+        and the "exited" position keeps re-emitting decay exits and gets
+        resurrected with stale scale-up status when re-selected.
+        """
+        if not states and not exited_states:
             return
 
         sql = """
@@ -329,21 +381,29 @@ class ConvictionStorage:
                 entry_date,
                 avg_entry_price,
                 consecutive_selected,
-                is_scaled_up
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                is_scaled_up,
+                last_target_weight,
+                exited_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (portfolio_id, instrument_id, as_of_date)
             DO UPDATE SET
                 conviction_score = EXCLUDED.conviction_score,
                 entry_date = EXCLUDED.entry_date,
                 avg_entry_price = EXCLUDED.avg_entry_price,
                 consecutive_selected = EXCLUDED.consecutive_selected,
-                is_scaled_up = EXCLUDED.is_scaled_up
+                is_scaled_up = EXCLUDED.is_scaled_up,
+                last_target_weight = EXCLUDED.last_target_weight,
+                exited_at = EXCLUDED.exited_at
         """
+
+        rows = [(state, None) for state in states.values()] + [
+            (state, as_of_date) for state in (exited_states or {}).values()
+        ]
 
         with self._db.get_runtime_connection() as conn:
             cursor = conn.cursor()
             try:
-                for state in states.values():
+                for state, exited_at in rows:
                     cursor.execute(sql, (
                         portfolio_id,
                         state.instrument_id,
@@ -353,52 +413,66 @@ class ConvictionStorage:
                         state.avg_entry_price,
                         state.consecutive_selected,
                         state.is_scaled_up,
+                        state.last_target_weight,
+                        exited_at,
                     ))
                 conn.commit()
             finally:
                 cursor.close()
 
         logger.debug(
-            "ConvictionStorage.save_states: saved %d states for %s on %s",
-            len(states), portfolio_id, as_of_date,
+            "ConvictionStorage.save_states: saved %d states (%d tombstones) for %s on %s",
+            len(rows), len(exited_states or {}), portfolio_id, as_of_date,
         )
 
     def load_latest_states(
         self,
         portfolio_id: str,
         as_of_date: date,
+        max_age_days: int = 45,
     ) -> Dict[str, PositionConviction]:
-        """Load the most recent conviction state for each instrument.
+        """Load the most recent LIVE conviction state for each instrument.
 
-        Returns states from the latest ``as_of_date <= as_of_date`` per
-        instrument.
+        Excluded:
+        - instruments whose latest row is a tombstone (``exited_at`` set):
+          the position was exited; a later re-selection is a fresh entry;
+        - instruments whose latest row is older than ``max_age_days``
+          calendar days: stale states from a prior operating period must
+          not resurrect with months-old scale-up status and entry prices.
         """
         sql = """
-            SELECT DISTINCT ON (instrument_id)
-                instrument_id,
-                conviction_score,
-                entry_date,
-                avg_entry_price,
-                consecutive_selected,
-                is_scaled_up,
-                as_of_date
-            FROM position_convictions
-            WHERE portfolio_id = %s
-              AND as_of_date <= %s
-            ORDER BY instrument_id, as_of_date DESC
+            SELECT * FROM (
+                SELECT DISTINCT ON (instrument_id)
+                    instrument_id,
+                    conviction_score,
+                    entry_date,
+                    avg_entry_price,
+                    consecutive_selected,
+                    is_scaled_up,
+                    last_target_weight,
+                    as_of_date,
+                    exited_at
+                FROM position_convictions
+                WHERE portfolio_id = %s
+                  AND as_of_date <= %s
+                ORDER BY instrument_id, as_of_date DESC
+            ) latest
+            WHERE latest.exited_at IS NULL
+              AND latest.as_of_date >= %s
         """
+        cutoff = as_of_date - timedelta(days=max(1, int(max_age_days)))
 
         with self._db.get_runtime_connection() as conn:
             cursor = conn.cursor()
             try:
-                cursor.execute(sql, (portfolio_id, as_of_date))
+                cursor.execute(sql, (portfolio_id, as_of_date, cutoff))
                 rows = cursor.fetchall()
             finally:
                 cursor.close()
 
         states: Dict[str, PositionConviction] = {}
         for row in rows:
-            iid, score, entry_dt, entry_px, consec, scaled, last_dt = row
+            iid, score, entry_dt, entry_px, consec, scaled, last_w, last_dt, _exited = row
             states[iid] = PositionConviction(
                 instrument_id=iid,
                 conviction_score=float(score),
@@ -406,11 +480,12 @@ class ConvictionStorage:
                 avg_entry_price=float(entry_px),
                 consecutive_selected=int(consec),
                 is_scaled_up=bool(scaled),
+                last_target_weight=float(last_w) if last_w is not None else None,
                 last_updated=last_dt,
             )
 
         logger.debug(
-            "ConvictionStorage.load_latest_states: loaded %d states for %s as_of %s",
+            "ConvictionStorage.load_latest_states: loaded %d live states for %s as_of %s",
             len(states), portfolio_id, as_of_date,
         )
         return states

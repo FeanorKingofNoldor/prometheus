@@ -41,7 +41,6 @@ OPTIONS_DEFAULTS = {
     "derivatives_budget_pct": 0.15,
     "iron_butterfly_max_vix": 18.0,
     "iron_condor_max_vix": 20.0,
-    "momentum_call_min_momentum": 0.02,
     "vix_tail_nav_pct": 0.03,
 }
 

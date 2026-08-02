@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
-
 from apatheon.core.logging import get_logger
 from pydantic import BaseModel
 
@@ -100,6 +99,17 @@ class PortfolioConfig(BaseModel):
     # normalising into weights.  1.0 = linear (original behaviour),
     # 2.0 = quadratic (top names get disproportionately more weight).
     score_concentration_power: float = 1.0
+
+    # Universe scores carry a constant positive offset (~10) so the
+    # engine's multiplicative risk haircuts keep their semantics; sized
+    # proportionally on the raw value, a +-2 spread on a base of 10 is a
+    # near-equal-weight book. Sizing therefore re-centers scores within
+    # the selected set (score - min(score) + sizing_min_tilt) so the
+    # SPREAD drives weights. sizing_min_tilt is the weight-units floor
+    # assigned to the weakest selected name; smaller values = more
+    # aggressive tilts. Set to 0 or negative to disable re-centering and
+    # restore raw-score sizing.
+    sizing_min_tilt: float = 0.5
 
     # When True, after per-instrument caps are applied the residual
     # weight (that would otherwise sit in cash) is redistributed

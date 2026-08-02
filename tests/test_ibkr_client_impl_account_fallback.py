@@ -84,7 +84,11 @@ def _load_ibkr_client_impl_module(monkeypatch):
         def contract_to_instrument_id(contract) -> str:
             return getattr(contract, "symbol", "UNKNOWN")
 
+    class _StubContractQualificationError(Exception):
+        pass
+
     mapper_mod.InstrumentMapper = _StubInstrumentMapper  # type: ignore[attr-defined]
+    mapper_mod.ContractQualificationError = _StubContractQualificationError  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "apatheon", apatheon_mod)
     monkeypatch.setitem(sys.modules, "apatheon.core", apatheon_core_mod)

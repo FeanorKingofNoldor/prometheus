@@ -200,6 +200,16 @@ class MetaPolicyDecisionResponse(BaseModel):
 # (positions, decisions, drift) know which service to call back.
 _APATHEON_BASE = os.environ.get("APATHEON_API_URL", "http://127.0.0.1:8100")
 
+# Apatheon admin/operator API key. The proxy authenticates as the operator
+# so Iris resolves with the prometheus entitlement and exposes the trading
+# tools. Without it the call hits apatheon anonymously → free tier → no
+# sibling tools (this is why early Iris-Prometheus saw no trading data).
+_OPERATOR_KEY = os.environ.get("APATHEON_OPERATOR_API_KEY", "")
+
+
+def _auth_headers() -> Dict[str, str]:
+    return {"X-API-Key": _OPERATOR_KEY} if _OPERATOR_KEY else {}
+
 
 def _project_context() -> Dict[str, Any]:
     """Cross-project context injected into every Iris request from here."""
@@ -232,7 +242,9 @@ async def iris_chat(request: IrisRequest = Body(...)) -> IrisResponse:
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(f"{_APATHEON_BASE}/api/chat", json=payload)
+            r = await client.post(
+                f"{_APATHEON_BASE}/api/chat", json=payload, headers=_auth_headers()
+            )
             r.raise_for_status()
             body = r.json()
     except Exception as exc:
@@ -285,6 +297,7 @@ async def iris_chat_stream(request: IrisRequest = Body(...)):
                     "POST",
                     f"{_APATHEON_BASE}/api/chat/stream",
                     json=payload,
+                    headers=_auth_headers(),
                 ) as upstream:
                     if upstream.status_code != 200:
                         body = await upstream.aread()

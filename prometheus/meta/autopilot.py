@@ -27,7 +27,7 @@ Callers:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from apatheon.core.database import DatabaseManager
@@ -44,6 +44,7 @@ class AutopilotResult:
     meta_analysis_rows: int = 0
     drift_rows: int = 0
     drift_warning_or_worse: int = 0
+    config_changes_graded: int = 0
     notifications_recorded: int = 0
     weekly_report_persisted: bool = False
     errors: list[str] = field(default_factory=list)
@@ -94,7 +95,21 @@ def run_daily_autopilot(
         result.errors.append(f"drift_check: {exc}")
         logger.exception("autopilot[drift] failed")
 
-    # 3) Alert rules — emit notifications into the inbox.
+    # 3) Grade applied config changes — before/after Sharpe comparison so
+    # applied proposals get daily performance grading (and bad ones become
+    # visible/revertible quickly) instead of never being re-examined.
+    try:
+        graded = _grade_applied_config_changes(db, as_of_date)
+        result.config_changes_graded = graded
+        logger.info(
+            "autopilot[config_grading]: %d applied config changes graded",
+            graded,
+        )
+    except Exception as exc:
+        result.errors.append(f"config_grading: {exc}")
+        logger.exception("autopilot[config_grading] failed")
+
+    # 4) Alert rules — emit notifications into the inbox.
     try:
         from prometheus.meta.notifications import evaluate_daily_alerts
         alerts = evaluate_daily_alerts(db, as_of_date)
@@ -109,7 +124,7 @@ def run_daily_autopilot(
         result.errors.append(f"alerts: {exc}")
         logger.exception("autopilot[alerts] failed")
 
-    # 4) Weekly report — Monday post-close rolls up the prior 5 days.
+    # 5) Weekly report — Monday post-close rolls up the prior 5 days.
     if as_of_date.weekday() == 0:  # Monday
         try:
             from prometheus.meta.daily_analysis import run_weekly_report
@@ -128,6 +143,72 @@ def run_daily_autopilot(
             logger.exception("autopilot[weekly] failed")
 
     return result
+
+
+def _grade_applied_config_changes(
+    db: DatabaseManager,
+    as_of_date: date,
+    *,
+    max_age_days: int = 60,
+    eval_lookback_days: int = 30,
+) -> int:
+    """Re-grade every recently applied, un-reverted config change.
+
+    For each APPLY row in ``config_change_log`` from the last
+    ``max_age_days`` days, calls
+    :meth:`ProposalApplicator.evaluate_change_performance` with a window
+    of ``eval_lookback_days`` before the change through ``as_of_date``.
+    Each call appends a fresh row to ``config_change_evaluations``, so the
+    grade sharpens daily as post-change data accumulates.
+
+    Returns the number of changes successfully graded. Failure on one
+    change does not affect the others.
+    """
+    from prometheus.meta.applicator import ProposalApplicator
+
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT c.change_id, c.applied_at
+                FROM config_change_log c
+                WHERE c.change_type <> 'REVERT'
+                  AND COALESCE(c.is_reverted, FALSE) = FALSE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM config_change_log r
+                      WHERE r.reverts_change_id = c.change_id
+                  )
+                  AND c.applied_at >= %s
+                  AND c.applied_at::date < %s
+                ORDER BY c.applied_at DESC
+                """,
+                (as_of_date - timedelta(days=max_age_days), as_of_date),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+    if not rows:
+        return 0
+
+    applicator = ProposalApplicator(db_manager=db)
+    graded = 0
+    for change_id, applied_at in rows:
+        try:
+            start = applied_at.date() - timedelta(days=eval_lookback_days)
+            metrics = applicator.evaluate_change_performance(
+                change_id=str(change_id),
+                evaluation_start_date=start,
+                evaluation_end_date=as_of_date,
+            )
+            if metrics:
+                graded += 1
+        except Exception:
+            logger.exception(
+                "autopilot[config_grading] failed for change_id=%s", change_id,
+            )
+    return graded
 
 
 def __getattr__(name: str) -> Any:

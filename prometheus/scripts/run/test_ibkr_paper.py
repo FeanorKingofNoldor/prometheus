@@ -12,7 +12,7 @@ Prerequisites:
 - IB Gateway or TWS running with paper account logged in
 - Environment variables set (or defaults used):
   - IBKR_PAPER_USERNAME (default: khazaddum)
-  - IBKR_PAPER_ACCOUNT (default: DUN188994)
+  - IBKR_PAPER_ACCOUNT (e.g. DUN807925)
 - Database connection configured
 - Instruments table populated
 

@@ -74,6 +74,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = "data/lambda_model_{market_id}.json"
 DEFAULT_PREDICTIONS_PATH = "data/lambda_predictions_{market_id}.csv"
 
+# Trailing trading-day window of cluster history required for the GBT model's
+# engineered features. The longest dependency is the 21-day rolling window
+# (lambda_roll_mean_21 / lambda_roll_std_21 / lambda_zscore_21); we add margin
+# so per-cluster rolling stats are warm at as_of_date rather than all-NaN.
+_FEATURE_HISTORY_TRADING_DAYS = 30
+
 
 # ============================================================================
 # Raw Lambda Computation
@@ -336,6 +342,66 @@ def compute_lambda_for_date(
 # ============================================================================
 
 
+def _clusters_to_frame(clusters: List["LambdaClusterRow"]) -> pd.DataFrame:
+    """Convert raw cluster rows into the base feature DataFrame."""
+    return pd.DataFrame([
+        {
+            "as_of_date": c.as_of_date,
+            "market_id": c.market_id,
+            "sector": c.sector,
+            "soft_target_class": c.soft_target_class,
+            "num_instruments": c.num_instruments,
+            "dispersion": c.dispersion,
+            "avg_vol_window": c.avg_vol_window,
+            "lambda_value": c.lambda_value,
+            "sector_health_score": c.sector_health_score,
+        }
+        for c in clusters
+    ])
+
+
+def _build_cluster_history(
+    db_manager: DatabaseManager,
+    data_reader: DataReader,
+    calendar: TradingCalendar,
+    *,
+    as_of_date: date,
+    market_id: str,
+    lookback_days: int | None,
+    min_cluster_size: int,
+    history_days: int = _FEATURE_HISTORY_TRADING_DAYS,
+) -> pd.DataFrame:
+    """Compute raw lambda over a trailing window of trading days.
+
+    Returns a concatenated base feature DataFrame across all trading days in
+    ``[as_of_date - history_days, as_of_date]``. Each per-date computation is
+    point-in-time (it only reads data up to that date), so the resulting
+    history is suitable for the GBT model's lag/rolling/zscore features without
+    leaking future information. Days that yield no clusters are skipped.
+    """
+    search_start = as_of_date - timedelta(days=history_days * 3)
+    trading_days = calendar.trading_days_between(search_start, as_of_date)
+    window = trading_days[-history_days:] if len(trading_days) >= history_days else trading_days
+    if as_of_date not in window:
+        window = list(window) + [as_of_date]
+
+    frames: list[pd.DataFrame] = []
+    for d in window:
+        day_clusters = compute_lambda_for_date(
+            db_manager, data_reader, calendar,
+            as_of_date=d,
+            market_ids=[market_id],
+            lookback_days=lookback_days,
+            min_cluster_size=min_cluster_size,
+        )
+        if day_clusters:
+            frames.append(_clusters_to_frame(day_clusters))
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 @dataclass
 class DailyLambdaResult:
     """Result of the daily lambda computation."""
@@ -441,31 +507,65 @@ def run_daily_lambda(
         return fail("No clusters computed")
 
     # Step 3: Build features DataFrame and predict.
-    df_clusters = pd.DataFrame([
-        {
-            "as_of_date": c.as_of_date,
-            "market_id": c.market_id,
-            "sector": c.sector,
-            "soft_target_class": c.soft_target_class,
-            "num_instruments": c.num_instruments,
-            "dispersion": c.dispersion,
-            "avg_vol_window": c.avg_vol_window,
-            "lambda_value": c.lambda_value,
-            "sector_health_score": c.sector_health_score,
-        }
-        for c in clusters
-    ])
+    df_clusters = _clusters_to_frame(clusters)
 
-    # For GBT models, compute enhanced features before prediction.
+    # For GBT models, the engineered features (lags / rolling / zscore) are
+    # autoregressive on per-cluster lambda history. Computing them on a single
+    # date yields all-NaN features and collapses predictions to ~intercept.
+    # Build them over a trailing cluster-history window, then select the
+    # as_of_date rows for prediction.
     if isinstance(model, LambdaGBTModel):
         try:
-            df_clusters = build_enhanced_features(df_clusters)
+            history = _build_cluster_history(
+                db_manager, data_reader, calendar,
+                as_of_date=as_of_date,
+                market_id=market_id,
+                lookback_days=lookback_days,
+                min_cluster_size=min_cluster_size,
+            )
+            if not history.empty:
+                grp = history.groupby(
+                    ["market_id", "sector", "soft_target_class"],
+                )["lambda_value"]
+                history = history.sort_values(
+                    ["market_id", "sector", "soft_target_class", "as_of_date"],
+                )
+                history["lambda_prev"] = grp.shift(1)
+                history["lambda_trend"] = history["lambda_value"] - history["lambda_prev"]
+                feats = build_enhanced_features(history)
+                df_today = feats[feats["as_of_date"] == as_of_date].copy()
+                if not df_today.empty:
+                    df_clusters = df_today
+                else:
+                    # Trailing history did not include as_of_date rows; fall
+                    # back to single-date features below.
+                    df_clusters = build_enhanced_features(df_clusters)
+            else:
+                df_clusters = build_enhanced_features(df_clusters)
         except Exception as exc:
             logger.warning(
                 "run_daily_lambda: enhanced feature engineering failed: %s", exc,
             )
             # Fall through — GBT handles NaN natively, so partial features
             # are better than skipping entirely.
+
+        # Degenerate-prediction guard: if every engineered (history-dependent)
+        # feature is still NaN, predictions collapse to the intercept. Warn so
+        # the degenerate signal is visible rather than silently emitted.
+        engineered_cols = [
+            c for c in (
+                "lambda_prev", "lambda_trend", "lambda_lag2",
+                "lambda_roll_mean_21", "lambda_zscore_21",
+            )
+            if c in df_clusters.columns
+        ]
+        if engineered_cols and df_clusters[engineered_cols].isna().all(axis=None):
+            logger.warning(
+                "run_daily_lambda: all engineered GBT features are NaN for %s "
+                "(insufficient trailing cluster history); predictions will "
+                "collapse to ~intercept — treat lambda as degenerate for this date",
+                as_of_date,
+            )
 
     try:
         preds = model.predict(df_clusters)

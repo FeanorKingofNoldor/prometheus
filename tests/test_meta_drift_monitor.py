@@ -21,6 +21,14 @@ class _FakeCursor:
     def execute(self, sql: str, args: Any = ()) -> None:
         norm = " ".join(sql.split()).upper()
 
+        if norm.startswith("SELECT DISTINCT STRATEGY_ID"):
+            ids = sorted({
+                r["strategy_id"] for r in self._db.backtest_runs
+                if r["metrics"] is not None
+            })
+            self._result = [(s,) for s in ids]
+            return
+
         if norm.startswith("INSERT INTO BACKTEST_LIVE_DRIFT"):
             key = (args[0], args[1], args[2])  # date, strategy, horizon
             existing = next(
@@ -370,6 +378,94 @@ def test_drift_normalizes_backtest_max_drawdown_to_positive():
     assert row["backtest_max_drawdown"] == 0.15
     # Delta: live 0.08 - backtest 0.15 = -0.07 (less drawdown is good)
     assert abs(row["max_drawdown_delta"] - (0.08 - 0.15)) < 1e-9
+
+
+# ── Strategy filter threading ───────────────────────────────────────
+
+
+class _RecordingLivePerfStub(_LivePerfStub):
+    """Records the kwargs of every compute_rolling_performance call."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.calls: list[dict] = []
+
+    def compute_rolling_performance(self, **kw):
+        self.calls.append(kw)
+        return super().compute_rolling_performance(**kw)
+
+
+def test_drift_threads_strategy_id_into_live_performance():
+    """Each strategy's live side must be filtered to that strategy —
+    not the global portfolio Sharpe diffed against every backtest."""
+    db = _FakeDb()
+    today = date(2026, 7, 3)
+    for s in ("S1", "S2"):
+        db.backtest_runs.append({
+            "strategy_id": s, "run_id": f"bt-{s}",
+            "metrics": {"annualised_sharpe": 1.0, "cumulative_return": 0.1,
+                        "max_drawdown": -0.05},
+            "created_at": 1,
+        })
+
+    stub = _RecordingLivePerfStub()
+    with patch.object(drift_monitor, "LivePerformanceTracker", stub):
+        drift_monitor.run_daily_drift_check(
+            db, today, strategies=["S1", "S2"], horizons=[21],
+        )
+
+    assert {c.get("strategy_id") for c in stub.calls} == {"S1", "S2"}
+
+
+def test_discovery_defaults_to_allowlist_and_excludes_grid_prefixes():
+    db = _FakeDb()
+    today = date(2026, 7, 3)
+    for s in ("US_CORE_LONG_EQ", "BT_GRID_0042", "CPP_SWEEP_7",
+              "LAMBDA_FACT_US_EQ", "PERF_TEST_LOAD", "SOME_OTHER"):
+        db.backtest_runs.append({
+            "strategy_id": s, "run_id": f"bt-{s}",
+            "metrics": {"annualised_sharpe": 1.0, "cumulative_return": 0.1,
+                        "max_drawdown": -0.05},
+            "created_at": 1,
+        })
+
+    with patch.object(drift_monitor, "LivePerformanceTracker", _LivePerfStub()):
+        result = drift_monitor.run_daily_drift_check(db, today, horizons=[21])
+
+    # Only the allowlisted live strategy generates drift rows.
+    assert {r.strategy_id for r in result.rows} == {"US_CORE_LONG_EQ"}
+    assert {r["strategy_id"] for r in db.drift_rows} == {"US_CORE_LONG_EQ"}
+
+
+def test_discovery_custom_allowlist_still_blocks_grid_prefixes():
+    db = _FakeDb()
+    today = date(2026, 7, 3)
+    for s in ("SOME_OTHER", "BT_GRID_0042", "US_CORE_LONG_EQ"):
+        db.backtest_runs.append({
+            "strategy_id": s, "run_id": f"bt-{s}",
+            "metrics": {"annualised_sharpe": 1.0, "cumulative_return": 0.1,
+                        "max_drawdown": -0.05},
+            "created_at": 1,
+        })
+
+    with patch.object(drift_monitor, "LivePerformanceTracker", _LivePerfStub()):
+        result = drift_monitor.run_daily_drift_check(
+            db, today, horizons=[21],
+            strategy_allowlist=["SOME_OTHER", "BT_GRID_0042"],
+        )
+
+    # BT_ prefix is excluded even when explicitly allowlisted.
+    assert {r.strategy_id for r in result.rows} == {"SOME_OTHER"}
+
+
+def test_explicit_strategies_bypass_allowlist():
+    db = _FakeDb()
+    today = date(2026, 7, 3)
+    with patch.object(drift_monitor, "LivePerformanceTracker", _LivePerfStub()):
+        result = drift_monitor.run_daily_drift_check(
+            db, today, strategies=["ANYTHING_GOES"], horizons=[21],
+        )
+    assert {r.strategy_id for r in result.rows} == {"ANYTHING_GOES"}
 
 
 # ── Drift alert rule ────────────────────────────────────────────────

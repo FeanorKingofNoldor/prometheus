@@ -1,6 +1,6 @@
 # Prometheus
 
-Algorithmic trading system for US equities with options overlay. Runs a daily pipeline that scores instruments, constructs portfolios, and executes trades via Interactive Brokers. Backtested at **23% CAGR, 1.2 Sharpe, -25% MaxDD** over 29 years (1997-2025), beating the S&P 500 in 25 of 29 years.
+Algorithmic trading system for US equities with options overlay. Runs a daily pipeline that scores instruments, constructs portfolios, and executes trades via Interactive Brokers. Backtested (honest **next-bar** execution) at **~19.8% CAGR, 0.92 Sharpe, -28% MaxDD** for equity+options over ~30 years (1997-2026). The older **23% CAGR / 1.2 Sharpe** headline was computed with **same-bar** execution and contained look-ahead bias; the next-bar figures above are canonical.
 
 Built on top of [Apatheon](../apatheon) (the intelligence/info layer; Python package still named `apatheon`) which provides regime detection, stability scoring, entity graph, and geopolitical signals.
 
@@ -33,30 +33,39 @@ The daily pipeline progresses through phases tracked in `engine_runs`:
 
 | Engine | What it does | Key file |
 |--------|-------------|----------|
-| **Assessment** | Scores instruments: momentum + STAB fragility + embedding outlier + guidance breadth | `prometheus/assessment/model_basic.py` |
+| **Assessment** | Scores instruments: momentum + STAB fragility + guidance breadth | `prometheus/assessment/model_basic.py` |
 | **Universe** | Filters 660 instruments to top-K by score, with sector caps | `prometheus/universe/engine.py` |
 | **Portfolio** | Builds target weights with conviction lifecycle (half-weight entry, 3-day build) | `prometheus/portfolio/model_conviction.py` |
 | **Forward Indicators** | 13 leading signals (credit, rates, internals, macro) → budget multiplier | `apatheon/regime/forward_indicators.py` |
 | **Tier 1 Monitor** | 39 systemic entities (G-SIBs, central banks) → SOP constraints | `apatheon/stability/tier1_monitor.py` |
 | **Options** | 7 strategies (iron butterfly, VIX tail hedge, bull call spread, etc.) | `prometheus/execution/options_strategy.py` |
-| **Crisis Alpha** | Offensive SPY puts when 5+ sectors deteriorate | `prometheus/sector/crisis_alpha.py` |
+| **Crisis Alpha** | Offensive SPY puts when sectors deteriorate (options strategy) | `prometheus/execution/options_strategy.py` (`CrisisAlphaStrategy`) |
 | **Daemon Log Viewer** | Live-tailing daemon logs in the frontend dashboard | `prometheus/monitoring/` |
 
 ### Production Config
 
-**K20_CP1.0_CONV**: 20 names, equal-weight, conviction enabled, lambda scoring weight 10.
+**K20_CP1.0_CONV**: 20 names, equal-weight, conviction enabled. (Lambda is no
+longer used as additive alpha — `lambda_score_weight` was set to 0 on
+2026-06-11; see `configs/universe/core_long_eq_daily.yaml`.)
 
-| Metric | Equity Only | Equity + Options |
-|--------|------------|-----------------|
-| CAGR | 17.6% | 23.0% |
-| Sharpe | 1.031 | 1.196 |
-| MaxDD | -46.9% | -24.6% |
+Honest **next-bar** execution (1997-2026, ~30 years). The next-bar figures are
+canonical; the same-bar column is retained only to show the look-ahead gap and
+should **not** be quoted.
+
+| Metric | Equity Only (next-bar) | Equity + Options (next-bar) | Equity + Options (same-bar, look-ahead) |
+|--------|------------------------|-----------------------------|------------------------------------------|
+| CAGR   | ~15.8% | ~19.8% | 23.0% |
+| Sharpe | ~0.95  | ~0.92  | 1.196 |
+| MaxDD  | ~-47%  | ~-28%  | -24.6% |
+
+Source artifacts: `results/equity_nav_honest.json`, `results/opt_next_bar.json`,
+`results/opt_same_bar.json` (see `results/README_honest_rebaseline.md`).
 
 ## Project Structure
 
 ```
 prometheus/
-├── assessment/          # Instrument scoring (momentum, STAB, embeddings)
+├── assessment/          # Instrument scoring (momentum, STAB fragility, guidance)
 ├── backtest/            # Backtest runner, options backtester, C++ bridge
 ├── books/               # Book registry, sleeve specs
 ├── decisions/           # Decision tracking + outcome evaluation

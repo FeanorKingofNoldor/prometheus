@@ -105,7 +105,31 @@ PRODUCTS: Dict[str, FuturesProduct] = {
         symbol="CL", exchange="NYMEX", currency="USD",
         multiplier=1000.0, roll_frequency=RollFrequency.MONTHLY,
         roll_days_before_expiry=5, active_months=list(range(1, 13)),
-        tick_size=0.01, description="Crude Oil",
+        tick_size=0.01, description="Crude Oil (WTI)",
+    ),
+    "BZ": FuturesProduct(
+        symbol="BZ", exchange="NYMEX", currency="USD",
+        multiplier=1000.0, roll_frequency=RollFrequency.MONTHLY,
+        roll_days_before_expiry=5, active_months=list(range(1, 13)),
+        tick_size=0.01, description="Brent Crude (NYMEX-listed)",
+    ),
+    "NG": FuturesProduct(
+        symbol="NG", exchange="NYMEX", currency="USD",
+        multiplier=10000.0, roll_frequency=RollFrequency.MONTHLY,
+        roll_days_before_expiry=5, active_months=list(range(1, 13)),
+        tick_size=0.001, description="Natural Gas (Henry Hub)",
+    ),
+    "ZW": FuturesProduct(
+        symbol="ZW", exchange="CBOT", currency="USD",
+        multiplier=5000.0, roll_frequency=RollFrequency.MONTHLY,
+        roll_days_before_expiry=5, active_months=[3, 5, 7, 9, 12],
+        tick_size=0.25, description="Wheat (CBOT soft red winter)",
+    ),
+    "HG": FuturesProduct(
+        symbol="HG", exchange="COMEX", currency="USD",
+        multiplier=25000.0, roll_frequency=RollFrequency.MONTHLY,
+        roll_days_before_expiry=5, active_months=[3, 5, 7, 9, 12],
+        tick_size=0.0005, description="Copper",
     ),
 }
 

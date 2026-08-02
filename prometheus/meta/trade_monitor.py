@@ -24,7 +24,14 @@ from typing import Any, Dict, List, Optional
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 
+from prometheus.decisions.run_boundary import clamp_window_start, current_run_start
+
 logger = get_logger(__name__)
+
+# The weekly monitor reports on the live paper book only. positions_snapshots
+# is shared with ~7k BACKTEST rows, so every read must be scoped to these.
+LIVE_PORTFOLIO_IDS: tuple[str, ...] = ("IBKR_PAPER",)
+LIVE_MODE = "PAPER"
 
 
 @dataclass
@@ -120,10 +127,13 @@ def compute_weekly_report(
 ) -> WeeklyReport:
     """Generate comprehensive weekly monitoring report.
 
-    Analyzes the last 5 trading days of live activity.
+    Analyzes the last 5 trading days of live activity. All lookbacks are
+    clamped to the current account-reset boundary so a freshly wiped paper
+    account never reports on pre-reset history.
     """
     period_end = as_of_date
-    period_start = as_of_date - timedelta(days=7)
+    run_start = current_run_start(db_manager)
+    period_start = clamp_window_start(as_of_date - timedelta(days=7), run_start)
 
     positions: List[PositionPnL] = []
     closed_trades: List[TradeRecord] = []
@@ -140,12 +150,20 @@ def compute_weekly_report(
     with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
             # ── Current positions ────────────────────────────────────
+            # positions_snapshots is shared with thousands of BACKTEST rows;
+            # a global MAX(timestamp) would pick up whichever backtest wrote
+            # last. Scope both the MAX and the read to the live paper book.
             cur.execute("""
                 SELECT instrument_id, quantity, avg_cost, market_value, unrealized_pnl
                 FROM positions_snapshots
-                WHERE timestamp = (SELECT MAX(timestamp) FROM positions_snapshots)
+                WHERE mode = %s
+                  AND portfolio_id = ANY(%s)
+                  AND timestamp = (
+                      SELECT MAX(timestamp) FROM positions_snapshots
+                      WHERE mode = %s AND portfolio_id = ANY(%s)
+                  )
                 ORDER BY ABS(market_value) DESC
-            """)
+            """, (LIVE_MODE, list(LIVE_PORTFOLIO_IDS), LIVE_MODE, list(LIVE_PORTFOLIO_IDS)))
             pos_rows = cur.fetchall()
 
             for (inst_id, qty, avg_cost, mv, pnl) in pos_rows:
@@ -188,11 +206,14 @@ def compute_weekly_report(
             cur.execute("""
                 SELECT COALESCE(SUM(market_value), 0)
                 FROM positions_snapshots
-                WHERE timestamp = (
-                    SELECT MAX(timestamp) FROM positions_snapshots
-                    WHERE timestamp::date <= %s
-                )
-            """, (period_start,))
+                WHERE mode = %s
+                  AND portfolio_id = ANY(%s)
+                  AND timestamp = (
+                      SELECT MAX(timestamp) FROM positions_snapshots
+                      WHERE mode = %s AND portfolio_id = ANY(%s)
+                        AND timestamp::date <= %s
+                  )
+            """, (LIVE_MODE, list(LIVE_PORTFOLIO_IDS), LIVE_MODE, list(LIVE_PORTFOLIO_IDS), period_start))
             start_row = cur.fetchone()
             if start_row and start_row[0]:
                 start_nav = float(start_row[0])
@@ -203,9 +224,10 @@ def compute_weekly_report(
             cur.execute("""
                 SELECT instrument_id, side, quantity, status, order_type
                 FROM orders
-                WHERE timestamp::date BETWEEN %s AND %s
+                WHERE mode = %s
+                  AND timestamp::date BETWEEN %s AND %s
                 ORDER BY timestamp
-            """, (period_start, period_end))
+            """, (LIVE_MODE, period_start, period_end))
             order_rows = cur.fetchall()
 
             for (inst_id, side, qty, status, otype) in order_rows:
@@ -218,8 +240,9 @@ def compute_weekly_report(
             cur.execute("""
                 SELECT instrument_id, side, quantity, price
                 FROM fills
-                WHERE timestamp::date BETWEEN %s AND %s
-            """, (period_start, period_end))
+                WHERE mode = %s
+                  AND timestamp::date BETWEEN %s AND %s
+            """, (LIVE_MODE, period_start, period_end))
             fill_rows = cur.fetchall()
             total_traded = sum(abs(float(r[2]) * float(r[3])) for r in fill_rows)
             turnover_pct = total_traded / max(current_nav, 1) if current_nav > 0 else 0
@@ -248,6 +271,9 @@ def compute_weekly_report(
 
             # ── Decision quality ─────────────────────────────────────
             portfolio_hit_rate = None
+            hit_rate_start = clamp_window_start(
+                period_start - timedelta(days=30), run_start,
+            )
             cur.execute("""
                 SELECT o.realized_return
                 FROM decision_outcomes o
@@ -255,7 +281,7 @@ def compute_weekly_report(
                 WHERE d.engine_name = 'PORTFOLIO'
                   AND d.as_of_date BETWEEN %s AND %s
                   AND o.realized_return IS NOT NULL
-            """, (period_start - timedelta(days=30), period_end))
+            """, (hit_rate_start, period_end))
             port_rets = [float(r[0]) for r in cur.fetchall() if r[0] is not None]
             if port_rets:
                 portfolio_hit_rate = sum(1 for r in port_rets if r > 0) / len(port_rets)

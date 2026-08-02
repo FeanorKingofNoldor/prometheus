@@ -52,8 +52,14 @@ def _build_model(
     strong_buy_threshold: float = 0.03,
     sell_threshold: float = 0.01,
     strong_sell_threshold: float = 0.03,
+    momentum_skip_days: int = 0,
 ) -> BasicAssessmentModel:
-    """Construct a BasicAssessmentModel with mocked dependencies."""
+    """Construct a BasicAssessmentModel with mocked dependencies.
+
+    ``momentum_skip_days`` defaults to 0 here (production default is 21)
+    so the label/clamp mechanics tests keep exercising the full window;
+    skip behaviour has its own dedicated test below.
+    """
     data_reader = MagicMock()
     if prices_df is not None:
         data_reader.read_prices.return_value = prices_df
@@ -81,6 +87,7 @@ def _build_model(
         strong_buy_threshold=strong_buy_threshold,
         sell_threshold=sell_threshold,
         strong_sell_threshold=strong_sell_threshold,
+        momentum_skip_days=momentum_skip_days,
     )
     return model
 
@@ -488,3 +495,53 @@ class TestScoreInstruments:
         scores = model.score_instruments("strat1", "US_EQ", ["AAPL"], as_of, 21)
         assert len(scores) == 1
         assert "AAPL" in scores
+
+
+# ---------------------------------------------------------------------------
+# Skip-month momentum + adjusted-close preference
+# ---------------------------------------------------------------------------
+
+
+class TestSkipMonthAndAdjustedClose:
+    def test_momentum_skip_days_excludes_recent_reversal(self):
+        """With skip enabled, a last-month spike is excluded from momentum."""
+        as_of = date(2025, 6, 30)
+        # Flat for 30 days, then a +50% spike over the final 21 days.
+        closes = [100.0] * 30 + list(np.linspace(100.0, 150.0, 21))
+        start = as_of - timedelta(days=len(closes) - 1)
+        df = _make_price_df("AAPL", closes, start)
+
+        model_skip = _build_model(df, window_days=51, momentum_skip_days=21)
+        model_full = _build_model(df, window_days=51, momentum_skip_days=0)
+
+        mom_skip, _ = model_skip._compute_price_features("AAPL", as_of, 51)
+        mom_full, _ = model_full._compute_price_features("AAPL", as_of, 51)
+
+        # Full window sees the spike; the skip window ends before it.
+        assert mom_full > 0.40
+        assert abs(mom_skip) < 0.05
+
+    def test_adjusted_close_preferred_over_split_artifact(self):
+        """A 10:1 split in raw close must not read as a -90% move."""
+        as_of = date(2025, 6, 30)
+        n = 25
+        raw = [1000.0] * 12 + [100.0] * (n - 12)  # 10:1 split at day 12
+        adjusted = [100.0] * n  # continuous series
+        start = as_of - timedelta(days=n - 1)
+        rows = [
+            {
+                "instrument_id": "AAPL",
+                "trade_date": start + timedelta(days=i),
+                "close": raw[i],
+                "adjusted_close": adjusted[i],
+            }
+            for i in range(n)
+        ]
+        df = pd.DataFrame(rows)
+
+        model = _build_model(df, window_days=21, momentum_skip_days=0)
+        momentum, vol = model._compute_price_features("AAPL", as_of, 21)
+
+        # On raw closes this would be ~-0.90 momentum with exploded vol.
+        assert abs(momentum) < 1e-9
+        assert vol < 1e-9

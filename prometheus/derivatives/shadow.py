@@ -83,6 +83,7 @@ def record_shadow_result(
                         nav=nav, vix=vix, mhi=mhi, skip=s,
                     )
                     rows += 1
+        conn.commit()
 
     logger.info(
         "shadow pass %s: persisted %d rows across sleeves", run_id, rows,
@@ -101,7 +102,7 @@ def _insert_directive(
         INSERT INTO derivatives_shadow_decisions (
             run_id, as_of_date, sleeve, template_name, kind,
             nav, vix_level, mhi,
-            underlying, right, expiry, strike, quantity, limit_price,
+            underlying, "right", expiry, strike, quantity, limit_price,
             iv_used, iv_source, delta, estimated_premium_per_contract,
             sizing_contracts, sizing_capacity_bound, sizing_budget_bound,
             trigger_reason, trigger_metadata_json, selection_trace_json,

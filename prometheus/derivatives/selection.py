@@ -11,7 +11,8 @@ currently each:
 * discover the chain themselves,
 * pick an expiration by their own DTE rule,
 * delta-select using Black-Scholes with **VIX as sigma** for every
-  underlying (the documented reason ``ShortPutStrategy`` is disabled),
+  underlying (the documented reason single-name short-premium was
+  disabled in the legacy backtest),
 * skip liquidity validation entirely.
 
 The new pipeline:
@@ -184,13 +185,21 @@ def select_contract(
 
     today = today or date.today()
 
-    # 1. Chain discovery.
-    chains = discovery.discover_option_chain(
-        target.underlying,
-        sec_type=target.sec_type,
-        exchange=target.exchange,
-        trading_class=target.trading_class,
-    )
+    # 1. Chain discovery. FOP underlyings dispatch to the futures-
+    # option chain discovery (reqSecDefOptParams scoped to the front-
+    # month future), since the standard option-chain path expects an
+    # equity/index underlying.
+    if target.sec_type == "FOP":
+        chains = discovery.discover_fop_chain(
+            target.underlying, target.exchange,
+        )
+    else:
+        chains = discovery.discover_option_chain(
+            target.underlying,
+            sec_type=target.sec_type,
+            exchange=target.exchange,
+            trading_class=target.trading_class,
+        )
     if not chains:
         return _skipped(target, underlying_price, "no_chain")
 
@@ -221,6 +230,7 @@ def select_contract(
     contracts = _build_contracts(
         target.underlying, expiry, candidates, target.right,
         target.exchange, target.trading_class,
+        sec_type=target.sec_type,
     )
     liq_result = liquidity.filter(contracts)
     rejections = liq_result.reasons()
@@ -334,15 +344,40 @@ def _build_contracts(
     right: str,
     exchange: str,
     trading_class: str | None,
+    sec_type: str = "STK",
 ) -> list[Any]:
-    """Build IB Option contracts without qualifying — the liquidity
-    filter does its own market-data round-trip and the strikes came
-    from a qualified chain, so requalifying here would be wasted.
+    """Build IB Option/FuturesOption contracts without qualifying — the
+    liquidity filter does its own market-data round-trip and the strikes
+    came from a qualified chain, so requalifying here would be wasted.
+
+    ``sec_type`` selects between equity-style options (``Option``) and
+    futures-style options (``FuturesOption``). For FOP, looks up the
+    per-symbol spec to attach the correct multiplier + tradingClass.
     """
-    from prometheus.execution.ib_compat import Option
+    from prometheus.execution.ib_compat import FuturesOption, Option
 
     out: list[Any] = []
     r = right.upper()
+
+    if sec_type == "FOP":
+        from prometheus.execution.futures_option_specs import get_fop_spec
+        spec = get_fop_spec(underlying)
+        if spec is None:
+            return []  # no spec → can't build correctly, caller treats as no candidates
+        for strike in strikes:
+            fop = FuturesOption(
+                symbol=spec.symbol,
+                lastTradeDateOrContractMonth=expiry,
+                strike=strike,
+                right=r,
+                exchange=spec.exchange,
+                currency=spec.currency,
+                multiplier=spec.multiplier,
+                tradingClass=spec.trading_class,
+            )
+            out.append(fop)
+        return out
+
     for strike in strikes:
         opt = Option(
             symbol=underlying,

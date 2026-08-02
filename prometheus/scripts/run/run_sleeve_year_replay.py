@@ -121,14 +121,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--sleeve-id",
         type=str,
-        default="US_CORE_LONG_EQ_H21",
-        help="Sleeve id to use (default: US_CORE_LONG_EQ_H21)",
+        default="BT_US_CORE_LONG_EQ_H21",
+        help=(
+            "Sleeve id to use (default: BT_US_CORE_LONG_EQ_H21). Must carry "
+            "a backtest prefix — live ids are rejected by "
+            "prometheus/backtest/naming.py because backtests share tables "
+            "with production."
+        ),
     )
     parser.add_argument(
         "--strategy-id",
         type=str,
-        default="US_CORE_LONG_EQ",
-        help="Strategy id for the sleeve (default: US_CORE_LONG_EQ)",
+        default="BT_US_CORE_LONG_EQ",
+        help="Strategy id for the sleeve (default: BT_US_CORE_LONG_EQ)",
     )
     parser.add_argument(
         "--market-id",

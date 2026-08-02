@@ -13,6 +13,24 @@ The engine reads equity prices, VIX, and realized vol from the
 database via DataReader, then runs the options overlay on top of
 a pre-computed equity backtest.
 
+FILL CONVENTION: ``config.fill_mode`` controls how directives are filled,
+mirroring the equity path's ``--execution-price`` convention.
+
+- ``"next_bar"`` (default, honest): contract SELECTION still uses day ``d``'s
+  signals/regime (the decision is made on ``d``'s information), but the option
+  is PRICED (filled) against the NEXT trading bar's underlying price and IV
+  surface (VIX / term structure / realized vol as of ``t+1``) — a 1-bar
+  execution lag. Exits and rolls triggered on ``d`` likewise fill at ``t+1``.
+  Mark-to-market remains daily at each bar's close. This removes the same-bar
+  look-ahead the equity path had before the next_open fix in
+  ``prometheus.execution.market_simulator.FillConfig``.
+- ``"same_bar"`` (parity/debug, look-ahead): decision and fill both at day
+  ``d`` — reproduces the legacy behaviour, which overstates the overlay.
+
+The synthetic IV surface is derived from VIX history; the ``t+1`` IV lookup
+uses the same dated caches keyed to the fill bar, so it never peeks past the
+fill date.
+
 Usage::
 
     from prometheus.backtest.options_backtest import OptionsBacktestEngine
@@ -91,7 +109,7 @@ class OptionsBacktestConfig:
     # SPY instrument ID
     spy_instrument_id: str = "SPY.US"
 
-    # Individual equity universe for short_put strategy.
+    # Individual equity universe for single-name option strategies.
     # Explicit list of instrument IDs (e.g. ["AAPL.US", "MSFT.US"]).
     # When empty, only sector ETFs are loaded (legacy behaviour).
     equity_universe_ids: List[str] = field(default_factory=list)
@@ -106,6 +124,16 @@ class OptionsBacktestConfig:
     # with real model scores keyed by (date, sector, soft_target_class).
     # Expected columns: as_of_date, sector, soft_target_class, lambda_score_h63, ...
     lambda_csv_path: Optional[str] = None
+
+    # Fill convention for option entries/exits/rolls. Mirrors the equity
+    # path's next-bar convention (``--execution-price open``).
+    #   "next_bar" (default, honest): contract SELECTION uses day ``d``'s
+    #     signals/regime, but the option is PRICED (filled) against the next
+    #     trading bar's underlying + IV surface (a 1-bar execution lag). This
+    #     removes the same-bar look-ahead.
+    #   "same_bar" (parity/debug, look-ahead): decision and fill both at day
+    #     ``d`` — reproduces the legacy behaviour, which overstates the overlay.
+    fill_mode: str = "next_bar"
 
 
 # ── Backtest result ──────────────────────────────────────────────────
@@ -414,7 +442,12 @@ class OptionsBacktestEngine:
 
         # Trading days
         trading_days = self._get_trading_days(cfg.start_date, cfg.end_date)
-        logger.info("Running %d trading days", len(trading_days))
+        logger.info("Running %d trading days (fill_mode=%s)", len(trading_days), cfg.fill_mode)
+
+        # Map each trading day to the next one so next-bar fills can look it up.
+        next_day_of: Dict[date, Optional[date]] = {}
+        for i, td in enumerate(trading_days):
+            next_day_of[td] = trading_days[i + 1] if i + 1 < len(trading_days) else None
 
         # Insert run metadata if persisting
         if self._writer is not None:
@@ -439,8 +472,7 @@ class OptionsBacktestEngine:
 
         # Short-premium strategy names (halted during guardrail triggers)
         _SHORT_PREMIUM_STRATS = {
-            "iron_condor", "iron_butterfly", "short_put", "wheel",
-            "bull_call_spread", "covered_call",
+            "iron_condor", "iron_butterfly", "covered_call",
         }
 
         for d in trading_days:
@@ -453,7 +485,9 @@ class OptionsBacktestEngine:
             deriv_capital = equity_nav * cfg.derivatives_budget_pct
             self._book.update_capital(deriv_capital)
 
-            # 3. Get market data
+            # 3. Get market data for the DECISION bar (day d). Signals, regime
+            #    classification, allocations and lifecycle/strategy evaluation
+            #    are all built from day d's information.
             vix = self._get_vix(d)
             spy_price = self._get_price("SPY", d)
             underlying_prices = self._get_all_underlying_prices(d)
@@ -461,7 +495,12 @@ class OptionsBacktestEngine:
             underlying_prices["VIX"] = vix
             realized_vols = self._get_all_realized_vols(d)
 
-            # 4. Risk-free rate
+            # 3b. Resolve the FILL bar. In next_bar mode entries/exits/rolls
+            #     are priced against the next trading day's market data (a 1-bar
+            #     execution lag); in same_bar mode the fill bar IS day d.
+            fill_day, fill_md = self._resolve_fill_bar(d, next_day_of, cfg.fill_mode)
+
+            # 4. Risk-free rate (decision bar)
             rfr = self._iv_engine.get_risk_free_rate(d.year)
 
             # 5. Expire any positions
@@ -507,9 +546,17 @@ class OptionsBacktestEngine:
                 logger.debug("Lifecycle error on %s: %s", d, exc)
                 lifecycle_directives = []
 
-            # 11. Execute lifecycle directives (CLOSE/ROLL)
-            for directive in lifecycle_directives:
-                self._execute_directive(directive, d, underlying_prices, vix, realized_vols, rfr, term_structure)
+            # 11. Execute lifecycle directives (CLOSE/ROLL) at the fill bar.
+            #     Decision is made on day d's positions/signals, but the close/
+            #     roll is priced at the fill bar (t+1 in next_bar mode).
+            if fill_md is not None:
+                for directive in lifecycle_directives:
+                    self._execute_directive(
+                        directive, fill_day,
+                        fill_md["underlying_prices"], fill_md["vix"],
+                        fill_md["realized_vols"], fill_md["rfr"],
+                        fill_md["term_structure"],
+                    )
 
             # 11b. Risk guardrails
             halt_new_trades = False
@@ -550,17 +597,27 @@ class OptionsBacktestEngine:
 
             # 12b. Filter directives through guardrails
             if halt_new_trades:
-                # Only allow defensive strategies (vix_tail_hedge, momentum_call, leaps)
+                # Only allow defensive strategies (vix_tail_hedge, protective_put)
                 new_directives = [
                     d_ for d_ in new_directives
                     if d_.strategy not in _SHORT_PREMIUM_STRATS
                 ]
 
-            # 13. Execute new directives (OPEN)
-            for directive in new_directives:
-                if self._book.open_position_count >= cfg.max_position_count:
-                    break
-                self._execute_directive(directive, d, underlying_prices, vix, realized_vols, rfr, term_structure)
+            # 13. Execute new directives (OPEN) at the fill bar. Contract
+            #     selection happened above on day d's signals; the option is
+            #     priced/entered at the fill bar (t+1 in next_bar mode). When
+            #     there is no next bar (last day in next_bar mode) we skip new
+            #     entries rather than peek at day d.
+            if fill_md is not None:
+                for directive in new_directives:
+                    if self._book.open_position_count >= cfg.max_position_count:
+                        break
+                    self._execute_directive(
+                        directive, fill_day,
+                        fill_md["underlying_prices"], fill_md["vix"],
+                        fill_md["realized_vols"], fill_md["rfr"],
+                        fill_md["term_structure"],
+                    )
 
             # 14. Record daily state
             daily_options_pnl = pnl_attr.total_pnl + expiry_pnl
@@ -741,6 +798,47 @@ class OptionsBacktestEngine:
 
         return self._result
 
+    # ── Fill-bar resolution ──────────────────────────────────────────
+
+    def _resolve_fill_bar(
+        self,
+        d: date,
+        next_day_of: Dict[date, Optional[date]],
+        fill_mode: str,
+    ) -> tuple:
+        """Resolve the bar against which directives decided on day ``d`` fill.
+
+        Returns ``(fill_day, fill_md)`` where ``fill_md`` is a dict of market
+        data (underlying_prices, vix, realized_vols, rfr, term_structure) as of
+        the fill bar, or ``None`` when no fill bar is available (next_bar mode
+        on the last trading day) — in which case the caller skips entries/exits.
+
+        The IV surface, VIX and term-structure are all read from caches keyed to
+        ``fill_day`` itself, so a next-bar fill never peeks past ``t+1``.
+        """
+        if fill_mode == "same_bar":
+            fill_day: Optional[date] = d
+        else:  # "next_bar" (default)
+            fill_day = next_day_of.get(d)
+            if fill_day is None:
+                return (d, None)
+
+        vix = self._get_vix(fill_day)
+        underlying_prices = self._get_all_underlying_prices(fill_day)
+        underlying_prices["VIX"] = vix
+        realized_vols = self._get_all_realized_vols(fill_day)
+        rfr = self._iv_engine.get_risk_free_rate(fill_day.year)
+        term_structure = self._get_term_structure(fill_day, vix)
+
+        fill_md = {
+            "underlying_prices": underlying_prices,
+            "vix": vix,
+            "realized_vols": realized_vols,
+            "rfr": rfr,
+            "term_structure": term_structure,
+        }
+        return (fill_day, fill_md)
+
     # ── Strategy evaluation ──────────────────────────────────────────
 
     def _evaluate_strategies(
@@ -765,20 +863,10 @@ class OptionsBacktestEngine:
 
         # Create strategies without broker (we handle execution ourselves)
         from prometheus.execution.options_strategy import (
-            BullCallSpreadConfig,
-            BullCallSpreadStrategy,
-            FuturesOptionConfig,
-            FuturesOptionStrategy,
-            FuturesOverlayConfig,
-            FuturesOverlayStrategy,
             IronButterflyConfig,
             IronButterflyStrategy,
             IronCondorConfig,
             IronCondorStrategy,
-            LEAPSConfig,
-            LEAPSStrategy,
-            MomentumCallConfig,
-            MomentumCallStrategy,
             VixTailHedgeConfig,
             VixTailHedgeStrategy,
         )
@@ -793,31 +881,11 @@ class OptionsBacktestEngine:
 
         strategies = [
             # protective_put DISABLED: structurally -EV (−$16M over 30yr).
-            # straddle_strangle DISABLED: long vol bleeds theta (−$17M).
             # sector_put_spread DISABLED: SHI signal too noisy (−$3.2M v6).
-            # calendar_spread DISABLED: −$16K/trade, contango timing poor.
             # covered_call DISABLED: lost money in 100/100 synthetic realities.
             VixTailHedgeStrategy(config=_cfg(VixTailHedgeConfig)),
             IronCondorStrategy(config=_cfg(IronCondorConfig)),
             IronButterflyStrategy(config=_cfg(IronButterflyConfig)),
-            # short_put DISABLED: IV engine uses VIX as base vol for individual
-            # stocks, understating actual single-stock IV by 5-15 vol pts.
-            # Collected credit is too low relative to realised stock moves →
-            # consistently -EV in ALL 10+ runs (cumulative -$837K v35, scaling
-            # with portfolio size).  Post-2015 with real λ scores the strategy
-            # is near-breakeven, confirming the signal is valid; the backtest
-            # model simply cannot evaluate it fairly.  Keep for live trading.
-            # ShortPutStrategy(config=_cfg(ShortPutConfig)),
-            FuturesOverlayStrategy(config=_cfg(FuturesOverlayConfig)),
-            FuturesOptionStrategy(config=_cfg(FuturesOptionConfig)),
-            BullCallSpreadStrategy(config=_cfg(BullCallSpreadConfig)),
-            MomentumCallStrategy(config=_cfg(MomentumCallConfig)),
-            LEAPSStrategy(config=_cfg(LEAPSConfig)),
-            # collar DISABLED: −$285K over 30yr, pure drag with no crisis alpha.
-            # wheel DISABLED: −$286K over 30yr. Strategy requires physical stock
-            # assignment which is not modelled in the cash-settled synthetic book;
-            # only the CSP leg executes, behaving as a worse short_put duplicate.
-            # WheelStrategy(config=_cfg(WheelConfig)),
         ]
 
         # Apply allocations to enable/disable
@@ -1609,7 +1677,7 @@ class OptionsBacktestEngine:
         """Build the signals dict consumed by strategies."""
         lambda_scores = self._compute_lambda_scores(d, underlying_prices)
         # Momentum scores: always the 63-day proxy (0→1), regardless of lambda source.
-        # Used by bull_call_spread which needs directional momentum, not fundamental λ.
+        # Directional-momentum signal kept in the signals dict for diagnostics.
         momentum_scores = self._compute_lambda_scores_proxy(d, underlying_prices)
         stab_scores = self._compute_stab_scores(realized_vols)
         sector_shi = self._compute_sector_shi(d, underlying_prices, realized_vols)

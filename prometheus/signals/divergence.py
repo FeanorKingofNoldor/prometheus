@@ -366,6 +366,19 @@ def _to_signal(
         metadata["behavioral_components"] = getattr(behavioral, "components", None)
     if narrative is not None and hasattr(narrative, "components"):
         metadata["narrative_components"] = getattr(narrative, "components", None)
+    # Three-channel fields (apatheon 2026-07-24): persisted in metadata so
+    # the daily history captures the paper-market view without a schema
+    # migration. Absent on pre-upgrade rows.
+    if getattr(upstream, "market_score", None) is not None:
+        metadata["market_score"] = float(upstream.market_score)
+        metadata["paper_physical_gap"] = float(getattr(upstream, "paper_physical_gap", 0.0) or 0.0)
+    if getattr(upstream, "regime", None):
+        metadata["regime"] = str(upstream.regime)
+    if getattr(upstream, "positioning_anomaly", None) is not None:
+        metadata["positioning_anomaly"] = float(upstream.positioning_anomaly)
+    metadata["data_confidence"] = str(getattr(upstream, "data_confidence", "OK"))
+    if behavioral is not None:
+        metadata["behavioral_coverage"] = str(getattr(behavioral, "coverage", "OK"))
 
     return DivergenceSignal(
         signal_id=generate_uuid(),

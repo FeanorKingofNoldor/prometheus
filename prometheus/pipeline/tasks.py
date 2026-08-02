@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -24,7 +24,7 @@ from apatheon.core.database import DatabaseManager
 from apatheon.core.ids import generate_uuid
 from apatheon.core.logging import get_logger
 from apatheon.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
-from apatheon.core.time import TradingCalendar
+from apatheon.core.time import TradingCalendar, TradingCalendarConfig
 from apatheon.data.reader import DataReader
 from apatheon.fragility import (
     BasicFragilityAlphaModel,
@@ -86,7 +86,7 @@ from prometheus.scripts.backfill.backfill_backtest_stab_scenario_metrics import 
 from prometheus.scripts.backfill.backfill_portfolio_stab_scenario_metrics import (
     backfill_portfolio_stab_scenario_metrics_for_range,
 )
-from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig
+from prometheus.sector.allocator import SectorAllocator, SectorAllocatorConfig, StressLevel
 from prometheus.universe import (
     BasicUniverseModel,
     UniverseEngine,
@@ -96,6 +96,22 @@ from prometheus.universe import (
 from prometheus.universe.config import UniverseConfig
 
 logger = get_logger(__name__)
+
+class _SkipGlobalSignal(Exception):
+    """Control-flow sentinel: global signal skipped for non-home regions."""
+
+
+def _region_calendar(region: str) -> TradingCalendar:
+    """TradingCalendar for the region's primary market.
+
+    A no-arg TradingCalendar() defaults to the US_EQ calendar — inside
+    region-generic tasks that silently applied US holidays to HK/KR/AU
+    runs (US holidays wrongly skipped, local holidays wrongly counted).
+    """
+    markets = MARKETS_BY_REGION.get(region.upper()) or ()
+    market = str(markets[0]) if markets else "US_EQ"
+    return TradingCalendar(TradingCalendarConfig(market=market))
+
 
 # Project root used for locating config files (e.g. configs/universe, configs/portfolio).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -453,7 +469,7 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         logger.info("No instruments found for region %s; marking SIGNALS_DONE", run.region)
         return update_phase(db_manager, run.run_id, RunPhase.SIGNALS_DONE)
 
-    calendar = TradingCalendar()
+    calendar = _region_calendar(run.region)
     reader = DataReader(db_manager=db_manager)
 
     # Filter candidates to instruments that have a close price on as_of_date.
@@ -720,10 +736,24 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         )
 
     # ------------------------------------------------------------------
+    # Global (account/US-macro) signals — computed ONCE, in the US_EQ
+    # signals run. Sector health uses US sector ETFs, forward indicators
+    # are US macro series, Tier-1 is the global systemic graph; running
+    # them in every region's DAG recomputed identical values up to six
+    # times per date. Non-US books read the latest persisted values
+    # (with bounded staleness fallbacks) — for Asian sessions that means
+    # risk state as of the last US close, which is exactly the
+    # information edge the multi-market news-lag design wants.
+    # ------------------------------------------------------------------
+    _is_home_region = run.region.upper() == "US"
+
+    # ------------------------------------------------------------------
     # Sector Health – compute per-sector SHI and persist to DB
     # ------------------------------------------------------------------
 
     try:
+        if not _is_home_region:
+            raise _SkipGlobalSignal()
         from datetime import timedelta
 
         shi_start = run.as_of_date - timedelta(days=400)  # ~252 trading days lookback for SMA200
@@ -740,6 +770,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
             run.as_of_date,
             len(shi_result.scores),
         )
+    except _SkipGlobalSignal:
+        logger.debug("Sector health: skipped for non-home region %s", run.region)
     except Exception:  # pragma: no cover - defensive
         logger.exception(
             "run_signals_for_run: sector health computation failed for run_id=%s as_of=%s",
@@ -768,6 +800,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # ------------------------------------------------------------------
 
     try:
+        if not _is_home_region:
+            raise _SkipGlobalSignal()
         from apatheon.api.graph import get_graph
         from apatheon.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
 
@@ -785,6 +819,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
         for sop in t1_sops:
             logger.warning("TIER1 SOP: [%s] %s -> %s=%s (%s)",
                           sop.action_type, sop.trigger_entity, sop.parameter, sop.value, sop.reason)
+    except _SkipGlobalSignal:
+        logger.debug("Tier 1 monitor: skipped for non-home region %s", run.region)
     except Exception:
         logger.debug("Tier 1 monitor failed (non-critical)", exc_info=True)
 
@@ -793,6 +829,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     # ------------------------------------------------------------------
 
     try:
+        if not _is_home_region:
+            raise _SkipGlobalSignal()
         from apatheon.regime.forward_indicators import compute_forward_indicators
 
         fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
@@ -836,6 +874,8 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
                 conn.commit()
         except Exception:
             logger.debug("Failed to persist forward indicator snapshot", exc_info=True)
+    except _SkipGlobalSignal:
+        logger.debug("Forward indicators: skipped for non-home region %s", run.region)
     except Exception:  # pragma: no cover - defensive
         logger.exception(
             "run_signals_for_run: forward indicators failed for run_id=%s as_of=%s",
@@ -943,24 +983,46 @@ def _persist_sector_health_daily(
 def _load_sector_health_for_date(
     db_manager: DatabaseManager,
     as_of_date: date,
+    max_staleness_days: int = 5,
 ) -> Dict[str, float]:
     """Load sector health scores for a date from sector_health_daily.
+
+    Falls back to the most recent date within ``max_staleness_days`` when
+    there is no row for ``as_of_date`` itself — the SHI composite can lag
+    a few days behind as-of (weekly macro inputs publish with a lag), and
+    a missing exact-date row previously disabled the sector allocator (the
+    fifth risk layer) silently for the whole day. Slightly stale sector
+    scores beat an absent risk control; beyond the staleness bound we
+    return {} and the caller skips the allocator loudly.
 
     Returns mapping of sector_name → SHI score ∈ [0, 1].
     """
     sql = """
-        SELECT sector_name, score
+        SELECT sector_name, score, as_of_date
         FROM sector_health_daily
-        WHERE as_of_date = %s
+        WHERE as_of_date = (
+            SELECT MAX(as_of_date) FROM sector_health_daily
+            WHERE as_of_date <= %s AND as_of_date >= %s
+        )
     """
+    cutoff = as_of_date - timedelta(days=max(0, int(max_staleness_days)))
 
     with db_manager.get_runtime_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(sql, (as_of_date,))
+            cursor.execute(sql, (as_of_date, cutoff))
             rows = cursor.fetchall()
         finally:
             cursor.close()
+
+    if rows and rows[0][2] != as_of_date:
+        logger.warning(
+            "_load_sector_health_for_date: no SHI row for %s — using stale "
+            "scores from %s (%d sectors)",
+            as_of_date,
+            rows[0][2],
+            len(rows),
+        )
 
     return {str(row[0]): float(row[1]) for row in rows}
 
@@ -984,7 +1046,7 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
         logger.warning("No market mapping for region %s; marking UNIVERSES_DONE", run.region)
         return update_phase(db_manager, run.run_id, RunPhase.UNIVERSES_DONE)
 
-    calendar = TradingCalendar()
+    calendar = _region_calendar(run.region)
     reader = DataReader(db_manager=db_manager)
 
     # Profiles and STAB storage reused to configure the universe model.
@@ -1020,13 +1082,6 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
     # integration in universes.
     stab_forecaster = StabilityStateChangeForecaster(storage=stab_storage)
 
-    # Regime state-change forecaster for region-level regime risk. We keep
-    # the regime risk alpha at its UniverseConfig default (0.0) for now so
-    # that enabling regime-aware universes is an explicit configuration
-    # decision rather than a behavioural surprise.
-    regime_storage = RegimeStorage(db_manager=db_manager)
-    regime_forecaster = RegimeStateChangeForecaster(storage=regime_storage)
-
     # For this iteration we construct a simple UniverseConfig in-memory
     # rather than loading it from engine_configs. The parameters are
     # conservative defaults for a long-only core equity universe.
@@ -1047,6 +1102,18 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
         stability_risk_alpha=0.5,
         stability_risk_horizon_steps=1,
     )
+
+    # Regime state-change forecaster for region-level regime risk.
+    #
+    # DISABLED (regime_risk_alpha=0.0): the regime risk multiplier is a
+    # config-gated hook that is OFF until regime history is populated and the
+    # alpha is set non-zero in UniverseConfig. We only construct the
+    # forecaster when it will actually be used; otherwise we pass None so the
+    # daily path does not build a regime forecaster whose output is discarded.
+    regime_forecaster: object | None = None
+    if universe_config.regime_risk_alpha != 0.0:
+        regime_storage = RegimeStorage(db_manager=db_manager)
+        regime_forecaster = RegimeStateChangeForecaster(storage=regime_storage)
 
     # Optional lambda-aware universe configuration driven by YAML. When a
     # predictions CSV and non-zero score_weight are provided for the
@@ -1105,9 +1172,10 @@ def run_universes_for_run(db_manager: DatabaseManager, run: EngineRun) -> Engine
         use_assessment_scores=True,
         assessment_strategy_id=strategy_id,
         assessment_horizon_days=21,
-        # Regime risk integration remains disabled until
-        # ``universe_config.regime_risk_alpha`` is set to a non-zero value
-        # in configuration. The forecaster is wired so that enabling
+        # Regime risk integration is DISABLED until
+        # ``universe_config.regime_risk_alpha`` is set to a non-zero value in
+        # configuration. When alpha is 0.0 the forecaster above is None and
+        # the regime modifier early-returns the score unchanged; enabling
         # regime-aware universes is a config-only change.
         regime_forecaster=regime_forecaster,
         regime_region=universe_config.regime_region or run.region.upper(),
@@ -2107,10 +2175,16 @@ def run_books_for_run(
 
         for sop in t1_sops:
             if sop.action_type == "reduce_exposure" and sop.parameter == "budget_multiplier":
-                sop_mult = float(sop.value)
-                budget_mult = max(0.35, (budget_mult or 1.0) * sop_mult)
+                # Floor the SOP's OWN multiplier, then multiply into the
+                # running product. The old max(0.35, product * sop) form
+                # floored the PRODUCT, which inverted de-risking: when the
+                # preceding layers had already cut below 0.35, a
+                # reduce-exposure SOP would RAISE the budget back to 0.35.
+                sop_mult = max(0.35, float(sop.value))
+                budget_mult = (budget_mult if budget_mult is not None else 1.0) * sop_mult
                 budget_metadata = budget_metadata or {}
                 budget_metadata["tier1_sop"] = sop.reason
+                budget_metadata["tier1_sop_mult"] = sop_mult
                 budget_metadata["tier1_worst_state"] = t1_snap.worst_state
                 logger.warning("TIER1 SOP applied: budget_mult=%.2f (%s)", budget_mult, sop.reason)
     except Exception:
@@ -2123,8 +2197,8 @@ def run_books_for_run(
     fwd_adaptation: dict[str, object] = {}
 
     try:
-        from apatheon.regime.forward_indicators import compute_forward_indicators
         import yaml
+        from apatheon.regime.forward_indicators import compute_forward_indicators
 
         fwd_snap = compute_forward_indicators(db_manager, run.as_of_date)
         fwd_signal = fwd_snap.overall_signal
@@ -2136,11 +2210,16 @@ def run_books_for_run(
 
             market_adapt = adapt_cfg.get("US_EQ", {}).get(fwd_signal, {})
             if market_adapt:
-                # Apply budget multiplier from forward indicators.
-                # Floor at 0.35 to prevent over-compounding when multiple
-                # systems (meta budget + fragility + forward) all cut simultaneously.
-                fwd_budget_mult = float(market_adapt.get("meta_budget_multiplier", 1.0))
-                budget_mult = max(0.35, (budget_mult or 1.0) * fwd_budget_mult)
+                # Apply budget multiplier from forward indicators. Each
+                # layer's OWN multiplier is floored at 0.35 (one noisy
+                # signal can't nuke the book), but the combined product is
+                # deliberately unfloored so simultaneous cuts genuinely
+                # compound — in a real crisis the book may go to zero. The
+                # old max(0.35, product * mult) form re-inflated any
+                # sub-0.35 budget back to 0.35 even on GREEN days,
+                # overriding upstream circuit-breaker decisions.
+                fwd_budget_mult = max(0.35, float(market_adapt.get("meta_budget_multiplier", 1.0)))
+                budget_mult = (budget_mult if budget_mult is not None else 1.0) * fwd_budget_mult
                 budget_metadata = budget_metadata or {}
                 budget_metadata["fwd_signal"] = fwd_signal
                 budget_metadata["fwd_budget_mult"] = fwd_budget_mult
@@ -2158,6 +2237,33 @@ def run_books_for_run(
                 )
     except Exception:
         logger.debug("Forward indicator adaptation unavailable", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Budget stack summary — four multiplicative layers, each floored
+    # individually, product deliberately unfloored. The sector allocator
+    # (applied after optimisation) is the fifth, also unfloored, layer;
+    # its observed multiplier is recorded when it runs.
+    # ------------------------------------------------------------------
+    budget_metadata = budget_metadata or {}
+    _stack = {
+        "regime": float(budget_metadata.get("regime_budget_mult", 1.0) or 1.0),
+        "fragility": float(budget_metadata.get("fragility_budget_mult", 1.0) or 1.0),
+        "tier1_sop": float(budget_metadata.get("tier1_sop_mult", 1.0) or 1.0),
+        "forward": float(budget_metadata.get("fwd_budget_mult", 1.0) or 1.0),
+    }
+    budget_mult_final = float(budget_mult if budget_mult is not None else 1.0)
+    budget_metadata["budget_stack"] = _stack
+    budget_metadata["budget_mult_pre_allocator"] = budget_mult_final
+    logger.info(
+        "run_books_for_run: budget stack %s: regime=%.3f x fragility=%.3f x "
+        "tier1=%.3f x fwd=%.3f = %.3f (sector allocator applies post-optimisation)",
+        book_id,
+        _stack["regime"],
+        _stack["fragility"],
+        _stack["tier1_sop"],
+        _stack["forward"],
+        budget_mult_final,
+    )
 
     # Override portfolio params from forward indicator adaptation.
     # Only tighten max_weight (lower = more conservative).
@@ -2193,21 +2299,104 @@ def run_books_for_run(
         scenario_risk_scenario_set_ids=scenario_set_ids,
     )
 
-    portfolio_storage = PortfolioStorage(db_manager=db_manager)
-    base_model = BasicLongOnlyPortfolioModel(
-        universe_storage=universe_storage,
-        config=portfolio_config,
-        universe_id=universe_id,
+    # Apply any human-approved config overlay from the meta proposal loop
+    # (strategies.active_strategy_config_id → strategy_configs). This is
+    # what makes an APPLIED proposal actually change behaviour — the
+    # applicator previously wrote to a table nothing read.
+    from prometheus.meta.config_resolver import apply_overlay, load_active_config_overlay
+
+    portfolio_config = apply_overlay(
+        portfolio_config, load_active_config_overlay(db_manager, book_id)
     )
 
-    # Optionally wrap with conviction-based position lifecycle.
+    # ------------------------------------------------------------------
+    # Sector health / allocator + MHI — built once, up front: they feed
+    # BOTH the conviction stress provider and the post-optimisation
+    # sector-weight overlay further down.
+    # ------------------------------------------------------------------
+    sector_allocator: SectorAllocator | None = None
+    market_mhi: float | None = None
+    try:
+        sector_scores = _load_sector_health_for_date(db_manager, run.as_of_date)
+        if sector_scores:
+            shi_result = SectorHealthResult(
+                scores={s: {run.as_of_date: sc} for s, sc in sector_scores.items()},
+            )
+            sector_mapper = SectorMapper(db_manager=db_manager)
+            sector_mapper.load(as_of_date=run.as_of_date)
+            sector_allocator = SectorAllocator(
+                config=SectorAllocatorConfig(),
+                sector_mapper=sector_mapper,
+                sector_health=shi_result,
+            )
+    except Exception:  # pragma: no cover - defensive
+        logger.exception(
+            "run_books_for_run: sector allocator construction failed for %s",
+            run.as_of_date,
+        )
+
+    # Market Health Index for stress escalation. The allocator's MHI
+    # thresholds live on a [-1, 1] scale (broad stress at -0.20, systemic
+    # at -0.50), so market fragility in [0, 1] maps via 1 - 2*fragility:
+    # fragility 0.60 -> MHI -0.20 (broad), 0.75 -> -0.50 (systemic).
+    # NOTE: the options-signals path uses a DIFFERENT convention
+    # (mhi = 1 - fragility, in [0, 1]); do not mix the two.
+    try:
+        _frag_storage = FragilityStorage(db_manager=db_manager)
+        _mhi_markets = MARKETS_BY_REGION.get(run.region.upper()) or ()
+        _mhi_market = str(_mhi_markets[0]).upper() if _mhi_markets else run.region.upper()
+        _measure = _frag_storage.get_latest_measure(
+            "MARKET", _mhi_market, as_of_date=run.as_of_date
+        )
+        if _measure is not None:
+            market_mhi = round(1.0 - 2.0 * float(_measure.fragility_score), 3)
+    except Exception:
+        logger.warning(
+            "run_books_for_run: MHI lookup failed for %s; proceeding without it",
+            run.as_of_date,
+            exc_info=True,
+        )
+
     conviction_enabled = bool(
         getattr(long_sleeve, "conviction_enabled", False)
         or portfolio_config.conviction_enabled
     )
+
+    portfolio_storage = PortfolioStorage(db_manager=db_manager)
+
+    # Hysteresis (top-K rank buffer) needs to know which names are
+    # actually held; it was previously never wired, so the configured
+    # portfolio_hysteresis_buffer silently did nothing. When conviction is
+    # enabled we deliberately leave it off — conviction is the churn
+    # control and the two would fight.
+    held_ids_provider = None
+    if not conviction_enabled:
+        from prometheus.portfolio.model_conviction import (
+            make_snapshot_positions_provider,
+        )
+
+        _hyst_markets = MARKETS_BY_REGION.get(run.region.upper()) or ()
+        _positions_provider = make_snapshot_positions_provider(
+            db_manager,
+            market_id=str(_hyst_markets[0]) if _hyst_markets else None,
+        )
+
+        def held_ids_provider(d: date) -> set[str]:
+            return _positions_provider(d) or set()
+
+    base_model = BasicLongOnlyPortfolioModel(
+        universe_storage=universe_storage,
+        config=portfolio_config,
+        universe_id=universe_id,
+        held_ids_provider=held_ids_provider,
+    )
     if conviction_enabled:
         from prometheus.portfolio.conviction import ConvictionConfig, ConvictionStorage
-        from prometheus.portfolio.model_conviction import ConvictionPortfolioModel
+        from prometheus.portfolio.model_conviction import (
+            ConvictionPortfolioModel,
+            make_db_prices_provider,
+            make_snapshot_positions_provider,
+        )
 
         conviction_cfg = ConvictionConfig(
             entry_credit=portfolio_config.conviction_entry_credit,
@@ -2220,16 +2409,47 @@ def run_books_for_run(
             entry_weight_fraction=portfolio_config.conviction_entry_weight_fraction,
         )
         conviction_storage = ConvictionStorage(db_manager=db_manager)
+
+        # Stress provider: sector-health stress level (with MHI escalation)
+        # drives the regime-scaled conviction decay.
+        stress_provider = None
+        if sector_allocator is not None:
+            def _stress_provider(
+                d: date,
+                _alloc: SectorAllocator = sector_allocator,
+                _mhi: float | None = market_mhi,
+            ) -> StressLevel:
+                level, _sick, _weak, _healthy, _scores = _alloc.classify_stress(d, _mhi)
+                return level
+
+            stress_provider = _stress_provider
+
         portfolio_model = ConvictionPortfolioModel(
             inner_model=base_model,
             conviction_config=conviction_cfg,
             conviction_storage=conviction_storage,
             portfolio_id=book_id,
+            # Arms the hard stop: without prices every entry records
+            # avg_entry_price=0.0 and the stop can never fire.
+            prices_provider=make_db_prices_provider(DataReader(db_manager=db_manager)),
+            stress_level_provider=stress_provider,
+            # Reconciles tracked conviction state against the broker's
+            # actual book (drops phantom positions from failed fills).
+            # Market-scoped: the account snapshot holds EVERY market's
+            # positions; a book must only reconcile against its own.
+            positions_provider=make_snapshot_positions_provider(
+                db_manager,
+                market_id=(
+                    str((MARKETS_BY_REGION.get(run.region.upper()) or ("US_EQ",))[0])
+                ),
+            ),
         )
         logger.info(
-            "run_books_for_run: conviction enabled for %s (decay=%.1f, stop=%.0f%%)",
+            "run_books_for_run: conviction enabled for %s (decay=%.1f, stop=%.0f%%, "
+            "stops_armed=True, stress_provider=%s)",
             book_id, conviction_cfg.base_decay_rate,
             conviction_cfg.hard_stop_pct * 100,
+            "sector_health" if stress_provider is not None else "none",
         )
     else:
         portfolio_model = base_model
@@ -2240,6 +2460,9 @@ def run_books_for_run(
         region=run.region,
     )
 
+    # persist_target=False: the sector allocator below is the final overlay,
+    # and the finished target is persisted exactly once after it — no more
+    # pre/post row pairs in target_portfolios.
     target = portfolio_engine.optimize_and_save(
         book_id,
         run.as_of_date,
@@ -2247,6 +2470,7 @@ def run_books_for_run(
         budget_metadata=budget_metadata,
         apply_risk=bool(apply_risk),
         risk_strategy_id=book_id,
+        persist_target=False,
     )
 
     if not target.weights:
@@ -2257,30 +2481,21 @@ def run_books_for_run(
         )
         return update_phase(db_manager, run.run_id, RunPhase.BOOKS_DONE)
 
+    pre_allocator_weights = dict(target.weights)
+    pre_allocator_gross = float(sum(abs(w) for w in pre_allocator_weights.values()))
+
     # ------------------------------------------------------------------
     # Sector Allocator overlay: adjust weights based on sector health
     # ------------------------------------------------------------------
 
     try:
-        sector_scores = _load_sector_health_for_date(db_manager, run.as_of_date)
-        if sector_scores:
-            # Build a minimal SectorHealthResult with just today's scores.
-            shi_result = SectorHealthResult(
-                scores={s: {run.as_of_date: sc} for s, sc in sector_scores.items()},
-            )
-
-            sector_mapper = SectorMapper(db_manager=db_manager)
-            sector_mapper.load(as_of_date=run.as_of_date)
-
-            sector_allocator = SectorAllocator(
-                config=SectorAllocatorConfig(),
-                sector_mapper=sector_mapper,
-                sector_health=shi_result,
-            )
-
+        if sector_allocator is not None:
+            # Allocator + MHI were constructed up front (they also feed the
+            # conviction stress provider).
             alloc_decision = sector_allocator.adjust_weights(
                 weights=target.weights,
                 as_of_date=run.as_of_date,
+                market_mhi=market_mhi,
             )
 
             # Replace target weights with sector-adjusted weights,
@@ -2303,6 +2518,26 @@ def run_books_for_run(
                 if d.get("instrument_id") is not None
             }
 
+            # Observed allocator multiplier (fifth budget-stack layer,
+            # unfloored by design — crisis can zero the book).
+            adjusted_gross = float(sum(abs(w) for w in adjusted_weights.values()))
+            allocator_mult = (
+                adjusted_gross / pre_allocator_gross if pre_allocator_gross > 1e-12 else 1.0
+            )
+
+            alloc_meta = dict(target.metadata or {})
+            alloc_meta["sector_allocator"] = {
+                "stress_level": alloc_decision.stress_level.value,
+                "market_mhi": market_mhi,
+                "sick_sectors": list(alloc_decision.sick_sectors),
+                "weak_sectors": list(alloc_decision.weak_sectors),
+                "allocator_mult_observed": float(allocator_mult),
+                "pre_allocator_gross": pre_allocator_gross,
+                "pre_allocator_weights": {
+                    k: float(v) for k, v in pre_allocator_weights.items()
+                },
+            }
+
             target = TargetPortfolio(
                 portfolio_id=target.portfolio_id,
                 as_of_date=target.as_of_date,
@@ -2312,22 +2547,26 @@ def run_books_for_run(
                 risk_metrics=target.risk_metrics,
                 factor_exposures=target.factor_exposures,
                 constraints_status=target.constraints_status,
-                metadata=target.metadata,
+                metadata=alloc_meta,
             )
-
-            # Re-persist the adjusted target.
-            portfolio_storage.save_target_portfolio(strategy_id=book_id, target=target)
-
 
             logger.info(
                 "run_books_for_run: sector allocator applied for %s on %s: "
-                "stress=%s sick=%d weak=%d positions=%d",
+                "stress=%s mhi=%s sick=%d weak=%d positions=%d "
+                "full stack: regime=%.3f x fragility=%.3f x tier1=%.3f x "
+                "fwd=%.3f x allocator=%.3f",
                 book_id,
                 run.as_of_date,
                 alloc_decision.stress_level.value,
+                f"{market_mhi:.3f}" if market_mhi is not None else "n/a",
                 len(alloc_decision.sick_sectors),
                 len(alloc_decision.weak_sectors),
                 len(alloc_decision.adjusted_weights),
+                _stack["regime"],
+                _stack["fragility"],
+                _stack["tier1_sop"],
+                _stack["forward"],
+                float(allocator_mult),
             )
         else:
             logger.info(
@@ -2354,6 +2593,14 @@ def run_books_for_run(
             )
         else:
             target.metadata["sector_allocator_failed"] = True
+
+    # ------------------------------------------------------------------
+    # Persist the FINAL target exactly once — every path through the
+    # sector-allocator block above (applied / no-scores / failed) lands
+    # here, so target_portfolios holds a single row per (strategy, date)
+    # and execution no longer disambiguates pre/post rows by created_at.
+    # ------------------------------------------------------------------
+    portfolio_storage.save_target_portfolio(strategy_id=book_id, target=target)
 
     # Record portfolio decision
     try:
@@ -2505,11 +2752,15 @@ def run_execution_for_run(
 
     target_weights = _load_target_weights(db_manager, portfolio_id, run.as_of_date)
     if not target_weights:
-        # Try to auto-discover any live portfolio for this region/date.
-        run.region.upper()
+        # Try to auto-discover a live portfolio for THIS REGION on the date.
+        # The region prefix filter is load-bearing for multi-market: without
+        # it, a non-US run with an empty book would pick up (and re-execute)
+        # another region's targets under the wrong run.
+        region_prefix = f"{run.region.upper()}_%"
         sql_discover = """
             SELECT portfolio_id FROM target_portfolios
             WHERE as_of_date = %s
+              AND portfolio_id LIKE %s
               AND portfolio_id NOT LIKE 'BT_%%'
               AND portfolio_id NOT LIKE 'LAMBDA_%%'
               AND portfolio_id NOT LIKE 'LFSWP_%%'
@@ -2517,7 +2768,7 @@ def run_execution_for_run(
         """
         with db_manager.get_runtime_connection() as _conn:
             _cur = _conn.cursor()
-            _cur.execute(sql_discover, (run.as_of_date,))
+            _cur.execute(sql_discover, (run.as_of_date, region_prefix))
             _row = _cur.fetchone()
             _cur.close()
         if _row:
@@ -2547,17 +2798,7 @@ def run_execution_for_run(
 
     from prometheus.execution.broker_interface import OrderType
     from prometheus.execution.broker_interface import Position as BrokerPosition
-    from prometheus.execution.executed_actions import (
-        ExecutedActionContext,
-        record_executed_actions_for_fills,
-    )
     from prometheus.execution.order_planner import plan_orders
-    from prometheus.execution.storage import (
-        record_fills,
-        record_orders,
-        record_positions_snapshot,
-        update_order_statuses,
-    )
 
     client = None
     broker = None
@@ -2605,7 +2846,10 @@ def run_execution_for_run(
         # Wrap with risk checks so no order bypasses notional/leverage limits.
         from prometheus.execution.risk_broker import RiskCheckingBroker
 
-        broker = RiskCheckingBroker(inner=inner_broker)
+        broker = RiskCheckingBroker(
+            inner=inner_broker,
+            equity_history_portfolio_id="IBKR_PAPER" if mode == "paper" else "IBKR_LIVE",
+        )
 
         try:
             client.connect()
@@ -2638,14 +2882,18 @@ def run_execution_for_run(
             )
         except Exception:
             logger.exception(
-                "run_execution_for_run: failed to read IBKR state for run_id=%s",
+                "run_execution_for_run: failed to read IBKR state for run_id=%s — "
+                "NOT advancing phase (stale broker state must not complete as if traded)",
                 run.run_id,
             )
             try:
                 client.disconnect()
             except Exception:
                 pass
-            return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
+            # Leave the run in its current phase so the next cycle retries;
+            # advancing to EXECUTION_DONE here would mark a cycle that never
+            # saw broker state as successfully executed.
+            return run
 
     def _safe_disconnect() -> None:
         if client is None:
@@ -2656,89 +2904,147 @@ def run_execution_for_run(
             pass
 
     # ------------------------------------------------------------------
-    # 3. Convert target weights → target share quantities
+    # 3a. Capital budget: a book sizes against its configured fraction of
+    # account NAV, never the whole account — six regional books share one
+    # IBKR account (missing/unknown book → 1.0 = legacy full-NAV).
     # ------------------------------------------------------------------
 
+    capital_fraction = 1.0
+    try:
+        from prometheus.books.registry import load_book_registry
+
+        _book_spec = load_book_registry().get(portfolio_id)
+        if _book_spec is not None:
+            capital_fraction = float(getattr(_book_spec, "capital_fraction", 1.0))
+    except Exception:
+        logger.warning(
+            "run_execution_for_run: book registry lookup failed for %s — "
+            "using capital_fraction=1.0",
+            portfolio_id,
+            exc_info=True,
+        )
+    book_equity = account_equity * capital_fraction
+    if capital_fraction != 1.0:
+        logger.info(
+            "run_execution_for_run: book %s capital_fraction=%.3f — sizing "
+            "against %.0f of %.0f account equity",
+            portfolio_id,
+            capital_fraction,
+            book_equity,
+            account_equity,
+        )
+
+    # ------------------------------------------------------------------
+    # 3b. Market isolation: the broker returns EVERY market's positions
+    # on the one shared account. This book may only see (and therefore
+    # only plan sells against) its own market's instruments — without the
+    # filter it would liquidate every other book's holdings as
+    # "not in my target".
+    # ------------------------------------------------------------------
+
+    _exec_markets = MARKETS_BY_REGION.get(run.region.upper()) or ()
+    _exec_market = str(_exec_markets[0]) if _exec_markets else None
+    currencies: Dict[str, str] = {}
+    if _exec_market is not None:
+        try:
+            _market_instruments = _load_market_instrument_currencies(
+                db_manager, _exec_market
+            )
+            currencies = _market_instruments
+            before_n = len(current_positions)
+            current_positions = {
+                iid: pos
+                for iid, pos in current_positions.items()
+                if iid in _market_instruments
+            }
+            if len(current_positions) != before_n:
+                logger.info(
+                    "run_execution_for_run: filtered account positions %d -> %d "
+                    "(only %s instruments are this book's responsibility)",
+                    before_n,
+                    len(current_positions),
+                    _exec_market,
+                )
+        except Exception:
+            logger.exception(
+                "run_execution_for_run: market position filter failed for %s — "
+                "refusing to run against unfiltered account positions",
+                _exec_market,
+            )
+            _safe_disconnect()
+            return run
+
+    # ------------------------------------------------------------------
+    # 3c. Convert target weights → target share quantities. Account
+    # equity is USD; non-US prices are LOCAL currency (LSE in pence) —
+    # sizing must convert the price to USD or the share count is wrong
+    # by the FX factor.
+    # ------------------------------------------------------------------
+
+    from prometheus.execution.fx import FxConverter, FxRateUnavailable
+
+    fx = FxConverter(db_manager)
+    board_lots: Dict[str, int] = {}
+    if _exec_market is not None:
+        try:
+            board_lots = _load_board_lots(db_manager, _exec_market)
+        except Exception:
+            logger.warning(
+                "run_execution_for_run: board-lot lookup failed for %s — "
+                "assuming lot=1", _exec_market, exc_info=True,
+            )
     target_quantities: Dict[str, float] = {}
     for inst_id, weight in target_weights.items():
         price = prices.get(inst_id, 0.0)
-        if price > 0:
-            target_quantities[inst_id] = round((account_equity * weight) / price)
-        else:
+        if price <= 0:
             logger.warning(
                 "run_execution_for_run: no price for %s; skipping",
                 inst_id,
             )
+            continue
+        ccy = currencies.get(inst_id, "USD")
+        try:
+            price_usd = fx.price_to_usd(price, ccy, inst_id, run.as_of_date)
+        except FxRateUnavailable:
+            logger.error(
+                "run_execution_for_run: no %s FX rate for %s — skipping "
+                "(an order must never be sized on a missing rate)",
+                ccy,
+                inst_id,
+            )
+            continue
+        qty = round((book_equity * weight) / price_usd)
+        lot = board_lots.get(inst_id, 1)
+        if lot > 1:
+            # SEHK enforces board lots — floor to a lot multiple. A target
+            # below one lot is skipped (never submit an unfillable odd lot).
+            lot_qty = (qty // lot) * lot
+            if lot_qty <= 0:
+                logger.warning(
+                    "run_execution_for_run: %s target %d below board lot %d — skipping",
+                    inst_id, qty, lot,
+                )
+                continue
+            qty = lot_qty
+        target_quantities[inst_id] = qty
 
     # ------------------------------------------------------------------
-    # 4. Plan orders (with turnover filter, sells-first, limit orders)
+    # 4. Dry-run: plan locally, log, and stop (no broker in scope).
     # ------------------------------------------------------------------
 
     # Use LIMIT orders with a 10 bps buffer for live/paper to reduce
     # market impact.  Dry-run keeps MARKET for simplicity.
     use_limit = mode in ("paper", "live")
 
-    orders = plan_orders(
-        current_positions=current_positions,
-        target_positions=target_quantities,
-        order_type=OrderType.LIMIT if use_limit else OrderType.MARKET,
-        prices=prices if use_limit else None,
-        sells_first=True,
-    )
-
-    logger.info(
-        "run_execution_for_run: planned %d orders (equity=%.0f, positions=%d→%d)",
-        len(orders),
-        account_equity,
-        len(current_positions),
-        len(target_quantities),
-    )
-
-    # After orders are computed, log turnover
-    total_trade_value = sum(
-        abs(o.quantity * prices.get(o.instrument_id, 0.0)) for o in orders
-    )
-    if account_equity > 0:
-        turnover = total_trade_value / account_equity
-        if turnover > 0.5:
-            logger.warning("run_execution: turnover %.1f%% exceeds 50%% limit", turnover * 100)
-
-    # Safety check: max order count.
-    # On breach, mark the run as FAILED — do NOT advance to EXECUTION_DONE,
-    # which would let the pipeline complete as if trading happened.
-    if len(orders) > execution_config.max_orders:
-        logger.error(
-            "run_execution_for_run: ABORTING — %d orders exceeds max_orders=%d",
-            len(orders),
-            execution_config.max_orders,
-        )
-        _safe_disconnect()
-        return update_phase(db_manager, run.run_id, RunPhase.FAILED)
-
-    # Safety check: max single-order value.
-    for order in orders:
-        price = prices.get(order.instrument_id, 0.0)
-        notional = abs(order.quantity * price)
-        if notional > execution_config.max_single_order_value:
-            logger.error(
-                "run_execution_for_run: ABORTING — order %s notional $%.0f > max $%.0f",
-                order.instrument_id,
-                notional,
-                execution_config.max_single_order_value,
-            )
-            _safe_disconnect()
-            return update_phase(db_manager, run.run_id, RunPhase.FAILED)
-
-    if not orders:
-        logger.info("run_execution_for_run: no orders needed — portfolio is on target")
-        _safe_disconnect()
-        return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
-
-    # ------------------------------------------------------------------
-    # 5 & 6. Submit orders and wait for fills (skip in dry_run)
-    # ------------------------------------------------------------------
-
     if mode == "dry_run":
+        orders = plan_orders(
+            current_positions=current_positions,
+            target_positions=target_quantities,
+            order_type=OrderType.MARKET,
+            sells_first=True,
+            portfolio_id=portfolio_id,
+            as_of_date=run.as_of_date,
+        )
         for order in orders:
             logger.info(
                 "run_execution_for_run [DRY_RUN]: %s %s qty=%.0f %s",
@@ -2747,170 +3053,78 @@ def run_execution_for_run(
                 order.quantity,
                 order.order_type.value,
             )
-        _safe_disconnect()
         return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
 
-    # Live / paper execution
-    import time as _time
-    from datetime import datetime, timezone
+    # ------------------------------------------------------------------
+    # 5-7. Live / paper execution via the shared execution API. One code
+    # path with the backtests and ad-hoc tools: plan (LIMIT, sells-first,
+    # deterministic ids) → safety limits → submit (batch-isolated) → poll
+    # statuses → persist orders/fills/executed_actions/snapshot. This
+    # pipeline submits POST_CLOSE, so still-working orders are left open
+    # at the poll deadline (cancel_unfilled_on_timeout=False) — they are
+    # DAY orders that fill at the next open; the morning reconcile_fills
+    # job captures those fills by orderRef.
+    # ------------------------------------------------------------------
 
-    from prometheus.execution.broker_interface import OrderStatus
+    from prometheus.execution.api import ExecutionSafetyError, apply_execution_plan
+
     mode_up = mode.upper()
-    submission_started_at = datetime.now(timezone.utc)
-    submitted_orders = []
-
-    submitted_ids: List[str] = []
-    for order in orders:
-        try:
-            broker.submit_order(order)
-            submitted_orders.append(order)
-            submitted_ids.append(order.order_id)
-            logger.info(
-                "run_execution_for_run: submitted %s %s qty=%.0f",
-                order.side.value,
-                order.instrument_id,
-                order.quantity,
-            )
-        except Exception:
-            logger.exception(
-                "run_execution_for_run: failed to submit order for %s",
-                order.instrument_id,
-            )
-    if not submitted_orders:
-        logger.error("run_execution_for_run: all order submissions failed; skipping persistence/reconciliation")
-        _safe_disconnect()
-        return update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
-
     try:
-        record_orders(
-            db_manager=db_manager,
+        summary = apply_execution_plan(
+            db_manager,
+            broker=broker,
             portfolio_id=portfolio_id,
-            orders=submitted_orders,
+            target_positions=target_quantities,
             mode=mode_up,
-            decision_id=None,
             as_of_date=run.as_of_date,
+            run_id=run.run_id,
+            record_positions=True,
+            sells_first=True,
+            # Limit prices stay in the EXCHANGE currency (that is what the
+            # venue quotes); currency map drives per-currency tick rounding
+            # and the USD conversion of the notional safety check.
+            order_type=OrderType.LIMIT if use_limit else OrderType.MARKET,
+            prices=prices,
+            prices_currency=currencies or None,
+            fx=fx,
+            max_orders=int(execution_config.max_orders),
+            max_single_order_value=float(execution_config.max_single_order_value),
+            status_poll_timeout_sec=float(execution_config.fill_timeout_sec),
+            # Post-close submission: nothing fills inside the poll window by
+            # construction — leave DAY orders working for the next open.
+            cancel_unfilled_on_timeout=False,
         )
+    except ExecutionSafetyError as exc:
+        # Raised BEFORE submission — nothing reached the broker. Mark the
+        # run FAILED rather than letting the pipeline complete as if it
+        # traded.
+        logger.error(
+            "run_execution_for_run: ABORTING — safety limit breached: %s", exc
+        )
+        _safe_disconnect()
+        return update_phase(db_manager, run.run_id, RunPhase.FAILED)
     except Exception:
         logger.exception(
-            "run_execution_for_run: failed to record submitted orders for run_id=%s",
+            "run_execution_for_run: execution failed for run_id=%s — NOT "
+            "advancing phase (next cycle retries; deterministic order ids + "
+            "broker-side orderRef dedup make the retry safe)",
             run.run_id,
         )
+        _safe_disconnect()
+        return run
 
-    # Poll for statuses with timeout.
-    # Poll for fills with timeout.
-    # IMPORTANT: use client._ib.sleep() instead of time.sleep() so the
-    # ib_async event loop can process fill callbacks (execDetailsEvent).
-    # Blocking with time.sleep() prevents fills from being recorded.
-    _ib_sleep = client._ib.sleep if client is not None else _time.sleep
-    deadline = _time.monotonic() + execution_config.fill_timeout_sec
-    pending = set(submitted_ids)
-    terminal_statuses = {
-        OrderStatus.FILLED,
-        OrderStatus.CANCELLED,
-        OrderStatus.REJECTED,
-    }
-    order_statuses: Dict[str, OrderStatus] = {}
-    while pending and _time.monotonic() < deadline:
-        _ib_sleep(2)
-        for oid in list(pending):
-            try:
-                status = broker.get_order_status(oid)
-                order_statuses[oid] = status
-                if status in terminal_statuses:
-                    pending.discard(oid)
-            except Exception:
-                pass
-    # Final refresh (including still-pending IDs).
-    for oid in submitted_ids:
-        try:
-            order_statuses[oid] = broker.get_order_status(oid)
-        except Exception:
-            pass
-
-    if pending:
-        logger.warning(
-            "run_execution_for_run: %d orders still pending after timeout",
-            len(pending),
-        )
-    if order_statuses:
-        try:
-            update_order_statuses(db_manager=db_manager, statuses=order_statuses)
-        except Exception:
-            logger.exception(
-                "run_execution_for_run: failed to persist order status updates for run_id=%s",
-                run.run_id,
-            )
-
-    # ------------------------------------------------------------------
-    # 7. Record fills to fills/executed_actions for this submission batch
-    # ------------------------------------------------------------------
-
-    try:
-        fills = broker.get_fills(since=submission_started_at)
-    except TypeError:
-        # Backward compatibility for broker implementations that ignore `since`.
-        fills = broker.get_fills()
-    except Exception:  # pragma: no cover - defensive
-        logger.exception(
-            "run_execution_for_run: failed to fetch fills for run_id=%s",
-            run.run_id,
-        )
-        fills = []
-
-    submitted_ids_set = set(submitted_ids)
-    seen_fill_ids: set[str] = set()
-    batch_fills = []
-    for fill in fills:
-        if fill.order_id not in submitted_ids_set:
-            continue
-        if fill.fill_id in seen_fill_ids:
-            continue
-        seen_fill_ids.add(fill.fill_id)
-        batch_fills.append(fill)
-
-    if batch_fills:
-        try:
-            record_fills(
-                db_manager=db_manager,
-                fills=batch_fills,
-                mode=mode_up,
-            )
-        except Exception:  # pragma: no cover - defensive
-            logger.exception(
-                "run_execution_for_run: failed to persist fills for run_id=%s",
-                run.run_id,
-            )
-
-        try:
-            record_executed_actions_for_fills(
-                db_manager,
-                fills=batch_fills,
-                context=ExecutedActionContext(
-                    run_id=run.run_id,
-                    portfolio_id=portfolio_id,
-                    mode=mode_up,
-                ),
-            )
-        except Exception:  # pragma: no cover - defensive
-            logger.exception(
-                "run_execution_for_run: failed to persist executed_actions for run_id=%s",
-                run.run_id,
-            )
-
-        logger.info(
-            "run_execution_for_run: processed %d fills for run_id=%s",
-            len(batch_fills),
-            run.run_id,
-        )
-    else:
-        logger.info("run_execution_for_run: no new fills for submitted orders in this execution window")
+    logger.info(
+        "run_execution_for_run: executed run_id=%s orders=%d fills=%d",
+        run.run_id,
+        summary.num_orders,
+        summary.num_fills,
+    )
 
     # ------------------------------------------------------------------
     # 8. Reconcile: log any discrepancies between IBKR and targets
     # ------------------------------------------------------------------
 
     try:
-        broker.sync()
         post_positions = broker.get_positions()
         mismatches = 0
         for inst_id, target_qty in target_quantities.items():
@@ -2919,7 +3133,8 @@ def run_execution_for_run(
             if abs(actual_qty - target_qty) > 1.0:
                 mismatches += 1
                 logger.warning(
-                    "run_execution_for_run: MISMATCH %s target=%.0f actual=%.0f",
+                    "run_execution_for_run: MISMATCH %s target=%.0f actual=%.0f "
+                    "(unfilled LIMIT orders reconcile at next morning's reconcile_fills)",
                     inst_id,
                     target_qty,
                     actual_qty,
@@ -2930,20 +3145,6 @@ def run_execution_for_run(
             logger.warning(
                 "run_execution_for_run: %d position mismatches detected",
                 mismatches,
-            )
-
-        try:
-            record_positions_snapshot(
-                db_manager=db_manager,
-                portfolio_id=portfolio_id,
-                positions=post_positions,
-                as_of_date=run.as_of_date,
-                mode=mode_up,
-            )
-        except Exception:
-            logger.exception(
-                "run_execution_for_run: failed to record positions snapshot for run_id=%s",
-                run.run_id,
             )
     except Exception:  # pragma: no cover - defensive
         logger.exception(
@@ -3181,7 +3382,6 @@ def build_options_signals(
     intel_options_multiplier = 1.0
     try:
         from prometheus.execution.intel_signals import (
-            IntelSignals,
             load_intel_signals,
             options_sizing_multiplier,
         )
@@ -3195,7 +3395,6 @@ def build_options_signals(
         intel_options_multiplier = options_sizing_multiplier(intel)
     except Exception:
         logger.warning("build_options_signals: intel signals load failed", exc_info=True)
-        IntelSignals = None  # type: ignore[assignment]
 
     # ── Build signals dict (matching backtest format) ────────────────
     return {
@@ -3382,27 +3581,13 @@ def run_options_for_run(
     # ------------------------------------------------------------------
 
     from prometheus.execution.options_strategy import (
-        BullCallSpreadConfig,
-        BullCallSpreadStrategy,
-        FuturesOptionConfig,
-        FuturesOptionStrategy,
-        FuturesOverlayConfig,
-        FuturesOverlayStrategy,
         IronButterflyConfig,
         IronButterflyStrategy,
         IronCondorConfig,
         IronCondorStrategy,
-        LEAPSConfig,
-        LEAPSStrategy,
-        MomentumCallConfig,
-        MomentumCallStrategy,
-        ShortPutConfig,
-        ShortPutStrategy,
         TradeAction,
         VixTailHedgeConfig,
         VixTailHedgeStrategy,
-        WheelConfig,
-        WheelStrategy,
     )
 
     overrides = _load_strategy_overrides(options_config.strategy_overrides_path)
@@ -3420,13 +3605,6 @@ def run_options_for_run(
         VixTailHedgeStrategy(config=_cfg(VixTailHedgeConfig)),
         IronCondorStrategy(config=_cfg(IronCondorConfig)),
         IronButterflyStrategy(config=_cfg(IronButterflyConfig)),
-        ShortPutStrategy(config=_cfg(ShortPutConfig)),
-        FuturesOverlayStrategy(config=_cfg(FuturesOverlayConfig)),
-        FuturesOptionStrategy(config=_cfg(FuturesOptionConfig)),
-        BullCallSpreadStrategy(config=_cfg(BullCallSpreadConfig)),
-        MomentumCallStrategy(config=_cfg(MomentumCallConfig)),
-        LEAPSStrategy(config=_cfg(LEAPSConfig)),
-        WheelStrategy(config=_cfg(WheelConfig)),
     ]
 
     # Apply allocator enable/disable to each strategy.
@@ -3505,6 +3683,7 @@ def run_options_for_run(
         # operators see exactly what *would* have been submitted before flipping
         # the switch.
         import os
+
         from prometheus.execution.broker_interface import (
             Order,
             OrderSide,
@@ -3739,6 +3918,67 @@ def _load_target_weights(
     # Extract weights dict from the JSONB payload.
     weights = raw.get("weights", raw) if isinstance(raw, dict) else {}
     return {str(k): float(v) for k, v in weights.items() if v}
+
+
+def _load_board_lots(
+    db_manager: DatabaseManager,
+    market_id: str,
+) -> Dict[str, int]:
+    """instrument_id → IBKR board lot for a market (empty when uncollected).
+
+    Populated by qualify_market_contracts --collect-lots. HK (SEHK)
+    REQUIRES orders in board-lot multiples; other markets trade single
+    shares (lot 1, i.e. absent here).
+    """
+    sql = """
+        SELECT ii.instrument_id, ii.identifier_value
+        FROM instrument_identifiers ii
+        JOIN instruments i ON i.instrument_id = ii.instrument_id
+        WHERE i.market_id = %s
+          AND ii.identifier_type = 'IBKR_BOARD_LOT'
+          AND ii.effective_end IS NULL
+    """
+    lots: Dict[str, int] = {}
+    with db_manager.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (market_id,))
+            for iid, val in cur.fetchall():
+                try:
+                    lot = int(val)
+                except (TypeError, ValueError):
+                    continue
+                if lot > 1:
+                    lots[str(iid)] = lot
+        finally:
+            cur.close()
+    return lots
+
+
+def _load_market_instrument_currencies(
+    db_manager: DatabaseManager,
+    market_id: str,
+) -> Dict[str, str]:
+    """instrument_id → currency for a market's ACTIVE instruments.
+
+    Doubles as the book's market-membership set for position isolation
+    in run_execution_for_run.
+    """
+    sql = """
+        SELECT instrument_id, currency
+        FROM instruments
+        WHERE market_id = %s
+          AND status = 'ACTIVE'
+          AND instrument_id NOT LIKE 'SYNTH%%'
+    """
+    with db_manager.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (market_id,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    return {str(iid): str(ccy or "USD") for iid, ccy in rows}
 
 
 def _load_latest_prices(
@@ -3991,7 +4231,7 @@ def run_backtest_campaign_and_meta_for_strategy(
             stab_joint_model_id = risk_cfg.stab_joint_model_id
 
 
-    calendar = TradingCalendar()
+    calendar = TradingCalendar(TradingCalendarConfig(market=str(market_id)))
     sleeve_configs = build_core_long_sleeves(strategy_id=strategy_id, market_id=market_id)
     if not sleeve_configs:
         logger.info(

@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
-
 from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -180,6 +179,14 @@ class BookSpec:
 
     sleeves: dict[str, SleeveSpec]
     default_sleeve_id: str | None = None
+
+    # Fraction of total account NAV this book is allowed to size against.
+    # Default 1.0 preserves the legacy single-book behavior (the book sees
+    # 100% of IBKR NetLiquidation). run_books/run_execution multiply the
+    # broker NAV by this before portfolio construction / order sizing.
+    # Config-load validation: explicitly-set fractions must each be in
+    # (0, 1] and their sum must be <= 1.0 (see load_book_registry).
+    capital_fraction: float = 1.0
     # Allocator-only extras (optional).
     situation_sleeve_map: dict[str, str] | None = None
     sleeve_transition_days: int | None = None
@@ -324,6 +331,7 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
         return _default_registry()
 
     out: dict[str, BookSpec] = {}
+    explicit_capital_fractions: dict[str, float] = {}
 
     for book_id, b in books_raw.items():
         if not isinstance(book_id, str) or not isinstance(b, Mapping):
@@ -359,6 +367,22 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
         vol_target_lookback_days = _coerce_int(b.get("vol_target_lookback_days"))
         gate_csv_path = b.get("gate_csv_path")
         gate_csv_path_s = str(gate_csv_path) if isinstance(gate_csv_path, str) and gate_csv_path.strip() else None
+
+        # Capital budgeting: optional per-book NAV fraction. Missing key
+        # means 1.0 (legacy behavior — the book sizes against 100% of NAV).
+        capital_fraction = 1.0
+        if "capital_fraction" in b:
+            cf = _coerce_float(b.get("capital_fraction"))
+            if cf is None:
+                raise ValueError(
+                    f"books.yaml: book {book_id!r} has non-numeric capital_fraction={b.get('capital_fraction')!r}"
+                )
+            if not (0.0 < cf <= 1.0):
+                raise ValueError(
+                    f"books.yaml: book {book_id!r} capital_fraction={cf} out of range (0, 1]"
+                )
+            capital_fraction = float(cf)
+            explicit_capital_fractions[book_id] = capital_fraction
 
         sleeves: dict[str, SleeveSpec] = {}
         sleeves_raw = b.get("sleeves")
@@ -490,7 +514,19 @@ def load_book_registry(path: str | Path | None = None) -> dict[str, BookSpec]:
             vol_target_annual=vol_target_annual,
             vol_target_lookback_days=vol_target_lookback_days,
             gate_csv_path=gate_csv_path_s,
+            capital_fraction=capital_fraction,
         )
+
+    # Sum-validation over books that explicitly declared a fraction.
+    # Books with no capital_fraction key default to 1.0 but do NOT count
+    # towards the sum (missing = legacy full-NAV behavior).
+    if explicit_capital_fractions:
+        total = sum(explicit_capital_fractions.values())
+        if total > 1.0 + 1e-9:
+            raise ValueError(
+                "books.yaml: sum of explicit capital_fraction values "
+                f"{total:.6f} exceeds 1.0 (books: {sorted(explicit_capital_fractions)})"
+            )
 
     result = out or _default_registry()
 

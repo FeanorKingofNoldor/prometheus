@@ -163,6 +163,24 @@ books:
     # Previous: K25_CP2.5 → 14.9% CAGR, 0.960 Sharpe, -46.5% MaxDD
     # New:      K20_CP1.0 → 17.6% CAGR, 1.031 Sharpe, -46.9% MaxDD
     # With options overlay: ~23% CAGR, ~1.15 Sharpe, ~-25% MaxDD
+    #
+    # ── Capital budgeting (planned multi-market NAV split) ──────────────
+    # capital_fraction is deliberately ABSENT here: missing = 1.0, i.e.
+    # this book keeps sizing against 100% of IBKR NetLiquidation, so the
+    # US-only daily run stays bit-identical until cutover.
+    #
+    # Planned split (apply capital_fraction to ALL books in the SAME edit
+    # that activates the regional books — never partially):
+    #   US_EQ_LONG_V12  0.50
+    #   EU_EQ_LONG_V1   0.15
+    #   UK_EQ_LONG_V1   0.10
+    #   HK_EQ_LONG_V1   0.10
+    #   KR_EQ_LONG_V1   0.075
+    #   AU_EQ_LONG_V1   0.075
+    #                   ─────
+    #                   1.000
+    # The registry validates: each explicit fraction in (0, 1] and the sum
+    # of explicit fractions <= 1.0.
     kind: LONG_EQUITY
     region: US
     market_id: US_EQ
@@ -172,6 +190,126 @@ books:
         portfolio_max_names: 20
         portfolio_hysteresis_buffer: 5
         portfolio_per_instrument_max_weight: 0.06
+        score_concentration_power: 1.0
+        apply_fragility_overlay: false
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
+
+  # ── Regional long-equity books (multi-market rollout) ─────────────────
+  # Structure cloned from US_EQ_LONG_V12/US_EQ_LONG_V12_K20. Differences:
+  #   - portfolio_max_names 12 (smaller regional universes)
+  #   - portfolio_per_instrument_max_weight 0.10
+  #   - capital_fraction documented but COMMENTED OUT: it goes live in the
+  #     same edit that flips US_EQ_LONG_V12 to 0.50 (see the split table on
+  #     US_EQ_LONG_V12 above). Until then these books default to 1.0, which
+  #     is safe because nothing routes execution to them yet.
+  # Books are region-disjoint: each trades only its own market's instruments.
+
+  UK_EQ_LONG_V1:
+    kind: LONG_EQUITY
+    region: UK
+    market_id: UK_EQ
+    # capital_fraction: 0.10  # planned NAV split — activate with US 0.50 edit
+    default_sleeve_id: UK_EQ_LONG_V1_K12
+    sleeves:
+      UK_EQ_LONG_V1_K12:
+        portfolio_max_names: 12
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
+        score_concentration_power: 1.0
+        apply_fragility_overlay: false
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
+
+  EU_EQ_LONG_V1:
+    kind: LONG_EQUITY
+    region: EU
+    market_id: EU_EQ
+    # capital_fraction: 0.15  # planned NAV split — activate with US 0.50 edit
+    default_sleeve_id: EU_EQ_LONG_V1_K12
+    sleeves:
+      EU_EQ_LONG_V1_K12:
+        portfolio_max_names: 12
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
+        score_concentration_power: 1.0
+        apply_fragility_overlay: false
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
+
+  HK_EQ_LONG_V1:
+    kind: LONG_EQUITY
+    region: HK
+    market_id: HK_EQ
+    # capital_fraction: 0.10  # planned NAV split — activate with US 0.50 edit
+    default_sleeve_id: HK_EQ_LONG_V1_K12
+    sleeves:
+      HK_EQ_LONG_V1_K12:
+        portfolio_max_names: 12
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
+        score_concentration_power: 1.0
+        apply_fragility_overlay: false
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
+
+  KR_EQ_LONG_V1:
+    kind: LONG_EQUITY
+    region: KR
+    market_id: KR_EQ
+    # capital_fraction: 0.075  # planned NAV split — activate with US 0.50 edit
+    default_sleeve_id: KR_EQ_LONG_V1_K12
+    sleeves:
+      KR_EQ_LONG_V1_K12:
+        portfolio_max_names: 12
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
+        score_concentration_power: 1.0
+        apply_fragility_overlay: false
+        conviction_enabled: true
+        conviction_entry_credit: 5.0
+        conviction_build_rate: 1.0
+        conviction_decay_rate: 2.0
+        conviction_score_cap: 20.0
+        conviction_sell_threshold: 0.0
+        conviction_hard_stop_pct: 0.20
+        conviction_entry_weight_fraction: 0.50
+
+  AU_EQ_LONG_V1:
+    kind: LONG_EQUITY
+    region: AU
+    market_id: AU_EQ
+    # capital_fraction: 0.075  # planned NAV split — activate with US 0.50 edit
+    default_sleeve_id: AU_EQ_LONG_V1_K12
+    sleeves:
+      AU_EQ_LONG_V1_K12:
+        portfolio_max_names: 12
+        portfolio_hysteresis_buffer: 5
+        portfolio_per_instrument_max_weight: 0.10
         score_concentration_power: 1.0
         apply_fragility_overlay: false
         conviction_enabled: true

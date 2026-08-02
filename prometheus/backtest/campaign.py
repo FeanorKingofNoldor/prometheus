@@ -57,6 +57,7 @@ def _run_backtest_for_sleeve(
     *,
     apply_risk: bool = True,
     lambda_provider: object | None = None,
+    fill_mode: str = "next_open",
 ) -> SleeveRunSummary:
     """Run a single sleeve backtest and return its summary.
 
@@ -88,7 +89,7 @@ def _run_backtest_for_sleeve(
     simulator = MarketSimulator(
         time_machine=time_machine,
         initial_cash=initial_cash,
-        fill_config=FillConfig(market_slippage_bps=0.0),
+        fill_config=FillConfig(market_slippage_bps=0.0, fill_mode=fill_mode),
     )
     broker = BacktestBroker(time_machine=time_machine, simulator=simulator)
 
@@ -151,6 +152,7 @@ def run_backtest_campaign(
     *,
     apply_risk: bool = True,
     lambda_provider: object | None = None,
+    fill_mode: str = "next_open",
 ) -> List[SleeveRunSummary]:
     """Run a set of sleeve backtests over a shared date range.
 
@@ -192,6 +194,7 @@ def run_backtest_campaign(
             initial_cash=initial_cash,
             apply_risk=apply_risk,
             lambda_provider=lambda_provider,
+            fill_mode=fill_mode,
         )
         summaries.append(summary)
 

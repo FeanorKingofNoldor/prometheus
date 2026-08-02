@@ -116,6 +116,19 @@ class _FakeCursor:
             self.rowcount = 1
             return
 
+        if sql_norm.startswith("SELECT INSTRUMENT_ID, STRATEGY FROM OPTIONS_POSITION_EVENTS"):
+            pid, mode, event_type, since = args
+            rows = [
+                e for e in self._db.events
+                if e["portfolio_id"] == pid and e["mode"] == mode
+                and e["event_type"] == event_type
+                and e["as_of_date"] >= since
+            ]
+            rows.sort(key=lambda e: e["event_at"])
+            self._result = [(e["instrument_id"], e["strategy"]) for e in rows]
+            self.rowcount = len(self._result)
+            return
+
         if sql_norm.startswith("SELECT POSITION_ID, INSTRUMENT_ID, PORTFOLIO_ID"):
             pid, mode = args
             rows = [
@@ -160,6 +173,9 @@ class _FakeConnection:
 
     def cursor(self) -> _FakeCursor:
         return _FakeCursor(self._db)
+
+    def commit(self) -> None:
+        return None
 
     def __enter__(self) -> "_FakeConnection":
         return self
@@ -499,3 +515,170 @@ def test_record_event_carries_sleeve_template_strategy_into_log():
     assert evt["decision_id"] == "dec-42"
     assert evt["order_id"] == "ord-77"
     assert evt["fill_id"] == "fill-99"
+
+
+# ── Order-submission provenance (strategy-tag round trip) ────────────
+
+
+def _submit_args(**overrides: Any) -> dict[str, Any]:
+    args = dict(
+        portfolio_id="US_OPTIONS_PAPER",
+        mode="PAPER",
+        instrument_id="VIX_260818_35C.US",
+        symbol="VIX",
+        right="C",
+        expiry="20260818",
+        strike=35.0,
+        quantity=150,
+        strategy="vix_tail_hedge",
+        order_id="oid-1",
+        limit_price=0.90,
+    )
+    args.update(overrides)
+    return args
+
+
+def test_record_order_submission_writes_submit_event():
+    db = _FakeDb()
+    options_storage.record_order_submission(db, **_submit_args())
+
+    assert len(db.events) == 1
+    evt = db.events[0]
+    assert evt["event_type"] == options_storage.EVENT_SUBMIT
+    assert evt["position_id"] == options_storage.SUBMIT_POSITION_ID
+    assert evt["instrument_id"] == "VIX_260818_35C.US"
+    assert evt["strategy"] == "vix_tail_hedge"
+    assert evt["order_id"] == "oid-1"
+    assert evt["quantity_delta"] == 150
+    # No position row is created at submission time.
+    assert db.positions == {}
+
+
+def test_load_strategy_tags_merges_submissions_and_position_rows():
+    db = _FakeDb()
+    # Two submissions on the same contract: the later one wins.
+    options_storage.record_order_submission(
+        db, **_submit_args(strategy="old_strategy"),
+    )
+    options_storage.record_order_submission(db, **_submit_args())
+    # A second contract that already has a reconciled position row with
+    # a strategy — the row wins over any submission.
+    options_storage.record_order_submission(
+        db, **_submit_args(
+            instrument_id="SPY_260918_450P.US", symbol="SPY", right="P",
+            expiry="20260918", strike=450.0, strategy="from_submission",
+        ),
+    )
+    options_storage.record_position_open(
+        db, instrument_id="SPY_260918_450P.US",
+        portfolio_id="US_OPTIONS_PAPER", mode="PAPER",
+        symbol="SPY", right="P", expiry="20260918",
+        strike=450.0, quantity=2, avg_cost=5.0,
+        strategy="protective_put",
+    )
+
+    tags = options_storage.load_strategy_tags(
+        db, portfolio_id="US_OPTIONS_PAPER", mode="PAPER",
+    )
+    assert tags["VIX_260818_35C.US"] == "vix_tail_hedge"
+    assert tags["SPY_260918_450P.US"] == "protective_put"
+
+
+def test_load_strategy_tags_scoped_to_portfolio_and_mode():
+    db = _FakeDb()
+    options_storage.record_order_submission(db, **_submit_args())
+    tags = options_storage.load_strategy_tags(
+        db, portfolio_id="US_OPTIONS_LIVE", mode="LIVE",
+    )
+    assert tags == {}
+
+
+def test_reconcile_backfills_strategy_on_untagged_rows():
+    db = _FakeDb()
+    # Row persisted before the tag was known (strategy=None).
+    options_storage.record_position_open(
+        db, instrument_id="VIX_260818_35C.US",
+        portfolio_id="US_OPTIONS_PAPER", mode="PAPER",
+        symbol="VIX", right="C", expiry="20260818",
+        strike=35.0, quantity=150, avg_cost=0.85,
+    )
+    row = next(iter(db.positions.values()))
+    assert row["strategy"] is None
+
+    snapshot = {
+        "VIX_260818_35C.US": _SnapEntry(
+            symbol="VIX", right="C", expiry="20260818",
+            strike=35.0, quantity=150, avg_cost=0.85,
+            strategy="vix_tail_hedge",
+        ),
+    }
+    summary = options_storage.reconcile_positions(
+        db, portfolio_id="US_OPTIONS_PAPER", mode="PAPER",
+        snapshot=snapshot,
+    )
+    assert summary.updated == 1
+    row = next(iter(db.positions.values()))
+    assert row["strategy"] == "vix_tail_hedge"
+
+
+def test_submission_tags_restored_into_strategy_map_after_sync_round_trip():
+    """Full defect-A round trip: strategy recorded at submission time is
+    restored into OptionsPortfolio._strategy_map after a fresh sync
+    (which comes back from the broker with strategy='')."""
+    from prometheus.execution.broker_interface import Position
+    from prometheus.execution.options_portfolio import OptionsPortfolio
+
+    db = _FakeDb()
+    options_storage.record_order_submission(db, **_submit_args())
+
+    portfolio = OptionsPortfolio(ib=None)
+    portfolio.sync(broker_positions={
+        "VIX_260818_35C.US": Position(
+            instrument_id="VIX_260818_35C.US",
+            quantity=150, avg_cost=0.85,
+            market_value=12750.0, unrealized_pnl=0.0,
+        ),
+    })
+    # Fresh sync: broker knows nothing about strategies.
+    assert portfolio.get_position("VIX_260818_35C.US").strategy == ""
+
+    tags = options_storage.load_strategy_tags(
+        db, portfolio_id="US_OPTIONS_PAPER", mode="PAPER",
+    )
+    applied = portfolio.apply_strategy_tags(tags)
+
+    assert applied == 1
+    assert portfolio._strategy_map["VIX_260818_35C.US"] == "vix_tail_hedge"
+    assert portfolio.get_position("VIX_260818_35C.US").strategy == "vix_tail_hedge"
+    assert len(portfolio.get_positions_by_strategy("vix_tail_hedge")) == 1
+    # Tag survives the NEXT sync too (the nightly failure mode).
+    portfolio.sync(broker_positions={
+        "VIX_260818_35C.US": Position(
+            instrument_id="VIX_260818_35C.US",
+            quantity=150, avg_cost=0.85,
+            market_value=13000.0, unrealized_pnl=250.0,
+        ),
+    })
+    assert portfolio.get_position("VIX_260818_35C.US").strategy == "vix_tail_hedge"
+
+
+def test_apply_strategy_tags_matches_vix_expiry_off_by_one():
+    """VIX contracts qualify at IBKR with settlement-minus-one-day
+    expiries — the submitted expiry and the synced position expiry can
+    differ by one day. The signature fallback must still match."""
+    from prometheus.execution.broker_interface import Position
+    from prometheus.execution.options_portfolio import OptionsPortfolio
+
+    portfolio = OptionsPortfolio(ib=None)
+    portfolio.sync(broker_positions={
+        "VIX_260817_35C.US": Position(
+            instrument_id="VIX_260817_35C.US",
+            quantity=150, avg_cost=0.85,
+            market_value=12750.0, unrealized_pnl=0.0,
+        ),
+    })
+    applied = portfolio.apply_strategy_tags(
+        {"VIX_260818_35C.US": "vix_tail_hedge"},
+    )
+    assert applied == 1
+    assert portfolio.get_position("VIX_260817_35C.US").strategy == "vix_tail_hedge"

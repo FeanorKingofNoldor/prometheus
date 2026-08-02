@@ -44,6 +44,7 @@ from apatheon.data_ingestion.daily_orchestrator import (
 )
 from psycopg2.extras import Json
 
+from prometheus.env_utils import env_flag
 from prometheus.orchestration.clock import now_local
 from prometheus.orchestration.dag import (
     DAG,
@@ -103,6 +104,9 @@ def create_job_execution(
         "job_type": job.job_type,
         "market_id": job.market_id,
         "required_state": job.required_state.value if job.required_state is not None else None,
+        "required_states": (
+            [s.value for s in job.required_states] if job.required_states is not None else None
+        ),
         "dependencies": list(job.dependencies),
         "run_phase": job.run_phase.value if job.run_phase is not None else None,
         "max_retries": int(job.max_retries),
@@ -410,6 +414,51 @@ def execute_job(
                 return _execute_iris_job(job, execution, db_manager=db_manager)
             return _execute_intel_job(job, execution)
 
+        if job.job_type in ("reconcile_fills", "reconcile_fills_eod"):
+            # Fill reconciliation.  Two passes with different expiry rights:
+            #
+            # reconcile_fills (PRE_OPEN/SESSION) — capture-ONLY.  At 08:30 ET
+            # yesterday-evening's orders haven't traded yet, and IBKR's
+            # reqExecutions can't see prior-day executions anyway (cleared by
+            # the overnight gateway restart), so this pass must never expire.
+            #
+            # reconcile_fills_eod (POST_CLOSE, before run_execution) — runs
+            # right after the session whose executions are still visible:
+            # captures fills, refreshes order statuses, and expires unfilled
+            # orders older than 6h — old enough to have had today's full
+            # session (submitted yesterday evening or earlier), while orders
+            # submitted THIS evening are minutes old and untouchable even on
+            # a retry that lands after run_execution.
+            #
+            # Needs no EngineRun; real markets only; skipped in dry_run mode.
+            if options_mode == "dry_run":
+                return True, None
+            from prometheus.execution.fill_reconciliation import reconcile_fills
+
+            is_eod = job.job_type == "reconcile_fills_eod"
+            if is_eod:
+                summary = reconcile_fills(
+                    db_manager,
+                    mode=options_mode,
+                    expire_stale=True,
+                    stale_cutoff_utc=datetime.now(timezone.utc) - timedelta(hours=6),
+                )
+            else:
+                summary = reconcile_fills(db_manager, mode=options_mode, expire_stale=False)
+            logger.info(
+                "%s[%s]: fills_recorded=%d orders_updated=%d "
+                "orders_expired=%d errors=%d",
+                job.job_type,
+                job.market_id,
+                summary.get("fills_recorded", 0),
+                summary.get("orders_updated", 0),
+                summary.get("orders_expired", 0),
+                len(summary.get("errors", [])),
+            )
+            if summary.get("errors"):
+                return False, "; ".join(str(e) for e in summary["errors"])[:500]
+            return True, None
+
         # Get or create EngineRun
         run = _get_or_create_engine_run(db_manager, job.market_id, execution.as_of_date)
         if not run:
@@ -446,6 +495,25 @@ def execute_job(
             if result.status.value != "COMPLETE":
                 return False, result.error_message or "ingestion failed"
 
+            # Vol-complex refresh (VIX/VIX9D/3M/6M/1Y/SKEW → prices_daily).
+            # Best-effort: these indices feed the options signal loader; a
+            # source hiccup must warn, never block the equity pipeline. US
+            # ingest only — the series are US-global. Without this the vol
+            # series silently rot (they froze 2026-04-30 → 07-14 unnoticed).
+            if job.market_id == "US_EQ":
+                try:
+                    from prometheus.scripts.backfill.backfill_vol_indices import refresh_vol_indices
+
+                    written = refresh_vol_indices(
+                        db_manager, start=execution.as_of_date - timedelta(days=7)
+                    )
+                    logger.info("ingest_prices: vol-index refresh wrote %d rows", written)
+                except Exception:
+                    logger.exception(
+                        "ingest_prices: vol-index refresh FAILED — VIX series may be stale "
+                        "(options signal loader enforces a staleness bound)"
+                    )
+
             # Check if enough instruments got data (>= 95% coverage)
             if is_data_ready_for_market(db_manager, job.market_id, execution.as_of_date):
                 # Belt-and-suspenders: ingestion may report COMPLETE even
@@ -453,8 +521,11 @@ def execute_job(
                 # that the most recent prices_daily.trade_date is within the
                 # tolerated lag from the expected as_of_date before letting
                 # downstream signal/portfolio jobs run on stale prices.
+                # Market-scoped: with several markets ingesting into one
+                # prices_daily, a fresh market must not mask another
+                # market's staleness.
                 fresh, freshness_msg = check_price_data_freshness(
-                    db_manager, execution.as_of_date,
+                    db_manager, execution.as_of_date, job.market_id,
                 )
                 if not fresh:
                     logger.error(
@@ -474,7 +545,9 @@ def execute_job(
                 # collapsed the universe to a single name). Surface such
                 # holes loudly so they can be backfilled. The universe
                 # filter itself is now gap-tolerant, so this only warns.
-                gaps = find_trailing_coverage_gaps(db_manager, execution.as_of_date)
+                gaps = find_trailing_coverage_gaps(
+                    db_manager, execution.as_of_date, job.market_id,
+                )
                 if gaps:
                     logger.warning(
                         "ingest_prices: %d under-covered day(s) in the trailing "
@@ -566,7 +639,21 @@ def execute_job(
                 else:
                     portfolio_id = f"{region}_EQ_LONG_V12"
                 exec_cfg = ExecutionConfig(mode=options_mode, portfolio_id=portfolio_id)
-                run_execution_for_run(db_manager, run, execution_config=exec_cfg)
+                updated = run_execution_for_run(db_manager, run, execution_config=exec_cfg)
+                phase_after = getattr(updated, "phase", None)
+                if phase_after == RunPhase.BOOKS_DONE:
+                    # Pre-submission failure (IBKR connect / broker-state read):
+                    # run_execution_for_run swallows those and leaves the phase
+                    # untouched. Fail the job so the daemon's retry/backoff
+                    # re-attempts tonight, instead of recording a silent
+                    # SUCCESS that strands the run at BOOKS_DONE until the
+                    # finalize health check flags it (which cannot re-run
+                    # execution). Post-submission paths advance the phase or
+                    # mark the run FAILED, so they are never retried here.
+                    return False, (
+                        "run_execution did not advance past BOOKS_DONE "
+                        "(pre-submission failure) — eligible for retry"
+                    )
             return True, None
 
         elif job.job_type == "run_options":
@@ -590,6 +677,30 @@ def execute_job(
                     return False, "; ".join(result["errors"])
                 update_phase(db_manager, run.run_id, RunPhase.OPTIONS_DONE)
             return True, None
+
+        elif job.job_type == "fx_sweep":
+            # FX settlement sweep — zero negative non-USD cash balances
+            # (see prometheus/execution/fx_sweep.py for the policy).
+            # OPTIONAL and dependent-free: failure never blocks finalize.
+            if options_mode == "dry_run":
+                return True, None  # no IBKR in dry_run
+            try:
+                from prometheus.execution.fx_sweep import run_fx_sweep
+
+                summary = run_fx_sweep(
+                    db_manager, mode=options_mode, as_of_date=execution.as_of_date,
+                )
+                errors = summary.get("errors") or []
+                logger.info(
+                    "fx_sweep: planned=%s submitted=%s errors=%d",
+                    summary.get("planned"), summary.get("submitted"), len(errors),
+                )
+                if errors:
+                    return False, f"fx_sweep errors: {errors[:3]}"
+                return True, None
+            except Exception as exc:
+                logger.exception("fx_sweep failed")
+                return False, f"fx_sweep failed: {exc}"
 
         elif job.job_type == "snapshot_positions":
             # Daily IBKR position snapshot — fills the equity curve chart.
@@ -618,28 +729,74 @@ def execute_job(
 
                 client = IbkrClientImpl(config=conn_config)
                 client.connect()
-                broker = LiveBroker(account_id=conn_config.account_id, client=client)
-                positions = broker.get_positions()
-                if positions:
-                    from datetime import datetime as _dt
-                    from datetime import timezone as _tz
-
+                # From here the client holds a gateway connection and an
+                # event loop — disconnect in a finally so a failure in
+                # get_positions/persistence can't leak them.
+                try:
+                    broker = LiveBroker(account_id=conn_config.account_id, client=client)
+                    positions = broker.get_positions()
                     portfolio_id = "IBKR_PAPER" if options_mode == "paper" else "IBKR_LIVE"
-                    record_positions_snapshot(
-                        db_manager,
-                        portfolio_id=portfolio_id,
-                        positions=positions,
-                        as_of_date=execution.as_of_date,
-                        mode=options_mode.upper(),
-                        timestamp=_dt.now(_tz.utc),
-                    )
-                    logger.info(
-                        "snapshot_positions: persisted %d positions for %s on %s",
-                        len(positions), portfolio_id, execution.as_of_date,
-                    )
-                else:
-                    logger.warning("snapshot_positions: no positions returned from IBKR")
-                client.disconnect()
+                    if positions:
+                        from datetime import datetime as _dt
+                        from datetime import timezone as _tz
+
+                        record_positions_snapshot(
+                            db_manager,
+                            portfolio_id=portfolio_id,
+                            positions=positions,
+                            as_of_date=execution.as_of_date,
+                            mode=options_mode.upper(),
+                            timestamp=_dt.now(_tz.utc),
+                        )
+                        logger.info(
+                            "snapshot_positions: persisted %d positions for %s on %s",
+                            len(positions), portfolio_id, execution.as_of_date,
+                        )
+                    else:
+                        logger.warning("snapshot_positions: no positions returned from IBKR")
+
+                    # Equity-history upsert — the RiskCheckingBroker drawdown
+                    # breaker reads its trailing peak from
+                    # portfolio_equity_history; without this daily write the
+                    # breaker silently no-ops (see migration 0106).
+                    account_state = broker.get_account_state()
+                    equity = account_state.get("NetLiquidation", account_state.get("equity"))
+                    cash = account_state.get("TotalCashValue", account_state.get("cash"))
+                    try:
+                        equity_f = float(equity) if equity is not None else None
+                    except (TypeError, ValueError):
+                        equity_f = None
+                    try:
+                        cash_f = float(cash) if cash is not None else None
+                    except (TypeError, ValueError):
+                        cash_f = None
+                    if equity_f is not None:
+                        gross = sum(
+                            abs(float(p.market_value)) for p in positions.values()
+                        ) if positions else 0.0
+                        _record_equity_history(
+                            db_manager,
+                            portfolio_id=portfolio_id,
+                            as_of_date=execution.as_of_date,
+                            equity=equity_f,
+                            cash=cash_f,
+                            gross_position_value=gross,
+                        )
+                        logger.info(
+                            "snapshot_positions: equity history %s %s equity=%.2f cash=%s gross=%.2f",
+                            portfolio_id, execution.as_of_date, equity_f,
+                            f"{cash_f:.2f}" if cash_f is not None else "n/a", gross,
+                        )
+                    else:
+                        logger.warning(
+                            "snapshot_positions: no NetLiquidation/equity in account "
+                            "state — portfolio_equity_history not written",
+                        )
+                finally:
+                    try:
+                        client.disconnect()
+                    except Exception:
+                        logger.debug("snapshot_positions: disconnect failed", exc_info=True)
             except Exception as exc:
                 logger.warning("snapshot_positions: failed (non-blocking): %s", exc)
             return True, None
@@ -672,14 +829,60 @@ def execute_job(
                 logger.warning("geo_exposure_scan: failed (non-blocking): %s", exc)
             return True, None
 
+        elif job.job_type == "invariants_check":
+            # Execution-telemetry cross-check (positions vs fills vs orders
+            # vs equity).  Violations alert via the notifications inbox; the
+            # job itself succeeds either way — retrying wouldn't change the
+            # facts, and the alert IS the escalation path.
+            if options_mode == "dry_run":
+                return True, None
+            try:
+                from prometheus.execution.invariants import run_invariants_check
+
+                portfolio_id = os.environ.get("PROMETHEUS_PRIMARY_PORTFOLIO", "IBKR_PAPER")
+                inv = run_invariants_check(
+                    db_manager,
+                    execution.as_of_date,
+                    portfolio_id=portfolio_id,
+                    mode=options_mode,
+                )
+                logger.info(
+                    "invariants_check[%s]: checks=%d violations=%d (critical=%d) errors=%d",
+                    portfolio_id,
+                    inv.checks_run,
+                    len(inv.violations),
+                    inv.critical_count,
+                    len(inv.errors),
+                )
+            except Exception as exc:
+                logger.warning("invariants_check: failed (non-blocking): %s", exc)
+            return True, None
+
         elif job.job_type == "finalize":
             # Mark the run COMPLETED.  Handles all terminal predecessor phases:
             # OPTIONS_DONE (normal), EXECUTION_DONE (options skipped/failed),
             # or BOOKS_DONE (execution also skipped — unusual but safe).
+            if run.phase == RunPhase.COMPLETED:
+                # Idempotent re-run after a completed finalize.
+                return True, None
+            if run.phase == RunPhase.FAILED:
+                # A previous attempt's health check already failed the run.
+                # Falling through to SUCCESS here made job_executions read
+                # green on a FAILED day (2026-07-31); stay honest instead.
+                return False, "run is FAILED (health check); finalize cannot succeed"
             if run.phase in (RunPhase.OPTIONS_DONE, RunPhase.EXECUTION_DONE, RunPhase.BOOKS_DONE):
+                # Post-run health check: validate the run produced meaningful
+                # output. Critical data-integrity anomalies (zero prices,
+                # zero targets, zero orders on a day that produced targets,
+                # non-positive prices) fail the run rather than completing it
+                # so silent partial-pipeline failures don't propagate.
+                healthy, health_error = _run_health_check(
+                    db_manager, run, execution.as_of_date, job.market_id
+                )
+                if not healthy:
+                    update_phase(db_manager, run.run_id, RunPhase.FAILED)
+                    return False, health_error
                 update_phase(db_manager, run.run_id, RunPhase.COMPLETED)
-                # Post-run health check: validate the run produced meaningful output
-                _run_health_check(db_manager, run, execution.as_of_date, job.market_id)
                 # Autopilot — fire the daily meta loop once per trading
                 # day, gated on US_EQ since it's the primary book and runs
                 # last in CET evening. Failure isolated; never blocks
@@ -716,15 +919,19 @@ def _run_health_check(
     run: "EngineRun",
     as_of_date: "date",
     market_id: str,
-) -> None:
+) -> Tuple[bool, str | None]:
     """Validate a completed run produced meaningful output.
 
-    Logs warnings for anomalies and writes a health report file.
-    Does NOT fail the run — this is informational only.
+    Returns (healthy, error_message). Critical data-integrity anomalies
+    (zero prices, zero targets, zero orders on a day that produced targets,
+    non-positive prices) mark the run unhealthy; soft anomalies (low price
+    coverage, missing SHI) only warn. Always writes a health report file
+    when there are issues.
     """
     from pathlib import Path
 
     issues: list[str] = []
+    critical: list[str] = []
 
     try:
         with db_manager.get_historical_connection() as conn:
@@ -735,10 +942,21 @@ def _run_health_check(
                     (as_of_date,),
                 )
                 price_count = cur.fetchone()[0]
-                if price_count < 500:
+                if price_count == 0:
+                    critical.append(f"ZERO PRICES: no price data ingested for {as_of_date}")
+                elif price_count < 500:
                     issues.append(f"LOW PRICE COVERAGE: only {price_count} instruments (expected ~660)")
-                elif price_count == 0:
-                    issues.append(f"ZERO PRICES: no price data ingested for {as_of_date}")
+
+                # Non-positive prices are a data-integrity failure.
+                cur.execute(
+                    "SELECT COUNT(*) FROM prices_daily WHERE trade_date = %s AND close <= 0",
+                    (as_of_date,),
+                )
+                nonpos_price_count = cur.fetchone()[0]
+                if nonpos_price_count > 0:
+                    critical.append(
+                        f"NON-POSITIVE PRICES: {nonpos_price_count} rows with close <= 0"
+                    )
 
         with db_manager.get_runtime_connection() as conn:
             with conn.cursor() as cur:
@@ -749,14 +967,28 @@ def _run_health_check(
                 )
                 target_count = cur.fetchone()[0]
                 if target_count == 0:
-                    issues.append("NO TARGET PORTFOLIO: books phase produced no targets")
+                    critical.append("NO TARGET PORTFOLIO: books phase produced no targets")
 
-                # Check orders
+                # Check orders.  Submission time is NOT the as_of_date for
+                # catch-up runs: a Friday run caught up Saturday morning
+                # timestamps its orders on Saturday, and the same-date
+                # filter here failed that healthy run (2026-07-31).  Use a
+                # [as_of, as_of+2d) window — wide enough for next-morning
+                # and weekend catch-up, narrow enough to exclude the next
+                # trading day's own evening submissions.
                 cur.execute(
-                    "SELECT COUNT(*) FROM orders WHERE timestamp::date = %s",
-                    (as_of_date,),
+                    "SELECT COUNT(*) FROM orders "
+                    "WHERE timestamp >= %s::date AND timestamp < %s::date + INTERVAL '2 days'",
+                    (as_of_date, as_of_date),
                 )
                 order_count = cur.fetchone()[0]
+                # Zero orders is only an anomaly on a day that produced targets
+                # (a rebalance with targets but no orders means execution
+                # silently dropped the book).
+                if order_count == 0 and target_count > 0:
+                    critical.append(
+                        "NO ORDERS: targets were produced but execution generated zero orders"
+                    )
 
                 # Check sector health
                 cur.execute(
@@ -767,7 +999,10 @@ def _run_health_check(
                 if shi_count == 0:
                     issues.append("NO SECTOR HEALTH: SHI not computed for this date")
 
-        if issues:
+        all_issues = critical + issues
+        if all_issues:
+            for issue in critical:
+                logger.error("HEALTH CHECK [%s %s]: CRITICAL %s", market_id, as_of_date, issue)
             for issue in issues:
                 logger.warning("HEALTH CHECK [%s %s]: %s", market_id, as_of_date, issue)
 
@@ -788,7 +1023,7 @@ def _run_health_check(
                 f"Targets: {target_count}\n"
                 f"Orders: {order_count}\n"
                 f"Sector Health: {shi_count}\n\n"
-                f"ISSUES:\n" + "\n".join(f"  - {i}" for i in issues) + "\n",
+                f"ISSUES:\n" + "\n".join(f"  - {i}" for i in all_issues) + "\n",
             )
             logger.warning("Health report written to %s", report_path)
         else:
@@ -796,8 +1031,51 @@ def _run_health_check(
                 "HEALTH CHECK [%s %s]: OK — prices=%d targets=%d orders=%d shi=%d",
                 market_id, as_of_date, price_count, target_count, order_count, shi_count,
             )
+
+        if critical:
+            return False, "Run health check failed: " + "; ".join(critical)
+        return True, None
     except Exception:
+        # A health-check infrastructure failure should not itself fail the run.
         logger.debug("Health check failed (non-critical)", exc_info=True)
+        return True, None
+
+
+def _record_equity_history(
+    db_manager: DatabaseManager,
+    *,
+    portfolio_id: str,
+    as_of_date: date,
+    equity: float,
+    cash: float | None,
+    gross_position_value: float | None,
+) -> None:
+    """Upsert one daily NAV row into ``portfolio_equity_history``.
+
+    The drawdown circuit breaker reads its trailing equity peak from this
+    table (migration 0106); the snapshot_positions job is the writer.
+    Idempotent per (portfolio_id, as_of_date) — a re-run overwrites with
+    the latest broker values.
+    """
+    sql = """
+        INSERT INTO portfolio_equity_history (
+            portfolio_id, as_of_date, equity, cash, gross_position_value
+        ) VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (portfolio_id, as_of_date) DO UPDATE
+        SET equity = EXCLUDED.equity,
+            cash = EXCLUDED.cash,
+            gross_position_value = EXCLUDED.gross_position_value
+    """
+    with db_manager.get_runtime_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                sql,
+                (portfolio_id, as_of_date, equity, cash, gross_position_value),
+            )
+            conn.commit()
+        finally:
+            cursor.close()
 
 
 def _execute_intel_job(
@@ -817,8 +1095,10 @@ def _execute_intel_job(
             return True, None
 
         elif job.job_type == "intel_weekly_assessment":
-            from apatheon.intel.pipeline import run_weekly_assessment
-            run_weekly_assessment()
+            # run_weekly_assessment() was removed from apatheon (2026-07
+            # dead-module cleanup); the maintained API is mode="weekly".
+            from apatheon.intel.pipeline import run_situation_report
+            run_situation_report("weekly")
             return True, None
 
         elif job.job_type == "intel_log_health":
@@ -1173,8 +1453,28 @@ def calculate_retry_delay(
 def should_retry_job(
     job: JobMetadata,
     execution: JobExecution,
+    *,
+    orphaned_thread_alive: bool = False,
 ) -> bool:
-    """Determine if a failed job should be retried."""
+    """Determine if a failed job should be retried.
+
+    Args:
+        orphaned_thread_alive: True when a previous attempt of this job
+            timed out but its worker thread is *still running* (Python
+            cannot cancel threads).  Retrying while the orphan lives
+            would run two instances of the same job concurrently — for
+            execution jobs that means the same order batch submitted
+            twice.  The caller must re-check once the orphan exits.
+    """
+    if orphaned_thread_alive:
+        logger.warning(
+            "should_retry_job: job_id=%s NOT retried — a timed-out previous "
+            "attempt's thread is still alive (would run the job twice "
+            "concurrently); will re-evaluate after the orphan exits",
+            job.job_id,
+        )
+        return False
+
     if execution.status != JobStatus.FAILED:
         return False
 
@@ -1193,6 +1493,113 @@ def should_retry_job(
 # ============================================================================
 # Market-Aware Daemon
 # ============================================================================
+
+
+#: Default active market set.  US_EQ is the only real market traded today;
+#: IRIS and INTEL are pseudo-markets (meta-intelligence DAGs).  Non-US
+#: regions fail daily on price coverage and pollute engine_runs, so they
+#: are opt-in via PROMETHEUS_ACTIVE_MARKETS rather than on by default.
+DEFAULT_ACTIVE_MARKETS: Tuple[str, ...] = ("US_EQ", "IRIS", "INTEL")
+
+
+def resolve_active_markets(cli_markets: List[str] | None) -> List[str]:
+    """Resolve the daemon's active market list.
+
+    Precedence:
+        1. Explicit ``--market`` CLI flags (operator override).
+        2. ``PROMETHEUS_ACTIVE_MARKETS`` env var (comma-separated, e.g.
+           ``"US_EQ,EU_EQ,IRIS,INTEL"``) — re-enabling a region is a
+           config change, not a code change.
+        3. :data:`DEFAULT_ACTIVE_MARKETS`.
+    """
+    if cli_markets:
+        return list(cli_markets)
+
+    raw = os.environ.get("PROMETHEUS_ACTIVE_MARKETS", "")
+    env_markets = [m.strip().upper() for m in raw.split(",") if m.strip()]
+    if env_markets:
+        logger.info(
+            "resolve_active_markets: using PROMETHEUS_ACTIVE_MARKETS=%s",
+            ",".join(env_markets),
+        )
+        return env_markets
+
+    logger.info(
+        "resolve_active_markets: no --market flags or PROMETHEUS_ACTIVE_MARKETS "
+        "set — defaulting to %s",
+        ",".join(DEFAULT_ACTIVE_MARKETS),
+    )
+    return list(DEFAULT_ACTIVE_MARKETS)
+
+
+@dataclass
+class JobHandle:
+    """One in-flight job attempt running on a worker thread.
+
+    All fields are written by the MAIN thread except ``result`` (written
+    once by the worker before it sets ``done``) — Event.set() publishes
+    the write, so the main thread reads ``result`` only after
+    ``done.is_set()`` and no lock is needed.
+    """
+
+    job: "JobMetadata"
+    execution_id: str
+    dag_id: str
+    market_id: str
+    as_of_date: date
+    thread: "threading.Thread"
+    started_at: datetime  # tz-aware UTC
+    deadline: datetime  # started_at + timeout
+    done: "threading.Event"
+    result: list  # [(success: bool, error_msg: str | None)]
+    attempt_number: int
+    max_retries: int
+    orphaned: bool = False
+    holds_ibkr: bool = False
+
+
+@dataclass
+class CatchupState:
+    """A morning catch-up DAG being served through a lane."""
+
+    dag: "DAG"
+    dag_id: str
+    catchup_date: date
+    deadline_monotonic: float
+
+
+@dataclass
+class MarketLane:
+    """Per-market execution lane: at most ONE job in flight.
+
+    Strict per-market serialization (pipeline phases are sequential)
+    while different markets' lanes run concurrently. An orphaned
+    (timed-out but still running) job keeps the lane occupied until its
+    thread dies — no job of the market may run while an uncancellable
+    thread may still be mutating that market's EngineRun.
+    """
+
+    market_id: str
+    handle: JobHandle | None = None
+    catchup: CatchupState | None = None
+    pending_rollover: date | None = None
+
+
+# Job types that open an IBKR session. Client ids are fixed PER JOB TYPE
+# (run_execution=10, run_options=11, snapshot_positions=12,
+# reconcile_fills=13), so two markets running the same job type
+# concurrently would collide on the gateway. The dispatcher allows at
+# most one of these in flight globally.
+IBKR_EXCLUSIVE_JOB_TYPES = frozenset(
+    {
+        "run_execution",
+        "run_options",
+        "snapshot_positions",
+        "reconcile_fills",
+        "reconcile_fills_eod",
+        "fx_sweep",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -1241,22 +1648,69 @@ class MarketAwareDaemon:
         # Track active DAGs: {market_id: (DAG, dag_id)}
         self.active_dags: Dict[str, Tuple[DAG, str]] = {}
 
-        # Track running jobs: {execution_id: (job, start_time)}
-        self.running_jobs: Dict[str, Tuple[JobMetadata, datetime]] = {}
+        # Per-market execution lanes — the concurrency unit. Each lane
+        # holds at most one in-flight JobHandle; lanes run concurrently.
+        # All lane mutation happens on the MAIN thread (workers only set
+        # their handle's `done` event), so no locking is required.
+        self.lanes: Dict[str, MarketLane] = {
+            market_id: MarketLane(market_id=market_id)
+            for market_id in config.markets
+        }
+
+        # job_id currently holding the global IBKR session token (see
+        # IBKR_EXCLUSIVE_JOB_TYPES). Main-thread-only.
+        self._ibkr_job_holder: str | None = None
+
+        # Global cap on concurrently dispatched jobs — a misconfigured
+        # market list can't exhaust the DB pool.
+        try:
+            self._max_concurrent_jobs = int(
+                os.environ.get("PROMETHEUS_MAX_CONCURRENT_JOBS", "8")
+            )
+        except ValueError:
+            self._max_concurrent_jobs = 8
 
         # Track retry backoff: {execution_id: retry_after_timestamp}
         self.retry_backoff: Dict[str, datetime] = {}
 
-        # Track threads orphaned by timeout. The thread keeps running
-        # because Python doesn't support thread cancellation; we reap
-        # them on later cycles to log late completions and to detect
-        # connection-pool leaks (the thread holds a DB conn until it
-        # exits).
-        self._orphaned_threads: List[Tuple[str, "threading.Thread", datetime]] = []
+        # Track threads orphaned by timeout, keyed by job_id. The thread
+        # keeps running because Python doesn't support thread cancellation;
+        # we reap entries on later cycles to log late completions and to
+        # detect connection-pool leaks (the thread holds a DB conn until it
+        # exits). While an orphan is alive, its job_id must NOT be retried —
+        # that would run two instances of the same job concurrently (e.g.
+        # the same order batch submitted twice).
+        self._orphaned_threads: Dict[str, Tuple["threading.Thread", datetime]] = {}
 
         # Cache TradingCalendar per market — loaded once, reused every cycle.
         # Avoids a DB round-trip (full holiday list) on every 60-second poll.
         self._calendars: Dict[str, TradingCalendar] = {}
+
+        # Dispatch-date side channel for _select_next_execution (set by
+        # _dispatch_next right before the selection loop; main-thread-only).
+        self._lane_dispatch_date: date | None = None
+
+    # ── Clock seam & derived views ────────────────────────────────────
+
+    def _now(self) -> datetime:
+        """Current UTC time — overridable seam for fake-clock tests."""
+        return datetime.now(timezone.utc)
+
+    @property
+    def running_jobs(self) -> Dict[str, Tuple[JobMetadata, datetime]]:
+        """Derived view of in-flight jobs, keyed by execution_id.
+
+        Kept for monitoring/tests; lanes are the authoritative state.
+        Includes orphaned handles (their threads are still alive).
+        """
+        return {
+            lane.handle.execution_id: (lane.handle.job, lane.handle.started_at)
+            for lane in self.lanes.values()
+            if lane.handle is not None
+        }
+
+    def _live_handle_count(self) -> int:
+        return sum(1 for lane in self.lanes.values() if lane.handle is not None)
 
     def _setup_signal_handlers(self) -> None:
         """Setup graceful shutdown handlers."""
@@ -1326,9 +1780,7 @@ class MarketAwareDaemon:
         Returns the listener handle on success; ``None`` (and logs) on
         failure so the daemon falls back to pure polling.
         """
-        if os.environ.get("PROMETHEUS_DISABLE_SIGNAL_LISTENER", "").lower() in {
-            "1", "true", "yes", "on",
-        }:
+        if env_flag("PROMETHEUS_DISABLE_SIGNAL_LISTENER"):
             logger.info("MarketAwareDaemon: signal listener disabled via env")
             return None
         try:
@@ -1344,24 +1796,28 @@ class MarketAwareDaemon:
             logger.exception("MarketAwareDaemon: failed to start signal listener")
             return None
 
+    def _initialize_dag(self, market_id: str, as_of_date: date) -> None:
+        """Initialize or refresh the DAG for one market."""
+        if market_id == "INTEL":
+            dag = build_intel_dag(as_of_date, is_sunday=as_of_date.weekday() == 6)
+            dag_id = dag.dag_id  # e.g. "intel_daily_2026-03-19"
+        elif market_id == "IRIS":
+            dag = build_iris_dag(as_of_date)
+            dag_id = dag.dag_id  # e.g. "iris_daily_2026-03-19"
+        else:
+            dag = build_market_dag(market_id, as_of_date)
+            dag_id = f"{market_id}_{as_of_date.isoformat()}"
+        self.active_dags[market_id] = (dag, dag_id)
+        logger.info(
+            "_initialize_dag: initialized dag_id=%s with %d jobs",
+            dag_id,
+            len(dag.jobs),
+        )
+
     def _initialize_dags(self, as_of_date: date) -> None:
         """Initialize or refresh DAGs for all configured markets."""
         for market_id in self.config.markets:
-            if market_id == "INTEL":
-                dag = build_intel_dag(as_of_date, is_sunday=as_of_date.weekday() == 6)
-                dag_id = dag.dag_id  # e.g. "intel_daily_2026-03-19"
-            elif market_id == "IRIS":
-                dag = build_iris_dag(as_of_date)
-                dag_id = dag.dag_id  # e.g. "iris_daily_2026-03-19"
-            else:
-                dag = build_market_dag(market_id, as_of_date)
-                dag_id = f"{market_id}_{as_of_date.isoformat()}"
-            self.active_dags[market_id] = (dag, dag_id)
-            logger.info(
-                "_initialize_dags: initialized dag_id=%s with %d jobs",
-                dag_id,
-                len(dag.jobs),
-            )
+            self._initialize_dag(market_id, as_of_date)
 
     def _get_completed_jobs(self, dag_id: str) -> Set[str]:
         """Get set of job IDs that are done (SUCCESS or SKIPPED) for a DAG.
@@ -1378,8 +1834,16 @@ class MarketAwareDaemon:
         }
 
     def _get_running_job_ids(self) -> Set[str]:
-        """Get set of currently running job IDs."""
-        return {job.job_id for job, _ in self.running_jobs.values()}
+        """Job ids currently in flight across all lanes.
+
+        Includes orphaned handles: a timed-out thread may still be
+        running its job, so the DAG must not re-offer it.
+        """
+        return {
+            lane.handle.job.job_id
+            for lane in self.lanes.values()
+            if lane.handle is not None
+        }
 
     def _maybe_reap_zombie_runs(self, as_of_date: date) -> None:
         """Daily sweep of stuck (zombie) engine_runs rows.
@@ -1413,463 +1877,760 @@ class MarketAwareDaemon:
         if len(self._zombie_reap_done) > 60:
             self._zombie_reap_done = set(sorted(self._zombie_reap_done)[-30:])
 
+    def _maybe_refresh_holidays(self, as_of_date: date) -> None:
+        """Monthly exchange-holiday refresh for all active real markets.
+
+        EODHD serves ~1-2 years of forward holidays; without periodic
+        refresh the market_holidays table goes stale and TradingCalendar
+        silently degrades to weekends-only for non-US markets. Runs on
+        the 1st of the month during the catch-up hour window.
+        """
+        if as_of_date.day != 1 or now_local().hour != self.config.morning_catchup_hour:
+            return
+        key = f"holidays_{as_of_date.isoformat()[:7]}"
+        if not hasattr(self, "_holiday_refresh_done"):
+            self._holiday_refresh_done: set = set()
+        if key in self._holiday_refresh_done:
+            return
+        self._holiday_refresh_done.add(key)
+        try:
+            from apatheon.data_ingestion.market_calendar import refresh_market_holidays
+
+            markets = [m for m in self.config.markets if m not in ("IRIS", "INTEL")]
+            counts = refresh_market_holidays(self.db_manager, markets)
+            logger.info("_maybe_refresh_holidays: %s", counts)
+            # Rebuild calendars so new holidays take effect without restart.
+            self._calendars.clear()
+        except Exception:
+            logger.exception("_maybe_refresh_holidays: refresh failed (non-fatal)")
+
+    def _has_live_orphan(self, job_id: str) -> bool:
+        """True when a timed-out attempt of ``job_id`` is still running."""
+        entry = self._orphaned_threads.get(job_id)
+        return entry is not None and entry[0].is_alive()
+
     def _reap_orphaned_threads(self) -> None:
         """Reap any orphaned (timed-out) threads that have finally exited.
 
         Logs late completions so operators see when a leak resolves
-        itself, and warns when an orphan has been alive long enough to
-        constitute a pool-exhaustion risk.
+        itself (and the job becomes retryable again), frees the lane the
+        orphan was occupying, releases the IBKR token if the orphan held
+        it (the zombie may own the gateway session until it exits), and
+        warns when an orphan has been alive long enough to constitute a
+        pool-exhaustion risk.
         """
         if not self._orphaned_threads:
             return
-        from prometheus.orchestration.clock import now_utc as _now_utc
 
-        still_running: List[Tuple[str, "threading.Thread", datetime]] = []
-        now_dt = _now_utc().replace(tzinfo=None)  # match naive datetime stored at orphan time
-        for job_id, thread, started_at in self._orphaned_threads:
+        now_dt = self._now()
+        still_running: Dict[str, Tuple["threading.Thread", datetime]] = {}
+        for job_id, (thread, started_at) in self._orphaned_threads.items():
+            # Normalize: tolerate naive timestamps from older entries.
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            age = (now_dt - started_at).total_seconds()
             if not thread.is_alive():
-                age = (now_dt - started_at).total_seconds()
                 logger.warning(
-                    "_reap_orphaned_threads: orphan job_id=%s finally exited after %.0fs",
+                    "_reap_orphaned_threads: orphan job_id=%s finally exited after %.0fs "
+                    "— retry guard lifted",
                     job_id, age,
                 )
+                # Free the lane the dead orphan was occupying + release
+                # the IBKR token if held.
+                for lane in self.lanes.values():
+                    h = lane.handle
+                    if h is not None and h.orphaned and h.job.job_id == job_id:
+                        if h.holds_ibkr and self._ibkr_job_holder == job_id:
+                            self._ibkr_job_holder = None
+                            logger.info(
+                                "_reap_orphaned_threads: released IBKR token held "
+                                "by dead orphan %s", job_id,
+                            )
+                        lane.handle = None
                 continue
-            age = (now_dt - started_at).total_seconds()
             if age > 7200:  # 2h
                 logger.error(
                     "_reap_orphaned_threads: job_id=%s STILL alive after %.0fs "
                     "(holding DB connection — pool exhaustion risk)",
                     job_id, age,
                 )
-            still_running.append((job_id, thread, started_at))
+            still_running[job_id] = (thread, started_at)
+
+        live_orphans = len(still_running)
+        if live_orphans >= 3:
+            logger.error(
+                "_reap_orphaned_threads: %d live orphaned threads — DB pool "
+                "pressure risk (each may hold up to 2 connections)",
+                live_orphans,
+            )
         self._orphaned_threads = still_running
 
-    def _check_timeouts(self, now: datetime) -> None:
-        """Check for timed-out jobs and mark them as failed."""
-        timed_out = []
+    # ── Lane dispatch machinery ───────────────────────────────────────
+    #
+    # The main thread is the sole scheduler: it selects executions,
+    # writes ALL job_executions status rows, manages retry backoff and
+    # the IBKR token, and starts one worker thread per dispatched job.
+    # Workers only run execute_job, publish their result via
+    # handle.done, and set _wake_event so the next pipeline phase
+    # dispatches within ~200ms instead of a full poll interval.
 
-        for execution_id, (job, start_time) in self.running_jobs.items():
-            elapsed = (now - start_time).total_seconds()
-            if elapsed > job.timeout_seconds:
-                timed_out.append(execution_id)
-                logger.warning(
-                    "_check_timeouts: job_id=%s timed out after %.1fs (limit: %ds)",
+    def _select_next_execution(self, job: JobMetadata, dag_id: str, now: datetime):
+        """Resolve the execution row for a runnable job, or None to skip.
+
+        Handles retry backoff, PENDING reuse, FAILED retry / permanent
+        SKIP, and fresh execution creation. Main-thread-only.
+        """
+        latest_exec = get_latest_job_execution(self.db_manager, job.job_id, dag_id)
+
+        if latest_exec and latest_exec.execution_id in self.retry_backoff:
+            retry_after = self.retry_backoff[latest_exec.execution_id]
+            if now < retry_after:
+                logger.debug(
+                    "_select_next_execution: job_id=%s in backoff until %s",
                     job.job_id,
-                    elapsed,
-                    job.timeout_seconds,
+                    retry_after,
+                )
+                return None
+            del self.retry_backoff[latest_exec.execution_id]
+
+        if latest_exec and latest_exec.status == JobStatus.PENDING:
+            return latest_exec
+        if latest_exec and latest_exec.status == JobStatus.FAILED:
+            if not should_retry_job(
+                job, latest_exec,
+                orphaned_thread_alive=self._has_live_orphan(job.job_id),
+            ):
+                logger.warning(
+                    "_select_next_execution: job_id=%s retries exhausted "
+                    "(attempt %d/%d), marking SKIPPED",
+                    job.job_id,
+                    latest_exec.attempt_number,
+                    job.max_retries,
+                )
+                update_job_execution_status(
+                    self.db_manager,
+                    latest_exec.execution_id,
+                    JobStatus.SKIPPED,
+                    error_message=(
+                        f"Retries exhausted after {latest_exec.attempt_number} attempts: "
+                        f"{latest_exec.error_message}"
+                    ),
+                )
+                self.retry_backoff.pop(latest_exec.execution_id, None)
+                return None
+            increment_job_execution_attempt(self.db_manager, latest_exec.execution_id)
+            return get_latest_job_execution(self.db_manager, job.job_id, dag_id)
+        if latest_exec and latest_exec.status == JobStatus.SKIPPED:
+            return None
+        # No prior execution (or prior was SUCCESS) — start fresh.
+        return create_job_execution(
+            self.db_manager, job, dag_id, self._lane_dispatch_date
+        )
+
+    def _start_job(
+        self,
+        lane: MarketLane,
+        job: JobMetadata,
+        execution,
+        dag_id: str,
+        dispatch_date: date,
+        now: datetime,
+    ) -> None:
+        """Mark RUNNING and start the worker thread for one job."""
+        update_job_execution_status(
+            self.db_manager, execution.execution_id, JobStatus.RUNNING
+        )
+
+        done = threading.Event()
+        result: list = []
+
+        def _worker() -> None:
+            try:
+                r = execute_job(
+                    self.db_manager, job, execution,
+                    options_mode=self.config.options_mode,
+                )
+                result.append(r)
+            except Exception as exc:
+                result.append((False, f"unhandled exception: {exc}"))
+            finally:
+                done.set()
+                # Wake the scheduler so the market's next pipeline phase
+                # dispatches immediately instead of on the next poll tick.
+                self._wake_event.set()
+                logger.debug(
+                    "_worker: job_id=%s thread exiting (result=%s)",
+                    job.job_id,
+                    "ok" if result and result[0][0] else "fail",
                 )
 
-        for execution_id in timed_out:
-            timed_out_job, _ = self.running_jobs[execution_id]
-            update_job_execution_status(
-                self.db_manager,
-                execution_id,
-                JobStatus.FAILED,
-                error_message=f"Job timed out after {timed_out_job.timeout_seconds}s",
-            )
-            del self.running_jobs[execution_id]
+        timeout_sec = job.timeout_seconds or 3600
+        thread = threading.Thread(
+            target=_worker, daemon=True, name=f"job-{job.job_id}"
+        )
 
-    def _process_market(
+        handle = JobHandle(
+            job=job,
+            execution_id=execution.execution_id,
+            dag_id=dag_id,
+            market_id=lane.market_id,
+            as_of_date=dispatch_date,
+            thread=thread,
+            started_at=now,
+            deadline=now + timedelta(seconds=timeout_sec),
+            done=done,
+            result=result,
+            attempt_number=execution.attempt_number,
+            max_retries=job.max_retries,
+        )
+
+        if job.job_type in IBKR_EXCLUSIVE_JOB_TYPES:
+            self._ibkr_job_holder = job.job_id
+            handle.holds_ibkr = True
+
+        lane.handle = handle
+        thread.start()
+        logger.info(
+            "_start_job: dispatched job_id=%s market=%s (execution_id=%s, "
+            "timeout=%ds, ibkr_token=%s, in_flight=%d)",
+            job.job_id,
+            lane.market_id,
+            execution.execution_id,
+            timeout_sec,
+            handle.holds_ibkr,
+            self._live_handle_count(),
+        )
+
+    def _dispatch_next(
         self,
-        market_id: str,
+        lane: MarketLane,
         dag: DAG,
         dag_id: str,
         current_state: MarketState,
-        as_of_date: date,
+        dispatch_date: date,
         now: datetime,
     ) -> None:
-        """Process one market's DAG for the current cycle."""
-        # Get DAG state
+        """Dispatch the first eligible runnable job of an idle lane."""
+        if lane.handle is not None:
+            return
+        if self._live_handle_count() >= self._max_concurrent_jobs:
+            logger.warning(
+                "_dispatch_next: concurrency cap %d reached — market %s waits",
+                self._max_concurrent_jobs,
+                lane.market_id,
+            )
+            return
+
         completed = self._get_completed_jobs(dag_id)
         running = self._get_running_job_ids()
-
-        # Get runnable jobs
         runnable = dag.get_runnable_jobs(completed, running, current_state)
-
         if not runnable:
             return
 
-        logger.info(
-            "_process_market: market_id=%s state=%s runnable=%d completed=%d running=%d",
-            market_id,
+        logger.debug(
+            "_dispatch_next: market=%s state=%s runnable=%d completed=%d",
+            lane.market_id,
             current_state.value,
             len(runnable),
             len(completed),
-            len(running),
         )
 
-        # Execute runnable jobs
+        # dispatch date is threaded to _select_next_execution via an
+        # attribute to keep its signature stable for unit tests.
+        self._lane_dispatch_date = dispatch_date
         for job in runnable:
-            # Check if we're in retry backoff
-            latest_exec = get_latest_job_execution(self.db_manager, job.job_id, dag_id)
-
-            if latest_exec and latest_exec.execution_id in self.retry_backoff:
-                retry_after = self.retry_backoff[latest_exec.execution_id]
-                if now < retry_after:
-                    logger.debug(
-                        "_process_market: job_id=%s in backoff until %s",
-                        job.job_id,
-                        retry_after,
-                    )
-                    continue
-                else:
-                    # Backoff expired, remove from tracking
-                    del self.retry_backoff[latest_exec.execution_id]
-
-            # Create or reuse execution record
-            if latest_exec and latest_exec.status == JobStatus.PENDING:
-                execution = latest_exec
-            elif latest_exec and latest_exec.status == JobStatus.FAILED:
-                if not should_retry_job(job, latest_exec):
-                    # Retries exhausted — permanently skip so dependents unblock.
-                    logger.warning(
-                        "_process_market: job_id=%s retries exhausted (attempt %d/%d), marking SKIPPED",
-                        job.job_id,
-                        latest_exec.attempt_number,
-                        job.max_retries,
-                    )
-                    update_job_execution_status(
-                        self.db_manager,
-                        latest_exec.execution_id,
-                        JobStatus.SKIPPED,
-                        error_message=(
-                            f"Retries exhausted after {latest_exec.attempt_number} attempts: "
-                            f"{latest_exec.error_message}"
-                        ),
-                    )
-                    # Clean up retry_backoff entry to avoid memory leak.
-                    self.retry_backoff.pop(latest_exec.execution_id, None)
-                    continue
-                # Retry: increment attempt counter on the existing record
-                increment_job_execution_attempt(self.db_manager, latest_exec.execution_id)
-                execution = get_latest_job_execution(self.db_manager, job.job_id, dag_id)
-            elif latest_exec and latest_exec.status == JobStatus.SKIPPED:
-                # Already permanently skipped — do nothing this cycle
+            # Orphan guard: a previous attempt of this job timed out but
+            # its worker thread is still running. (Lane occupancy already
+            # covers the same market; this guards cross-DAG catchup ids.)
+            if self._has_live_orphan(job.job_id):
+                logger.warning(
+                    "_dispatch_next: job_id=%s skipped — timed-out previous "
+                    "attempt still running (orphaned thread alive)",
+                    job.job_id,
+                )
                 continue
-            else:
-                # No prior execution (or prior was SUCCESS) — start fresh
-                execution = create_job_execution(self.db_manager, job, dag_id, as_of_date)
 
-            # Mark as running
-            update_job_execution_status(self.db_manager, execution.execution_id, JobStatus.RUNNING)
-            self.running_jobs[execution.execution_id] = (job, now)
-
-            # Execute job with timeout enforcement.
-            # Jobs run synchronously, so we use a thread + join(timeout)
-            # to enforce the configured timeout_seconds.
-            import threading
-
-            _result: list = []  # [(success, error_msg)]
-
-            def _run_job():
-                try:
-                    r = execute_job(
-                        self.db_manager, job, execution,
-                        options_mode=self.config.options_mode,
-                    )
-                    _result.append(r)
-                except Exception as exc:
-                    _result.append((False, f"unhandled exception: {exc}"))
-                finally:
-                    # Best-effort: close any DB connection pools that may
-                    # have been left open if execute_job raised outside a
-                    # context manager. The pool's getconn/putconn pattern
-                    # should handle normal cases, but unhandled exceptions
-                    # in nested helpers could leak connections. Log so we
-                    # can trace pool exhaustion back to a specific job.
-                    logger.debug(
-                        "_run_job: job_id=%s thread exiting (result=%s)",
-                        job.job_id,
-                        "ok" if _result and _result[0][0] else "fail",
-                    )
-
-            timeout_sec = job.timeout_seconds or 3600  # default 1h
-            thread = threading.Thread(target=_run_job, daemon=True)
-            thread.start()
-            thread.join(timeout=timeout_sec)
-
-            if thread.is_alive():
-                # Job exceeded timeout — Python can't kill threads, so the
-                # thread keeps running and continues to hold whatever DB
-                # connection it took out of the pool. Track it so the next
-                # cycle can reap it (log late completion) instead of letting
-                # it disappear silently.
-                success, error_msg = False, f"job timed out after {timeout_sec}s"
-                self._orphaned_threads.append((job.job_id, thread, now))
-                logger.error(
-                    "_process_market: job_id=%s TIMED OUT after %ds — "
-                    "thread orphaned (DB connection may leak until thread exits); "
-                    "%d orphaned thread(s) currently tracked",
-                    job.job_id, timeout_sec, len(self._orphaned_threads),
-                )
-            elif _result:
-                success, error_msg = _result[0]
-            else:
-                success, error_msg = False, "job thread completed without result"
-
-            # Update status
-            if success:
-                update_job_execution_status(
-                    self.db_manager,
-                    execution.execution_id,
-                    JobStatus.SUCCESS,
-                )
+            # IBKR exclusivity: fixed client ids per job type mean two
+            # markets running the same IBKR job type would collide on the
+            # gateway session.
+            if (
+                job.job_type in IBKR_EXCLUSIVE_JOB_TYPES
+                and self._ibkr_job_holder is not None
+            ):
                 logger.info(
-                    "_process_market: job_id=%s SUCCESS (execution_id=%s)",
+                    "_dispatch_next: job_id=%s waits — IBKR token held by %s",
                     job.job_id,
-                    execution.execution_id,
+                    self._ibkr_job_holder,
                 )
-            else:
-                update_job_execution_status(
-                    self.db_manager,
-                    execution.execution_id,
-                    JobStatus.FAILED,
-                    error_message=error_msg,
-                )
-                logger.error(
-                    "_process_market: job_id=%s FAILED (execution_id=%s): %s",
-                    job.job_id,
-                    execution.execution_id,
-                    error_msg,
-                )
+                continue
 
-                # Schedule retry if applicable.
-                # NOTE: ``execution.status`` is the in-memory copy from when
-                # this row was loaded/created — it's still PENDING/RUNNING
-                # here even though we just wrote FAILED to the DB above. So
-                # we cannot use should_retry_job() (which gates on
-                # status == FAILED); checking the attempt counter directly
-                # is the right semantics anyway.  Without this, retry_backoff
-                # is never populated and the next cycle retries immediately,
-                # collapsing the 2 h exponential window down to ~poll_interval.
-                if execution.attempt_number < job.max_retries:
-                    delay = calculate_retry_delay(
-                        job, execution.attempt_number, error_message=error_msg,
-                    )
-                    retry_after = now + timedelta(seconds=delay)
-                    self.retry_backoff[execution.execution_id] = retry_after
-                    logger.info(
-                        "_process_market: job_id=%s will retry in %.1fs (attempt %d/%d)",
-                        job.job_id,
-                        delay,
-                        execution.attempt_number + 1,
-                        job.max_retries,
-                    )
+            execution = self._select_next_execution(job, dag_id, now)
+            if execution is None:
+                continue
 
-            # Remove from running
-            if execution.execution_id in self.running_jobs:
-                del self.running_jobs[execution.execution_id]
-
-    def _maybe_morning_catchup(self, as_of_date: date) -> None:
-        """At the configured morning hour, check if yesterday's pipeline ran.
-
-        If the machine was off during POST_CLOSE (typically 22:00-02:00 CET),
-        the pipeline never triggered. This method detects that case and forces
-        a POST_CLOSE cycle using a *temporary DAG built for the catchup date*,
-        so today's DAG is never polluted with yesterday's job state.
-
-        The catchup loops until all jobs in the catchup DAG complete, ensuring
-        the full pipeline (ingest → compute → signals → execution) runs.
-
-        Only triggers once per day, at the configured hour (default: 08:00 local).
-        """
-        # Guard: prevent re-entry if a catch-up is already in progress.
-        # This prevents duplication when midnight date rollover fires while
-        # a catch-up loop is still running.
-        if hasattr(self, '_catchup_in_progress') and self._catchup_in_progress:
+            self._start_job(lane, job, execution, dag_id, dispatch_date, now)
             return
 
-        # Use timezone-aware local clock so the catch-up window stays anchored
-        # to the configured PROMETHEUS_LOCAL_TZ (default Europe/Berlin) instead
-        # of whatever naive offset the host happens to have.
+    def _handle_job_result(
+        self,
+        lane: MarketLane,
+        handle: JobHandle,
+        success: bool,
+        error_msg: str | None,
+        now: datetime,
+    ) -> None:
+        """Persist a completed job's outcome and free the lane."""
+        if success:
+            update_job_execution_status(
+                self.db_manager,
+                handle.execution_id,
+                JobStatus.SUCCESS,
+            )
+            logger.info(
+                "_handle_job_result: job_id=%s SUCCESS (execution_id=%s)",
+                handle.job.job_id,
+                handle.execution_id,
+            )
+        else:
+            update_job_execution_status(
+                self.db_manager,
+                handle.execution_id,
+                JobStatus.FAILED,
+                error_message=error_msg,
+            )
+            logger.error(
+                "_handle_job_result: job_id=%s FAILED (execution_id=%s): %s",
+                handle.job.job_id,
+                handle.execution_id,
+                error_msg,
+            )
+            # Schedule retry backoff off the attempt counter captured at
+            # dispatch (the DB row now says FAILED; should_retry_job gates
+            # on FAILED status at selection time).
+            if handle.attempt_number < handle.max_retries:
+                delay = calculate_retry_delay(
+                    handle.job, handle.attempt_number, error_message=error_msg,
+                )
+                retry_after = now + timedelta(seconds=delay)
+                self.retry_backoff[handle.execution_id] = retry_after
+                logger.info(
+                    "_handle_job_result: job_id=%s will retry in %.1fs (attempt %d/%d)",
+                    handle.job.job_id,
+                    delay,
+                    handle.attempt_number + 1,
+                    handle.max_retries,
+                )
+
+        if handle.holds_ibkr and self._ibkr_job_holder == handle.job.job_id:
+            self._ibkr_job_holder = None
+        lane.handle = None
+
+    def _poll_lanes(self, now: datetime) -> None:
+        """Handle completions and deadline timeouts across all lanes."""
+        for lane in self.lanes.values():
+            handle = lane.handle
+            if handle is None or handle.orphaned:
+                continue
+
+            if handle.done.is_set():
+                if handle.result:
+                    success, error_msg = handle.result[0]
+                else:
+                    success, error_msg = False, "job thread completed without result"
+                self._handle_job_result(lane, handle, success, error_msg, now)
+                continue
+
+            if now >= handle.deadline:
+                # Timed out — Python can't kill threads. Mark FAILED,
+                # orphan the thread, and keep the LANE OCCUPIED until the
+                # reaper observes the thread dead: no job of this market
+                # may run while an uncancellable thread might still be
+                # mutating its EngineRun. The IBKR token (if held) is
+                # released by the reaper for the same reason.
+                timeout_sec = handle.job.timeout_seconds or 3600
+                handle.orphaned = True
+                self._orphaned_threads[handle.job.job_id] = (
+                    handle.thread,
+                    handle.started_at,
+                )
+                update_job_execution_status(
+                    self.db_manager,
+                    handle.execution_id,
+                    JobStatus.FAILED,
+                    error_message=f"job timed out after {timeout_sec}s",
+                )
+                logger.error(
+                    "_poll_lanes: job_id=%s TIMED OUT after %ds — thread "
+                    "orphaned; lane %s blocked until the orphan exits; "
+                    "%d orphan(s) tracked",
+                    handle.job.job_id,
+                    timeout_sec,
+                    lane.market_id,
+                    len(self._orphaned_threads),
+                )
+
+    def _nearest_deadline_seconds(self, now: datetime) -> float | None:
+        """Seconds until the nearest in-flight job deadline, if any."""
+        deadlines = [
+            (lane.handle.deadline - now).total_seconds()
+            for lane in self.lanes.values()
+            if lane.handle is not None and not lane.handle.orphaned
+        ]
+        if not deadlines:
+            return None
+        return max(0.0, min(deadlines))
+
+    def _resolve_lane_work(
+        self,
+        lane: MarketLane,
+        now: datetime,
+    ) -> tuple["DAG", str, MarketState, date] | None:
+        """Return (dag, dag_id, state, dispatch_date) for a lane, or None.
+
+        Catch-up work (a fixed past date, forced POST_CLOSE) takes
+        precedence over the live DAG. Catch-up completion/expiry is
+        detected here, on the main thread, while the lane is idle.
+        """
+        market_id = lane.market_id
+
+        if lane.catchup is not None:
+            cu = lane.catchup
+            if time.monotonic() > cu.deadline_monotonic:
+                logger.error(
+                    "_resolve_lane_work: catch-up for %s %s exceeded its "
+                    "wall-clock budget (%d/%d jobs done) — aborting; live "
+                    "DAG resumes",
+                    market_id,
+                    cu.catchup_date,
+                    len(self._get_completed_jobs(cu.dag_id)),
+                    len(cu.dag.jobs),
+                )
+                lane.catchup = None
+            else:
+                completed = self._get_completed_jobs(cu.dag_id)
+                runnable = cu.dag.get_runnable_jobs(
+                    completed, self._get_running_job_ids(), MarketState.POST_CLOSE
+                )
+                if not runnable:
+                    logger.info(
+                        "_resolve_lane_work: catch-up COMPLETE for %s %s "
+                        "(%d/%d jobs done)",
+                        market_id,
+                        cu.catchup_date,
+                        len(completed),
+                        len(cu.dag.jobs),
+                    )
+                    self._on_catchup_complete(lane)
+                    lane.catchup = None
+                else:
+                    return cu.dag, cu.dag_id, MarketState.POST_CLOSE, cu.catchup_date
+
+        if market_id not in self.active_dags:
+            return None
+        dag, dag_id = self.active_dags[market_id]
+
+        # INTEL/IRIS are not real markets — their jobs use
+        # required_state=None so any state passes. Use POST_CLOSE as a
+        # safe placeholder.
+        if market_id in ("INTEL", "IRIS"):
+            current_state = MarketState.POST_CLOSE
+        else:
+            if market_id not in self._calendars:
+                self._calendars[market_id] = TradingCalendar(
+                    TradingCalendarConfig(market=market_id)
+                )
+            current_state = get_market_state(
+                market_id, now, calendar=self._calendars[market_id]
+            )
+
+        return dag, dag_id, current_state, dag.as_of_date
+
+    def _apply_pending_rollover(self, lane: MarketLane) -> None:
+        """Swap an idle lane's DAG to the pending as_of_date.
+
+        Deferred per-lane rollover: busy lanes keep their old DAG until
+        the in-flight job completes (its status writes go against the
+        handle's dag_id), then swap here on the next dispatch.
+        """
+        if lane.pending_rollover is None or lane.handle is not None:
+            return
+        new_date = lane.pending_rollover
+        old = self.active_dags.get(lane.market_id)
+        old_date = old[0].as_of_date if old else None
+        try:
+            self._finalize_stale_runs_for_market(lane.market_id, old_date)
+        except Exception:
+            logger.exception(
+                "_apply_pending_rollover: stale-run finalization failed for %s",
+                lane.market_id,
+            )
+        self._initialize_dag(lane.market_id, new_date)
+        lane.pending_rollover = None
+        logger.info(
+            "_apply_pending_rollover: %s rolled %s -> %s",
+            lane.market_id,
+            old_date,
+            new_date,
+        )
+
+    def _finalize_stale_runs_for_market(
+        self, market_id: str, old_date: date | None
+    ) -> None:
+        """Finalize this market's non-terminal engine_runs at rollover.
+
+        If the old DAG's jobs all succeeded the run was just orphaned
+        (mark COMPLETED); with failures, mark FAILED with diagnostics.
+        Pseudo-markets have no engine_runs.
+        """
+        if market_id in ("INTEL", "IRIS") or old_date is None:
+            return
+        from prometheus.pipeline.state import list_active_runs
+
+        region = market_id.split("_")[0]
+        stale_runs = [
+            r
+            for r in list_active_runs(self.db_manager)
+            if r.region.upper() == region
+            and r.phase not in (RunPhase.COMPLETED, RunPhase.FAILED)
+        ]
+        for stale_run in stale_runs:
+            dag_id = f"{market_id}_{old_date.isoformat()}"
+            dag_execs = get_dag_executions(self.db_manager, dag_id)
+            all_succeeded = len(dag_execs) > 0 and all(
+                e.status in {JobStatus.SUCCESS, JobStatus.SKIPPED}
+                for e in dag_execs
+            )
+            if all_succeeded:
+                logger.info(
+                    "_finalize_stale_runs_for_market: stale run %s (phase=%s) "
+                    "— DAG %s all succeeded, marking COMPLETED",
+                    stale_run.run_id,
+                    stale_run.phase.value,
+                    dag_id,
+                )
+                update_phase(self.db_manager, stale_run.run_id, RunPhase.COMPLETED)
+            else:
+                failed_jobs = [
+                    {
+                        "job_id": e.job_id,
+                        "error": (e.error_message or "")[:500],
+                    }
+                    for e in dag_execs
+                    if e.status == JobStatus.FAILED
+                ]
+                logger.warning(
+                    "_finalize_stale_runs_for_market: finalizing stale run %s "
+                    "(phase=%s, n_failed=%d) from %s",
+                    stale_run.run_id,
+                    stale_run.phase.value,
+                    len(failed_jobs),
+                    old_date,
+                )
+                update_phase(
+                    self.db_manager,
+                    stale_run.run_id,
+                    RunPhase.FAILED,
+                    error={
+                        "reason": "date_rollover_zombie_reap",
+                        "stuck_phase": stale_run.phase.value,
+                        "dag_id": dag_id,
+                        "n_jobs": len(dag_execs),
+                        "n_failed_jobs": len(failed_jobs),
+                        "failed_jobs": failed_jobs[:10],
+                    },
+                )
+
+    def _shutdown_lanes(self) -> None:
+        """Mark jobs mid-flight at shutdown as FAILED and clear all lanes.
+
+        Prevents executions from appearing orphaned in RUNNING state on the
+        next startup. Orphaned handles were already marked FAILED at their
+        timeout, so they are not re-failed here. The actual work threads are
+        daemon=True and die with the process. Called from ``run()``'s
+        shutdown tail; extracted so the semantics are testable in isolation.
+        """
+        in_flight = [
+            lane for lane in self.lanes.values() if lane.handle is not None
+        ]
+        if not in_flight:
+            return
+        logger.warning(
+            "MarketAwareDaemon: %d job(s) in-flight at shutdown — marking FAILED",
+            len(in_flight),
+        )
+        for lane in in_flight:
+            handle = lane.handle
+            # Orphaned handles were already marked FAILED at timeout.
+            if handle is not None and not handle.orphaned:
+                try:
+                    update_job_execution_status(
+                        self.db_manager,
+                        handle.execution_id,
+                        JobStatus.FAILED,
+                        error_message="daemon shutdown while job was running",
+                    )
+                except Exception:
+                    logger.exception(
+                        "MarketAwareDaemon: failed to mark execution %s as FAILED",
+                        handle.execution_id,
+                    )
+            lane.handle = None
+        self._ibkr_job_holder = None
+
+    def _on_catchup_complete(self, lane: MarketLane) -> None:
+        """Post-catch-up hook: reconcile fills once (paper/live only).
+
+        Orders submitted during the caught-up POST_CLOSE cycle only fill
+        at the next open; pull executions from IBKR now. Runs inline on
+        the main thread (bounded IBKR call, once per catch-up) and only
+        for the home market that owns the account-global jobs.
+        """
+        if lane.market_id != "US_EQ":
+            return
+        if self.config.options_mode not in ("paper", "live"):
+            return
+        try:
+            from prometheus.execution.fill_reconciliation import reconcile_fills
+
+            # Capture-only: a catch-up runs AFTER the missed session (often
+            # the next morning or a weekend), when reqExecutions can no
+            # longer see that session's executions — expiring here would
+            # cancel orders whose fills are simply invisible, the exact
+            # defect that blinded the 2026-07 run.  Expiry stays with the
+            # normally-scheduled reconcile_fills_eod pass.
+            summary = reconcile_fills(
+                self.db_manager, mode=self.config.options_mode, expire_stale=False,
+            )
+            logger.info(
+                "_on_catchup_complete: reconcile_fills fills=%d updated=%d "
+                "expired=%d errors=%d",
+                summary.get("fills_recorded", 0),
+                summary.get("orders_updated", 0),
+                summary.get("orders_expired", 0),
+                len(summary.get("errors", [])),
+            )
+        except Exception:
+            logger.exception(
+                "_on_catchup_complete: reconcile_fills failed (non-blocking)"
+            )
+
+
+    def _maybe_morning_catchup(self, as_of_date: date) -> None:
+        """At the configured morning hour, queue catch-up for missed markets.
+
+        If the machine was off during a market's POST_CLOSE window, that
+        market's pipeline never ran. This detects the gap PER MARKET
+        (each with its own calendar and engine-run history) and attaches
+        a CatchupState to the market's lane; the lane then serves the
+        catch-up DAG (forced POST_CLOSE, fixed past date) through the
+        normal dispatcher while every other lane keeps running live work
+        — a US catch-up no longer stalls Asia's live morning.
+
+        Detection only fires in the first minutes of the configured
+        local hour and once per (market, date).
+        """
         now_local_dt = now_local()
         if now_local_dt.hour != self.config.morning_catchup_hour:
             return
         if now_local_dt.minute > 5:
-            # Only trigger in the first 5 minutes of the hour
             return
-
-        # If as_of_date has already been rolled forward to today (e.g. by the
-        # midnight date-change detection), there is nothing to catch up.
-        if as_of_date == now_local_dt.date():
-            return  # Already on today's date
-
-        # Check if we already did a catch-up today
-        catchup_key = f"catchup_{as_of_date}"
-        if hasattr(self, "_catchup_done") and catchup_key in self._catchup_done:
-            return
-
-        # Find the most recent trading day
-        cal = self._calendars.get("US_EQ")
-        if cal is None:
-            cal = TradingCalendar(TradingCalendarConfig(market="US_EQ"))
-            self._calendars["US_EQ"] = cal
-
-        # The pipeline should have run for the last trading day
-        yesterday_candidates = cal.trading_days_between(
-            as_of_date - timedelta(days=7), as_of_date - timedelta(days=1),
-        )
-        if not yesterday_candidates:
-            return
-        last_trading_day = yesterday_candidates[-1]
-
-        # Check if that day's run completed
-        from prometheus.pipeline.state import load_latest_run
-
-        latest_run = load_latest_run(self.db_manager, market_id="US_EQ", as_of_date=last_trading_day)
-        if latest_run and latest_run.phase == RunPhase.COMPLETED:
-            # Pipeline already ran — no catch-up needed
-            if not hasattr(self, "_catchup_done"):
-                self._catchup_done: set = set()
-            self._catchup_done.add(catchup_key)
-            # Prune old entries to prevent unbounded growth
-            if len(self._catchup_done) > 60:
-                self._catchup_done = set(sorted(self._catchup_done)[-30:])
-            return
-
-        # Pipeline didn't run for the last trading day — force catch-up.
-        # Bug fix: previously called ``now_local.strftime`` which referenced
-        # the imported function (always callable), not the captured value;
-        # use the actual datetime captured above.
-        logger.info(
-            "MarketAwareDaemon: MORNING CATCH-UP — last trading day %s has no completed run, "
-            "forcing POST_CLOSE pipeline at %s local time",
-            last_trading_day,
-            now_local_dt.strftime("%H:%M"),
-        )
-
-        # Set the in-progress flag to prevent re-entry from concurrent calls
-        # (e.g. midnight date rollover firing while catch-up is running).
-        self._catchup_in_progress = True
-        try:
-            # Build a SEPARATE DAG for the catchup date so we don't pollute
-            # today's DAG with yesterday's job state. This avoids the date
-            # mismatch where ingest runs for yesterday but compute_returns
-            # tries to use today's (empty) EngineRun.
-            catchup_dag = build_market_dag("US_EQ", last_trading_day)
-            catchup_dag_id = f"US_EQ_{last_trading_day.isoformat()}"
-
-            # Wall-clock budget for the catch-up loop. If individual jobs
-            # take 5 minutes each, we don't want catch-up to soak the daemon
-            # for two hours and miss the actual market open. Default 20
-            # minutes; configurable via PROMETHEUS_CATCHUP_BUDGET_SECONDS.
-            try:
-                catchup_budget_seconds = int(os.environ.get("PROMETHEUS_CATCHUP_BUDGET_SECONDS", "1200"))
-            except ValueError:
-                catchup_budget_seconds = 1200
-            catchup_started_at = time.monotonic()
-
-            # Check budget BEFORE entering the loop — if budget is already
-            # exhausted (e.g. misconfigured to 0), skip immediately.
-            if catchup_budget_seconds <= 0:
-                logger.warning(
-                    "MarketAwareDaemon: MORNING CATCH-UP budget is %ds — skipping",
-                    catchup_budget_seconds,
-                )
-            else:
-                # Loop until all catchup jobs complete (or we hit a safety limit).
-                # Each iteration runs one _process_market cycle, then sleeps for
-                # poll_interval_seconds so retry backoffs can expire.
-                max_iterations = 60  # 12 jobs * ~3 retries + margin
-                for iteration in range(max_iterations):
-                    elapsed = time.monotonic() - catchup_started_at
-                    if elapsed > catchup_budget_seconds:
-                        logger.error(
-                            "MarketAwareDaemon: MORNING CATCH-UP for %s exceeded wall-clock budget "
-                            "(%ds > %ds) after %d iterations (%d/%d jobs done) — aborting so the "
-                            "daemon can resume normal market processing",
-                            last_trading_day,
-                            int(elapsed),
-                            catchup_budget_seconds,
-                            iteration,
-                            len(self._get_completed_jobs(catchup_dag_id)),
-                            len(catchup_dag.jobs),
-                        )
-                        break
-
-                    now = datetime.now(timezone.utc)
-                    completed = self._get_completed_jobs(catchup_dag_id)
-                    running = self._get_running_job_ids()
-                    runnable = catchup_dag.get_runnable_jobs(completed, running, MarketState.POST_CLOSE)
-
-                    if not runnable:
-                        logger.info(
-                            "MarketAwareDaemon: MORNING CATCH-UP complete for %s after %d iterations "
-                            "(%d/%d jobs done, elapsed=%.0fs)",
-                            last_trading_day,
-                            iteration + 1,
-                            len(completed),
-                            len(catchup_dag.jobs),
-                            elapsed,
-                        )
-                        break
-
-                    self._process_market(
-                        "US_EQ", catchup_dag, catchup_dag_id,
-                        MarketState.POST_CLOSE,
-                        last_trading_day,
-                        now,
-                    )
-
-                    if self.shutdown_requested:
-                        break
-
-                    # Interruptible sleep between iterations so SIGTERM exits
-                    # promptly even mid-catch-up.  Signal alerts (wake event)
-                    # also break the sleep but don't exit the loop — they
-                    # let the next iteration evaluate immediately.
-                    sleep_outcome = self._interruptible_sleep(
-                        self.config.poll_interval_seconds,
-                    )
-                    if sleep_outcome == "shutdown":
-                        break
-                else:
-                    logger.warning(
-                        "MarketAwareDaemon: MORNING CATCH-UP for %s exhausted %d iterations "
-                        "(%d/%d jobs done) — some jobs may not have completed",
-                        last_trading_day,
-                        max_iterations,
-                        len(self._get_completed_jobs(catchup_dag_id)),
-                        len(catchup_dag.jobs),
-                    )
-        finally:
-            self._catchup_in_progress = False
 
         if not hasattr(self, "_catchup_done"):
-            self._catchup_done = set()
-        self._catchup_done.add(catchup_key)
-        # Prune old entries to prevent unbounded growth
-        if len(self._catchup_done) > 60:
-            self._catchup_done = set(sorted(self._catchup_done)[-30:])
+            self._catchup_done: set = set()
 
-    def _run_cycle(self, as_of_date: date) -> None:
-        """Execute one orchestration cycle across all markets."""
-        if self._shutdown_event.is_set():
+        from prometheus.pipeline.state import load_latest_run
+
+        try:
+            catchup_budget_seconds = int(
+                os.environ.get("PROMETHEUS_CATCHUP_BUDGET_SECONDS", "1200")
+            )
+        except ValueError:
+            catchup_budget_seconds = 1200
+        if catchup_budget_seconds <= 0:
             return
-        now = datetime.now(timezone.utc)
 
-        # Check for timeouts
-        self._check_timeouts(now)
-
-        # Process each market
         for market_id in self.config.markets:
-            if market_id not in self.active_dags:
+            if market_id in ("INTEL", "IRIS"):
+                continue
+            lane = self.lanes.get(market_id)
+            if lane is None or lane.catchup is not None:
                 continue
 
-            dag, dag_id = self.active_dags[market_id]
-            # INTEL/IRIS are not real markets — their jobs use
-            # required_state=None so any state passes.  Use POST_CLOSE
-            # as a safe placeholder.
-            if market_id in ("INTEL", "IRIS"):
-                current_state = MarketState.POST_CLOSE
-            else:
-                if market_id not in self._calendars:
-                    self._calendars[market_id] = TradingCalendar(
-                        TradingCalendarConfig(market=market_id)
-                    )
-                current_state = get_market_state(market_id, now, calendar=self._calendars[market_id])
+            if market_id not in self._calendars:
+                self._calendars[market_id] = TradingCalendar(
+                    TradingCalendarConfig(market=market_id)
+                )
+            cal = self._calendars[market_id]
 
-            self._process_market(market_id, dag, dag_id, current_state, as_of_date, now)
+            candidates = cal.trading_days_between(
+                as_of_date - timedelta(days=7), as_of_date - timedelta(days=1),
+            )
+            if not candidates:
+                continue
+            last_trading_day = candidates[-1]
+
+            catchup_key = f"catchup_{market_id}_{last_trading_day}"
+            if catchup_key in self._catchup_done:
+                continue
+
+            latest_run = load_latest_run(
+                self.db_manager, market_id=market_id, as_of_date=last_trading_day,
+            )
+            if latest_run and latest_run.phase == RunPhase.COMPLETED:
+                self._catchup_done.add(catchup_key)
+                continue
+
+            logger.info(
+                "MORNING CATCH-UP: %s last trading day %s has no completed "
+                "run — queueing catch-up DAG on its lane (budget %ds)",
+                market_id,
+                last_trading_day,
+                catchup_budget_seconds,
+            )
+            lane.catchup = CatchupState(
+                dag=build_market_dag(market_id, last_trading_day),
+                dag_id=f"{market_id}_{last_trading_day.isoformat()}",
+                catchup_date=last_trading_day,
+                deadline_monotonic=time.monotonic() + catchup_budget_seconds,
+            )
+            self._catchup_done.add(catchup_key)
+
+        # Prune old entries to prevent unbounded growth
+        if len(self._catchup_done) > 120:
+            self._catchup_done = set(sorted(self._catchup_done)[-60:])
+
+
+    def _run_cycle(self, as_of_date: date) -> None:
+        """One scheduler cycle: poll lanes, then dispatch idle lanes.
+
+        Non-blocking — a slow job occupies only its own market's lane
+        while every other market keeps flowing. ``as_of_date`` is the
+        current UTC anchor; each lane's actual dispatch date comes from
+        its own DAG (which may lag during a deferred rollover or lead
+        during catch-up).
+        """
+        if self._shutdown_event.is_set():
+            return
+        now = self._now()
+
+        # 1) Completions + deadline timeouts.
+        self._poll_lanes(now)
+
+        # 2) Dispatch one job per idle lane.
+        for market_id in self.config.markets:
+            lane = self.lanes.get(market_id)
+            if lane is None:
+                lane = self.lanes[market_id] = MarketLane(market_id=market_id)
+            if lane.handle is not None:
+                continue
+
+            self._apply_pending_rollover(lane)
+
+            work = self._resolve_lane_work(lane, now)
+            if work is None:
+                continue
+            dag, dag_id, current_state, dispatch_date = work
+            self._dispatch_next(lane, dag, dag_id, current_state, dispatch_date, now)
 
     def run(self) -> None:
         """Run the orchestration daemon until shutdown is requested."""
@@ -1905,120 +2666,24 @@ class MarketAwareDaemon:
 
                 # Detect calendar date rollover (midnight crossings).
                 # Only auto-rolls when no explicit as_of_date was configured.
+                # DEFERRED PER-LANE SWAP: busy lanes keep their old DAG
+                # until the in-flight job completes (status writes go
+                # against the handle's dag_id); idle lanes swap on their
+                # next dispatch via _apply_pending_rollover, which also
+                # finalizes that market's stale engine_runs.
                 if self.config.as_of_date is None:
-                    today = datetime.now(timezone.utc).date()
+                    today = self._now().date()
                     if today != as_of_date:
                         logger.info(
-                            "MarketAwareDaemon: date rolled over %s -> %s, reinitialising DAGs",
+                            "MarketAwareDaemon: date rolled over %s -> %s — "
+                            "queueing per-lane DAG swaps (%d lanes busy)",
                             as_of_date,
                             today,
+                            self._live_handle_count(),
                         )
-                        # Finalize any incomplete runs from yesterday.
-                        # If the DAG's jobs all succeeded, the run was just
-                        # orphaned (created at market-close time after jobs
-                        # already finished) — mark it COMPLETED, not FAILED.
-                        # Only mark FAILED if there were actual job failures.
-                        try:
-                            from prometheus.pipeline.state import list_active_runs
-
-                            stale_runs = list_active_runs(self.db_manager)
-                            for stale_run in stale_runs:
-                                if stale_run.phase in (
-                                    RunPhase.COMPLETED,
-                                    RunPhase.FAILED,
-                                ):
-                                    continue
-                                # Check if the DAG for this run's market
-                                # actually had failures before deciding the
-                                # terminal phase.
-                                dag_id = f"{stale_run.region}_EQ_{as_of_date.isoformat()}"
-                                dag_execs = get_dag_executions(
-                                    self.db_manager, dag_id,
-                                )
-                                has_failures = any(
-                                    e.status == JobStatus.FAILED
-                                    for e in dag_execs
-                                )
-                                all_succeeded = (
-                                    len(dag_execs) > 0
-                                    and all(
-                                        e.status
-                                        in {JobStatus.SUCCESS, JobStatus.SKIPPED}
-                                        for e in dag_execs
-                                    )
-                                )
-                                if all_succeeded:
-                                    # Orphaned run — DAG completed fine, the
-                                    # EngineRun just wasn't updated.
-                                    logger.info(
-                                        "MarketAwareDaemon: stale run %s (phase=%s) "
-                                        "— DAG %s all succeeded, marking COMPLETED",
-                                        stale_run.run_id,
-                                        stale_run.phase.value,
-                                        dag_id,
-                                    )
-                                    update_phase(
-                                        self.db_manager,
-                                        stale_run.run_id,
-                                        RunPhase.COMPLETED,
-                                    )
-                                else:
-                                    logger.warning(
-                                        "MarketAwareDaemon: finalizing stale run %s "
-                                        "(phase=%s, has_failures=%s) from %s",
-                                        stale_run.run_id,
-                                        stale_run.phase.value,
-                                        has_failures,
-                                        as_of_date,
-                                    )
-                                    failed_jobs = [
-                                        {
-                                            "job_id": e.job_id,
-                                            "error": (e.error_message or "")[:500],
-                                        }
-                                        for e in dag_execs
-                                        if e.status == JobStatus.FAILED
-                                    ]
-                                    reap_error = {
-                                        "reason": "date_rollover_zombie_reap",
-                                        "stuck_phase": stale_run.phase.value,
-                                        "dag_id": dag_id,
-                                        "n_jobs": len(dag_execs),
-                                        "n_failed_jobs": len(failed_jobs),
-                                        "failed_jobs": failed_jobs[:10],
-                                    }
-                                    update_phase(
-                                        self.db_manager,
-                                        stale_run.run_id,
-                                        RunPhase.FAILED,
-                                        error=reap_error,
-                                    )
-                        except Exception:
-                            logger.exception("MarketAwareDaemon: failed to finalize stale runs")
-
-                        # Finalize in-flight jobs BEFORE clearing the
-                        # running_jobs dict so their DB status is updated
-                        # to FAILED (not left as RUNNING forever).
-                        for exec_id, (rj, _) in list(self.running_jobs.items()):
-                            try:
-                                update_job_execution_status(
-                                    self.db_manager,
-                                    exec_id,
-                                    JobStatus.FAILED,
-                                    error_message="date rollover while job was running",
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "MarketAwareDaemon: failed to finalize running job %s on date rollover",
-                                    exec_id,
-                                )
-
+                        for lane in self.lanes.values():
+                            lane.pending_rollover = today
                         as_of_date = today
-                        self.active_dags.clear()
-                        self.running_jobs.clear()
-                        self.retry_backoff.clear()
-                        self._calendars.clear()
-                        self._initialize_dags(as_of_date)
 
                 # Morning catch-up: at the configured local hour, if yesterday's
                 # pipeline didn't complete (machine was off overnight), force a
@@ -2033,12 +2698,22 @@ class MarketAwareDaemon:
                 # low-traffic window). Cheap query; safe to call repeatedly.
                 self._maybe_reap_zombie_runs(as_of_date)
 
+                # Monthly holiday-calendar refresh (1st of month).
+                self._maybe_refresh_holidays(as_of_date)
+
                 self._run_cycle(as_of_date)
 
                 # Interruptible sleep: SIGTERM and signal alerts both
                 # break out, but only "shutdown" exits the loop.  Signal
-                # alerts cause the next cycle to start immediately.
-                if self._interruptible_sleep(self.config.poll_interval_seconds) == "shutdown":
+                # alerts and job completions (workers set _wake_event)
+                # cause the next cycle to start immediately. The sleep is
+                # clamped to the nearest in-flight job deadline so a
+                # timeout is detected within one sleep slice of expiring.
+                sleep_s = float(self.config.poll_interval_seconds)
+                nearest = self._nearest_deadline_seconds(self._now())
+                if nearest is not None:
+                    sleep_s = min(sleep_s, max(0.2, nearest))
+                if self._interruptible_sleep(sleep_s) == "shutdown":
                     break
 
             except Exception as exc:  # pragma: no cover - defensive
@@ -2054,27 +2729,8 @@ class MarketAwareDaemon:
                 logger.exception("MarketAwareDaemon: signal listener stop failed")
 
         # Mark any jobs that were mid-flight at shutdown as FAILED so they
-        # don't appear orphaned in RUNNING state on next startup. The actual
-        # work threads are daemon=True and will be killed by process exit.
-        if self.running_jobs:
-            logger.warning(
-                "MarketAwareDaemon: %d job(s) in-flight at shutdown — marking FAILED",
-                len(self.running_jobs),
-            )
-            for execution_id, (job, _) in list(self.running_jobs.items()):
-                try:
-                    update_job_execution_status(
-                        self.db_manager,
-                        execution_id,
-                        JobStatus.FAILED,
-                        error_message="daemon shutdown while job was running",
-                    )
-                except Exception:
-                    logger.exception(
-                        "MarketAwareDaemon: failed to mark execution %s as FAILED",
-                        execution_id,
-                    )
-            self.running_jobs.clear()
+        # don't appear orphaned in RUNNING state on next startup.
+        self._shutdown_lanes()
 
         logger.info("MarketAwareDaemon: shutdown complete after %d cycles", cycle_count)
 
@@ -2092,8 +2748,13 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     parser.add_argument(
         "--market",
         action="append",
-        required=True,
-        help="Market ID to orchestrate (e.g., US_EQ). Can specify multiple times.",
+        required=False,
+        default=None,
+        help=(
+            "Market ID to orchestrate (e.g., US_EQ). Can specify multiple times. "
+            "When omitted, PROMETHEUS_ACTIVE_MARKETS (comma-separated) is used, "
+            f"falling back to the default set: {','.join(DEFAULT_ACTIVE_MARKETS)}."
+        ),
     )
     parser.add_argument(
         "--poll-interval-seconds",
@@ -2147,7 +2808,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
 
     config = MarketAwareDaemonConfig(
-        markets=args.market,
+        markets=resolve_active_markets(args.market),
         poll_interval_seconds=args.poll_interval_seconds,
         as_of_date=args.as_of_date,
         options_mode=args.options_mode,

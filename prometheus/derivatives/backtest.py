@@ -324,6 +324,10 @@ def replay_day(
     )
 
     signals = signal_provider(as_of_date)
+    # Ensure signals carry the replay date so trigger-side IV-event
+    # guards anchor to the replayed day, not today.
+    if isinstance(signals, dict) and "as_of_date" not in signals:
+        signals = {**signals, "as_of_date": as_of_date}
 
     def _price_fn(symbol: str) -> float:
         return float(underlying_price_provider(as_of_date, symbol) or 0.0)
@@ -503,7 +507,6 @@ def _default_template_to_strategy() -> dict[str, str]:
         "income.spy_iron_butterfly": "iron_butterfly",
         "income.spy_iron_condor": "iron_condor",
         "income.covered_call": "covered_call",
-        "income.wheel": "wheel",
         "convex.thematic_sector_put": "crisis_alpha",
         "convex.vix_escalation_call": "vix_tail_hedge",
     }

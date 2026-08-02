@@ -70,9 +70,28 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--lambda-csv", type=str, required=True)
     parser.add_argument("--lambda-weight", type=float, default=10.0)
 
+    # Lambda-as-risk experiment: when set, lambda is used as a 1/(1+lambda)
+    # risk/vol-target denominator (size DOWN in high-dispersion clusters) with
+    # selection left on the base score, instead of additive positive alpha.
+    parser.add_argument("--lambda-as-risk", action="store_true",
+                        help="Use lambda as a 1/(1+lambda) risk denominator (size DOWN "
+                             "in high-dispersion clusters) instead of additive alpha. "
+                             "Selection stays on the base score.")
+    parser.add_argument("--lambda-risk-scale", type=float, default=1.0,
+                        help="Strength of the 1/(1+scale*lambda) risk denominator "
+                             "(only used with --lambda-as-risk)")
+
     parser.add_argument("--portfolio-max-names", type=int, default=50)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument("--initial-cash", type=float, default=1_000_000.0)
+
+    # Fill convention. "open" = honest next-bar fill: a position decided on
+    # close[t] is filled at the NEXT trading day's open (open[t+1]) and earns
+    # open[t+1]->close[t+1] onward. "close" = legacy same-bar fill at close[t]
+    # (kept only for parity/debug; it has look-ahead and overstates returns).
+    parser.add_argument("--execution-price", type=str, default="open",
+                        choices=["open", "close"],
+                        help="Fill convention: 'open' (next-bar, honest) or 'close' (same-bar, look-ahead)")
 
     parser.add_argument("--conviction", action="store_true")
     parser.add_argument("--sector-allocator", action="store_true")
@@ -93,7 +112,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--verbose", action="store_true")
 
     parser.add_argument("--output", type=str, default=None,
-                        help="Optional output JSON path for results")
+                        help="Optional output JSON path for summary results (sleeve metrics only)")
+    parser.add_argument("--nav-output", type=str, default=None,
+                        help="Optional output JSON path for the per-day equity NAV series "
+                             "in the {engine, daily_nav} shape consumed by "
+                             "run_options_backtest --equity-backtest. Forces --persist so the "
+                             "daily NAV can be read back from backtest_daily_equity.")
 
     args = parser.parse_args(argv)
 
@@ -110,6 +134,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     horizons = sorted(set(int(h) for h in args.horizons))
 
+    # Exporting a per-day NAV series requires the daily equity curve to be
+    # persisted so it can be read back from backtest_daily_equity.
+    persist_to_db = args.persist or bool(args.nav_output)
+    if args.nav_output and not args.persist:
+        logger.info("--nav-output set: enabling --persist so daily NAV can be exported")
+
     cfg: Dict[str, Any] = {
         "market_id": args.market_id,
         "start": args.start.isoformat(),
@@ -118,13 +148,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "lambda_scores_csv": str(args.lambda_csv),
         "horizons": horizons,
         "lambda_weight": args.lambda_weight,
+        "lambda_as_risk": args.lambda_as_risk,
+        "lambda_risk_scale": args.lambda_risk_scale,
         "initial_cash": args.initial_cash,
+        "execution_price": args.execution_price,
         "apply_risk": True,
         "apply_fragility_overlay": False,
         "slippage_bps": args.slippage_bps,
         "num_threads": args.cpp_threads,
         "verbose": args.verbose,
-        "persist_to_db": args.persist,
+        "persist_to_db": persist_to_db,
         "persist_execution_to_db": args.persist_execution,
         "persist_meta_to_db": args.persist_meta,
         "conviction_enabled": args.conviction,
@@ -231,6 +264,81 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         }
         out_path.write_text(json.dumps(payload, indent=2))
         print(f"Results written to {out_path}")
+
+    # Export per-day NAV series for the options overlay if requested.
+    if args.nav_output:
+        _export_daily_nav(results_sorted, args)
+
+
+def _export_daily_nav(results_sorted: List[Dict[str, Any]], args: Any) -> None:
+    """Read the persisted daily equity curve and write the NAV-series JSON.
+
+    Picks the primary sleeve's ``run_id`` (preferring a BLENDED sleeve, else
+    the highest-Sharpe sleeve with a run_id) and reads ``backtest_daily_equity``
+    for it, writing the ``{engine: "lambda_factorial", daily_nav: {...}}`` shape
+    that ``run_options_backtest --equity-backtest`` consumes.
+    """
+    # Choose the run_id to export.
+    candidates = [r for r in results_sorted if r.get("run_id")]
+    if not candidates:
+        logger.error(
+            "No run_id in results — daily NAV cannot be exported. "
+            "Ensure the C++ build persisted backtest_daily_equity (persist_to_db=True).",
+        )
+        return
+
+    # Prefer a BLENDED sleeve (production config); otherwise prefer the
+    # canonical BASELINE sleeve (the honest equity-only curve); else fall back
+    # to the highest-Sharpe sleeve with a run_id.
+    blended = [r for r in candidates if "BLENDED" in str(r.get("sleeve_id", "")).upper()]
+    baseline = [r for r in candidates if "BASELINE" in str(r.get("sleeve_id", "")).upper()]
+    pool = blended or baseline or candidates
+    chosen = max(
+        pool,
+        key=lambda r: r.get("metrics", r).get("annualised_sharpe", 0.0),
+    )
+    run_id = chosen.get("run_id")
+    logger.info(
+        "Exporting daily NAV for sleeve=%s horizon=%s mode=%s run_id=%s",
+        chosen.get("sleeve_id"), chosen.get("horizon"), chosen.get("mode"), run_id,
+    )
+
+    db = get_db_manager()
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT date, equity_curve_value
+                   FROM backtest_daily_equity
+                   WHERE run_id = %s
+                   ORDER BY date""",
+                (run_id,),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+    if not rows:
+        logger.error("No backtest_daily_equity rows for run_id=%s — NAV export empty", run_id)
+        return
+
+    daily_nav = {str(row[0]): float(row[1]) for row in rows}
+    out = Path(args.nav_output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "engine": "lambda_factorial",
+        "source_run_id": run_id,
+        "source_sleeve_id": chosen.get("sleeve_id"),
+        "execution_price": args.execution_price,
+        "start": args.start.isoformat(),
+        "end": args.end.isoformat(),
+        "daily_nav": daily_nav,
+    }
+    out.write_text(json.dumps(payload, indent=2))
+    print(
+        f"Daily NAV series written to {out} "
+        f"({len(daily_nav)} points, run_id={run_id}, execution_price={args.execution_price})"
+    )
 
 
 if __name__ == "__main__":

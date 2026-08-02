@@ -46,13 +46,14 @@ logger = get_logger(__name__)
 # When a sleeve is cut over, the legacy categories listed here are
 # zeroed out — the new sleeve runner is now driving them. CONVEX is
 # intentionally empty: it adds Apatheon-signal-driven convex bets
-# that didn't exist in the legacy system. (Legacy DIRECTIONAL —
-# bull_call_spread / momentum_call / LEAPS — is slated for deletion
-# in Phase 5 rather than absorption.)
+# that didn't exist in the legacy system. (Legacy DIRECTIONAL /
+# VOLATILITY / FUTURES strategies have been deleted — no sleeve
+# absorbs them.)
 SLEEVE_REPLACES_LEGACY_CATEGORIES: Mapping[Sleeve, tuple[str, ...]] = {
     Sleeve.HEDGE: ("HEDGE",),
     Sleeve.INCOME: ("INCOME", "VOLATILITY"),
     Sleeve.CONVEX: (),
+    Sleeve.COMMODITY: (),
 }
 
 
@@ -63,13 +64,13 @@ SLEEVE_REPLACES_LEGACY_CATEGORIES: Mapping[Sleeve, tuple[str, ...]] = {
 SLEEVE_REPLACES_LEGACY_STRATEGIES: Mapping[Sleeve, frozenset[str]] = {
     Sleeve.HEDGE: frozenset({
         "protective_put", "sector_put_spread", "vix_tail_hedge",
-        "collar", "crisis_alpha",
+        "crisis_alpha",
     }),
     Sleeve.INCOME: frozenset({
-        "covered_call", "iron_condor", "iron_butterfly", "short_put",
-        "wheel", "calendar_spread", "straddle_strangle",
+        "covered_call", "iron_condor", "iron_butterfly",
     }),
     Sleeve.CONVEX: frozenset(),
+    Sleeve.COMMODITY: frozenset(),
 }
 
 
@@ -102,6 +103,7 @@ class SleeveCutoverState:
     hedge: bool = False
     income: bool = False
     convex: bool = False
+    commodity: bool = False
 
     def is_active(self, sleeve: Sleeve) -> bool:
         if sleeve == Sleeve.HEDGE:
@@ -110,6 +112,8 @@ class SleeveCutoverState:
             return self.income
         if sleeve == Sleeve.CONVEX:
             return self.convex
+        if sleeve == Sleeve.COMMODITY:
+            return self.commodity
         return False
 
     @classmethod
@@ -129,11 +133,16 @@ class SleeveCutoverState:
             hedge=_truthy(env.get("PROMETHEUS_DERIVATIVES_HEDGE_CUTOVER", "")),
             income=_truthy(env.get("PROMETHEUS_DERIVATIVES_INCOME_CUTOVER", "")),
             convex=_truthy(env.get("PROMETHEUS_DERIVATIVES_CONVEX_CUTOVER", "")),
+            commodity=_truthy(env.get("PROMETHEUS_DERIVATIVES_COMMODITY_CUTOVER", "")),
         )
 
 
 def _truthy(s: str) -> bool:
-    return str(s or "").strip().lower() in ("1", "true", "yes", "on")
+    # Delegates to the shared parser so every PROMETHEUS_* flag accepts the
+    # same token set (see prometheus/env_utils.py).
+    from prometheus.env_utils import parse_flag_token
+
+    return parse_flag_token(s, default=False)
 
 
 # ── Plan output ──────────────────────────────────────────────────────

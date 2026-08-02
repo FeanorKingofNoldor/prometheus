@@ -18,8 +18,8 @@ with explicit handling for the edge cases (negative budget, zero cost,
 exhausted cap) that today are scattered across ad-hoc ``max(1, ...)``
 expressions.
 
-Two share-based strategies (covered_call, wheel) size off equity
-holdings rather than capital — they pass ``share_count // 100`` as
+Share-based strategies (e.g. covered_call) size off equity holdings
+rather than capital — they pass ``share_count // 100`` as
 ``max_contracts`` and a sentinel cost, so the same call site works.
 """
 

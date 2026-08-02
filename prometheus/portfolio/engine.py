@@ -266,6 +266,7 @@ class PortfolioEngine:
         budget_metadata: dict[str, object] | None = None,
         apply_risk: bool = False,
         risk_strategy_id: str | None = None,
+        persist_target: bool = True,
     ) -> TargetPortfolio:
         """Run optimisation for a portfolio and persist targets.
 
@@ -273,6 +274,13 @@ class PortfolioEngine:
         ``budget_mult`` (in [0,1]). This is intended to represent
         **Meta-level capital allocation** (i.e. how much capital the book
         is allowed to deploy) rather than an internal "cash overlay".
+
+        ``persist_target=False`` skips the ``target_portfolios`` row (book
+        targets and the risk report are still saved) — used when a caller
+        applies a further overlay (e.g. the sector allocator) and persists
+        the final target itself, so ``target_portfolios`` holds exactly
+        one row per date instead of a pre/post pair that execution has to
+        disambiguate by ``created_at``.
 
         Returns the resulting :class:`TargetPortfolio`.
         """
@@ -431,7 +439,8 @@ class PortfolioEngine:
         # Persist aggregated target and risk report into dedicated tables
         # used by analytics and execution orchestration.
         strategy_id = portfolio_id  # simple default mapping for v1
-        self.storage.save_target_portfolio(strategy_id=strategy_id, target=target)
+        if persist_target:
+            self.storage.save_target_portfolio(strategy_id=strategy_id, target=target)
 
         risk = self.model.build_risk_report(portfolio_id, as_of_date, target=target)
         if risk is not None:

@@ -12,7 +12,7 @@ price (plus optional slippage), and volume constraints are optional.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Sequence
 
 from apatheon.core.ids import generate_uuid
@@ -37,11 +37,27 @@ class FillConfig:
             historical volume.
         max_participation_rate: Maximum fraction of daily volume allowed
             for any single order when ``use_volume_constraints`` is True.
+        fill_mode: Execution-timing convention.
+
+            - ``"next_open"`` (default, honest): a signal computed on
+              ``close[t]`` fills at ``open[t+1]`` — the next trading day's
+              opening price. This removes the same-bar look-ahead where the
+              signal and the fill price share the same bar.
+            - ``"same_bar"`` (legacy/debug): fill at ``close[t]``. This is
+              the look-ahead convention (trade at a price only known once
+              the bar is closed) and is kept only for parity/regression.
     """
 
     market_slippage_bps: float = 0.0
     use_volume_constraints: bool = False
     max_participation_rate: float = 1.0
+    fill_mode: str = "next_open"
+
+    def __post_init__(self) -> None:
+        if self.fill_mode not in ("next_open", "same_bar"):
+            raise ValueError(
+                f"fill_mode must be 'next_open' or 'same_bar', got {self.fill_mode!r}"
+            )
 
 
 @dataclass
@@ -69,40 +85,60 @@ class MarketSimulator:
     def simulate_fills(self, as_of_date: date, orders: Sequence[Order]) -> List[Fill]:
         """Simulate fills for a batch of orders on ``as_of_date``.
 
-        For Iteration 1 all supported orders are filled at the EOD close
-        price (plus optional slippage). Limit/stop semantics and partial
-        fills can be added in later iterations.
+        The fill price is selected by ``fill_config.fill_mode``:
+
+        - ``"next_open"`` (default, honest): fills at the *next* trading
+          day's ``open`` — i.e. a signal decided on ``close[as_of_date]``
+          executes at ``open[t+1]``, removing same-bar look-ahead.
+        - ``"same_bar"`` (legacy): fills at ``close[as_of_date]``.
+
+        Optional slippage is applied to the chosen base price.
         """
 
         if not orders:
             return []
 
         instrument_ids = sorted({o.instrument_id for o in orders})
-        df = self.time_machine.get_data(
-            "prices_daily",
-            {
-                "instrument_ids": instrument_ids,
-                "start_date": as_of_date,
-                "end_date": as_of_date,
-            },
-        )
 
-        if df.empty:
-            logger.warning(
-                "MarketSimulator.simulate_fills: no prices for instruments %s on %s",
-                instrument_ids,
-                as_of_date,
-            )
+        fill_mode = self.fill_config.fill_mode
+        if fill_mode == "next_open":
+            fill_date = self._next_trading_day(as_of_date)
+            price_col = "open"
+        else:  # same_bar
+            fill_date = as_of_date
+            price_col = "close"
 
         price_map: Dict[str, float] = {}
         volume_map: Dict[str, float] = {}
+
+        if fill_date is None:
+            # No subsequent bar exists (last day of the window): the decision
+            # never executes. Returning no fills is the honest outcome.
+            logger.warning(
+                "MarketSimulator.simulate_fills: no next trading day after %s; "
+                "%d orders left unfilled (next_open at window edge)",
+                as_of_date,
+                len(orders),
+            )
+            return []
+
+        df = self._read_prices_for_fill(instrument_ids, fill_date)
+
+        if df.empty:
+            logger.warning(
+                "MarketSimulator.simulate_fills: no prices for instruments %s on %s (fill_mode=%s)",
+                instrument_ids,
+                fill_date,
+                fill_mode,
+            )
+
         for _, row in df.iterrows():
             inst_id = str(row["instrument_id"])
-            price_map[inst_id] = float(row["close"])
+            price_map[inst_id] = float(row[price_col])
             volume_map[inst_id] = float(row.get("volume", 0.0))
 
         fills: List[Fill] = []
-        ts = datetime.combine(as_of_date, time(23, 59, 0))
+        ts = datetime.combine(fill_date, time(23, 59, 0))
 
         for order in orders:
             base_price = price_map.get(order.instrument_id)
@@ -196,6 +232,55 @@ class MarketSimulator:
             )
 
         return fills
+
+    # ------------------------------------------------------------------
+    # Fill-timing helpers
+    # ------------------------------------------------------------------
+
+    def _next_trading_day(self, as_of_date: date) -> date | None:
+        """Return the first trading day strictly after ``as_of_date``.
+
+        Uses the TimeMachine's trading calendar so that next_open fills land
+        on a real session (skipping weekends/holidays). Returns ``None`` if
+        no trading day exists at or before the window end.
+        """
+
+        cal = self.time_machine._calendar
+        nxt = as_of_date + timedelta(days=1)
+        end = self.time_machine._end_date
+        while nxt <= end:
+            if cal.is_trading_day(nxt):
+                return nxt
+            nxt = nxt + timedelta(days=1)
+        return None
+
+    def _read_prices_for_fill(self, instrument_ids: Sequence[str], fill_date: date):
+        """Read prices for ``fill_date``, advancing the time gate if needed.
+
+        ``next_open`` fills reference ``open[t+1]``, which is one bar ahead of
+        the decision date. The TimeMachine gates rows to ``current_date``, so
+        we temporarily advance the gate to ``fill_date`` for this read only.
+        This is *not* look-ahead: the order was decided on ``close[t]`` and is
+        executed at the subsequent session's open, which is the realistic
+        sequence of events.
+        """
+
+        tm = self.time_machine
+        prev_current = tm.current_date
+        try:
+            if fill_date > prev_current:
+                tm.set_date(fill_date)
+            return tm.get_data(
+                "prices_daily",
+                {
+                    "instrument_ids": instrument_ids,
+                    "start_date": fill_date,
+                    "end_date": fill_date,
+                },
+            )
+        finally:
+            if tm.current_date != prev_current:
+                tm.set_date(prev_current)
 
     # ------------------------------------------------------------------
     # State inspection helpers

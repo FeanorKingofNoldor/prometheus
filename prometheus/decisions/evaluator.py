@@ -37,9 +37,16 @@ class OutcomeEvaluator:
         )
     """
 
+    # Last-resort notional when no NAV source is available. Kept as an
+    # explicit constant so the fallback chain in _resolve_portfolio_nav is
+    # auditable: portfolio_equity_history → positions_snapshots → this.
+    DEFAULT_NOTIONAL: ClassVar[float] = 1_000_000.0
+    LIVE_PORTFOLIO_ID: ClassVar[str] = "IBKR_PAPER"
+
     db_manager: DatabaseManager
     calendar: TradingCalendar | None = None
     _price_cache: Dict[Tuple[str, date], float] = field(default_factory=dict, init=False, repr=False)
+    _nav_cache: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._storage = MetaStorage(db_manager=self.db_manager)
@@ -85,7 +92,11 @@ class OutcomeEvaluator:
             FROM engine_decisions d
             WHERE d.as_of_date <= %s
               AND d.engine_name IN (
-                  'PORTFOLIO', 'ASSESSMENT', 'OPTIONS',
+                  'PORTFOLIO', 'ASSESSMENT', 'OPTIONS', 'UNIVERSE',
+                  -- Shadow derivatives pipeline: graded on the same
+                  -- option-payoff logic as OPTIONS so cutover decisions
+                  -- rest on scored (not just logged) shadow history.
+                  'OPTIONS_SHADOW',
                   -- Intel-driven decisions wired in May 2026:
                   'DIVERGENCE', 'CONVERGENCE', 'COMPOUND_PRESSURE',
                   'GEO_RISK', 'BENEFICIARY', 'SCENARIO'
@@ -148,6 +159,25 @@ class OutcomeEvaluator:
                     pending.append((str(decision_id), decision_date, h, str(eng_name)))
 
         return pending[:max_results]
+
+    def _horizon_in_future(
+        self, decision_id: str, decision_as_of_date: date, horizon_days: int,
+    ) -> bool:
+        """Look-ahead guard: True if the horizon end date is after today.
+
+        Scoring a decision whose horizon hasn't elapsed would grade it against
+        prices that didn't exist at decision_time + horizon. Such decisions are
+        skipped-and-flagged (logged) rather than silently scored.
+        """
+        horizon_end = decision_as_of_date + timedelta(days=horizon_days)
+        if horizon_end > date.today():
+            logger.warning(
+                "[evaluator] decision_id=%s horizon_end=%s is in the future "
+                "(today=%s) — skipping to avoid look-ahead contamination",
+                decision_id, horizon_end, date.today(),
+            )
+            return True
+        return False
 
     def _outcome_exists(self, decision_id: str, horizon_days: int) -> bool:
         """Check if outcome already exists for decision + horizon."""
@@ -317,6 +347,9 @@ class OutcomeEvaluator:
         on the entity's representative instrument over the horizon.
         ``realized_return`` is the raw price change for transparency.
         """
+        if self._horizon_in_future(decision_id, decision_as_of_date, horizon_days):
+            return None
+
         payload = self._intel_decision_payload(decision_id)
         if payload is None:
             return None
@@ -424,6 +457,9 @@ class OutcomeEvaluator:
             )
             return None
 
+        if self._horizon_in_future(decision_id, decision_as_of_date, horizon_days):
+            return None
+
         # Find exit date (trading day closest to decision_date + horizon)
         exit_date = decision_as_of_date + timedelta(days=horizon_days)
 
@@ -496,8 +532,10 @@ class OutcomeEvaluator:
         # Compute drawdown (max decline from peak over horizon)
         realized_drawdown = self._compute_drawdown(daily_returns) if daily_returns else 0.0
 
-        # Compute PnL (assuming $1M notional for normalization)
-        notional = 1_000_000.0
+        # Compute PnL against the actual account NAV (falls back through
+        # positions_snapshots and finally a $1M constant — see
+        # _resolve_portfolio_nav).
+        notional = self._resolve_portfolio_nav()
         realized_pnl = realized_return * notional
 
         metadata: Dict[str, Any] = {
@@ -505,6 +543,7 @@ class OutcomeEvaluator:
             "exit_date": actual_exit_date.isoformat(),
             "valid_instruments": len(instrument_returns),
             "total_instruments": len(target_weights),
+            "notional_nav": notional,
         }
 
         # Optional: compare to benchmark
@@ -645,6 +684,88 @@ class OutcomeEvaluator:
             )
             return None
 
+    def _resolve_portfolio_nav(self) -> float:
+        """Resolve the account NAV used to convert returns into PnL dollars.
+
+        Fallback chain (first valid positive value wins):
+
+        1. Latest ``portfolio_equity_history.equity`` — canonical daily NAV
+           series (table may not exist yet; created by another workstream).
+        2. Sum of ``positions_snapshots.market_value`` at the latest PAPER
+           snapshot for ``LIVE_PORTFOLIO_ID``.
+        3. ``DEFAULT_NOTIONAL`` ($1M) with a WARNING — the legacy hardcoded
+           behaviour, now explicitly the last resort.
+
+        The result is cached for the lifetime of this evaluator instance so
+        batch evaluation issues at most one lookup.
+        """
+        cached = getattr(self, "_nav_cache", None)
+        if cached is not None:
+            return cached
+
+        nav: float | None = None
+
+        # 1. Canonical equity history (guarded: table may not exist yet).
+        try:
+            with self.db_manager.get_runtime_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT equity FROM portfolio_equity_history "
+                        "ORDER BY as_of_date DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
+            if row is not None and row[0] is not None and float(row[0]) > 0:
+                nav = float(row[0])
+        except Exception as exc:
+            logger.debug(
+                "[evaluator] portfolio_equity_history NAV lookup unavailable: %s", exc,
+            )
+
+        # 2. Latest live-paper positions snapshot.
+        if nav is None:
+            try:
+                with self.db_manager.get_runtime_connection() as conn:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            """
+                            SELECT COALESCE(SUM(market_value), 0)
+                            FROM positions_snapshots
+                            WHERE mode = 'PAPER'
+                              AND portfolio_id = %s
+                              AND timestamp = (
+                                  SELECT MAX(timestamp) FROM positions_snapshots
+                                  WHERE mode = 'PAPER' AND portfolio_id = %s
+                              )
+                            """,
+                            (self.LIVE_PORTFOLIO_ID, self.LIVE_PORTFOLIO_ID),
+                        )
+                        row = cur.fetchone()
+                    finally:
+                        cur.close()
+                if row is not None and row[0] is not None and float(row[0]) > 0:
+                    nav = float(row[0])
+            except Exception as exc:
+                logger.debug(
+                    "[evaluator] positions_snapshots NAV fallback failed: %s", exc,
+                )
+
+        # 3. Legacy constant.
+        if nav is None:
+            logger.warning(
+                "[evaluator] no NAV source available "
+                "(portfolio_equity_history missing/empty, no PAPER snapshot for %s) "
+                "— falling back to $%.0f constant notional",
+                self.LIVE_PORTFOLIO_ID, self.DEFAULT_NOTIONAL,
+            )
+            nav = self.DEFAULT_NOTIONAL
+
+        self._nav_cache = nav
+        return nav
+
     def _compute_daily_portfolio_returns(
         self,
         target_weights: Dict[str, float],
@@ -769,15 +890,22 @@ class OutcomeEvaluator:
             "DIVERGENCE", "CONVERGENCE", "COMPOUND_PRESSURE",
             "GEO_RISK", "BENEFICIARY", "SCENARIO",
         }
-        options_ids = [did for did, _, _, eng in pending if eng == "OPTIONS"]
-        [did for did, _, _, eng in pending if eng in _INTEL_ENGINES]
+        # OPTIONS and OPTIONS_SHADOW share the same evaluator path — both
+        # carry orders[] in input_refs and need order-by-order PnL. Treating
+        # the shadow variant identically means "what would the new pipeline
+        # have done" gets graded against the same exit prices as real fills.
+        _OPTIONS_ENGINES = {"OPTIONS", "OPTIONS_SHADOW"}
+        options_ids = [did for did, _, _, eng in pending if eng in _OPTIONS_ENGINES]
+        universe_ids = [did for did, _, _, eng in pending if eng == "UNIVERSE"]
         non_options_ids = [
             did for did, _, _, eng in pending
-            if eng != "OPTIONS" and eng not in _INTEL_ENGINES
+            if eng not in _OPTIONS_ENGINES and eng not in _INTEL_ENGINES
+            and eng != "UNIVERSE"
         ]
 
         weights_map = self._batch_load_decision_weights(list(set(non_options_ids)))
         orders_map = self._batch_load_decision_orders(list(set(options_ids)))
+        universe_map = self._batch_load_universe_instruments(list(set(universe_ids)))
 
         # Collect all instrument IDs and the global date range needed
         all_instruments: Set[str] = set()
@@ -787,15 +915,29 @@ class OutcomeEvaluator:
         tasks: List[Tuple[str, date, int, Dict[str, float]]] = []
         options_tasks: List[Tuple[str, date, int, List[Dict[str, Any]]]] = []
         intel_tasks: List[Tuple[str, date, int]] = []
+        universe_tasks: List[Tuple[str, date, int, List[str]]] = []
+        unpriceable_outcomes: List[DecisionOutcome] = []
 
         for decision_id, decision_date, horizon_days, eng_name in pending:
             exit_date = decision_date + timedelta(days=horizon_days)
             global_min_date = min(global_min_date, decision_date)
             global_max_date = max(global_max_date, exit_date)
 
-            if eng_name == "OPTIONS":
+            if eng_name in _OPTIONS_ENGINES:
                 orders = orders_map.get(decision_id, [])
                 if not orders:
+                    # No contract metadata (strikes/premia) recorded on the
+                    # decision — nothing to price. Emit an explicit
+                    # 'unpriceable' outcome row so the decision is visibly
+                    # accounted for rather than silently skipped forever.
+                    outcome = self._unpriceable_options_outcome(
+                        decision_id=decision_id,
+                        decision_as_of_date=decision_date,
+                        horizon_days=horizon_days,
+                        engine_name=eng_name,
+                    )
+                    if outcome is not None:
+                        unpriceable_outcomes.append(outcome)
                     continue
                 options_tasks.append((decision_id, decision_date, horizon_days, orders))
                 # Collect underlying IDs for price preloading
@@ -803,6 +945,12 @@ class OutcomeEvaluator:
                     uid = order.get("underlying_id", "")
                     if uid:
                         all_instruments.add(uid)
+            elif eng_name == "UNIVERSE":
+                names = universe_map.get(decision_id, [])
+                if not names:
+                    continue
+                universe_tasks.append((decision_id, decision_date, horizon_days, names))
+                all_instruments.update(names)
             elif eng_name in _INTEL_ENGINES:
                 # Intel decisions are scored against a single representative
                 # instrument resolved at evaluation time; we preload the
@@ -822,7 +970,22 @@ class OutcomeEvaluator:
 
         # --- Phase 3: evaluate in parallel ---------------------------------
         evaluated_count = 0
-        total_tasks = len(tasks) + len(options_tasks) + len(intel_tasks)
+        total_tasks = (
+            len(tasks) + len(options_tasks) + len(intel_tasks) + len(universe_tasks)
+            + len(unpriceable_outcomes)
+        )
+
+        # Persist unpriceable options/shadow outcomes up front (no pricing
+        # needed — they exist so the decision stops re-appearing as pending).
+        for outcome in unpriceable_outcomes:
+            try:
+                self._storage.save_decision_outcome(outcome)
+                evaluated_count += 1
+            except Exception:
+                logger.exception(
+                    "Error saving unpriceable outcome for decision_id=%s",
+                    outcome.decision_id,
+                )
 
         def _eval_one(task: Tuple[str, date, int, Dict[str, float]]) -> DecisionOutcome | None:
             d_id, d_date, h_days, w = task
@@ -850,6 +1013,15 @@ class OutcomeEvaluator:
                 horizon_days=h_days,
             )
 
+        def _eval_universe(task: Tuple[str, date, int, List[str]]) -> DecisionOutcome | None:
+            d_id, d_date, h_days, names = task
+            return self.evaluate_universe_decision_outcome(
+                decision_id=d_id,
+                decision_as_of_date=d_date,
+                horizon_days=h_days,
+                included_instruments=names,
+            )
+
         all_futures: dict = {}
         with ThreadPoolExecutor(max_workers=num_workers) as pool:
             for t in tasks:
@@ -858,6 +1030,8 @@ class OutcomeEvaluator:
                 all_futures[pool.submit(_eval_options, t)] = t[0]
             for t in intel_tasks:
                 all_futures[pool.submit(_eval_intel, t)] = t[0]
+            for t in universe_tasks:
+                all_futures[pool.submit(_eval_universe, t)] = t[0]
 
             for future in as_completed(all_futures):
                 decision_id = all_futures[future]
@@ -879,12 +1053,16 @@ class OutcomeEvaluator:
                     )
 
         logger.info(
-            "Evaluated %d/%d pending outcomes (%d portfolio/assessment, %d options, %d intel)",
+            "Evaluated %d/%d pending outcomes "
+            "(%d portfolio/assessment, %d options, %d intel, %d universe, "
+            "%d unpriceable)",
             evaluated_count,
             total_tasks,
             len(tasks),
             len(options_tasks),
             len(intel_tasks),
+            len(universe_tasks),
+            len(unpriceable_outcomes),
         )
 
         return evaluated_count
@@ -1041,6 +1219,44 @@ class OutcomeEvaluator:
         logger.info("Evaluated %d exit-triggered outcomes", evaluated)
         return evaluated
 
+    def _unpriceable_options_outcome(
+        self,
+        *,
+        decision_id: str,
+        decision_as_of_date: date,
+        horizon_days: int,
+        engine_name: str,
+    ) -> "DecisionOutcome | None":
+        """Zero-PnL outcome for an options decision with no priceable metadata.
+
+        OPTIONS_SHADOW decisions have no real fills; when their output_refs
+        carry no contract metadata (orders with strikes/premia) the honest
+        outcome is an explicit 'unpriceable' row — not a silent skip that
+        leaves the decision permanently pending and invisible to the
+        shadow-cutover scorecard.
+        """
+        if self._horizon_in_future(decision_id, decision_as_of_date, horizon_days):
+            return None
+        logger.warning(
+            "[options.evaluator] decision_id=%s (%s) has no orders/contract "
+            "metadata in output_refs — recording unpriceable outcome",
+            decision_id, engine_name,
+        )
+        return DecisionOutcome(
+            decision_id=decision_id,
+            horizon_days=horizon_days,
+            realized_return=0.0,
+            realized_pnl=0.0,
+            realized_drawdown=0.0,
+            realized_vol=0.0,
+            metadata={
+                "engine_name": engine_name,
+                "complete": False,
+                "evaluation_error": "unpriceable",
+                "reason": "no orders/contract metadata recorded on decision",
+            },
+        )
+
     def evaluate_options_decision_outcome(
         self,
         *,
@@ -1076,6 +1292,9 @@ class OutcomeEvaluator:
         if not orders:
             return None
 
+        if self._horizon_in_future(decision_id, decision_as_of_date, horizon_days):
+            return None
+
         exit_date = decision_as_of_date + timedelta(days=horizon_days)
 
         # Find nearest trading days
@@ -1093,6 +1312,9 @@ class OutcomeEvaluator:
         total_pnl = 0.0
         total_premium = 0.0
         order_results: List[Dict[str, Any]] = []
+        priceable_legs = 0          # legs with valid entry_price AND exit price
+        unpriced_entry_legs = 0     # legs dropped: entry_price <= 0
+        unpriced_exit_legs = 0      # legs dropped: no underlying price at exit
 
         for order in orders:
             underlying_id = order.get("underlying_id", "")
@@ -1113,6 +1335,7 @@ class OutcomeEvaluator:
             # at exit was treated as pure cost).  Skip rather than synthesize
             # noise — and log loudly so the upstream writer gets fixed.
             if entry_price <= 0.0:
+                unpriced_entry_legs += 1
                 logger.warning(
                     "[options.evaluator] decision_id=%s skipping leg with "
                     "entry_price<=0: %s %s %s strike=%s qty=%s — fix the "
@@ -1123,6 +1346,7 @@ class OutcomeEvaluator:
 
             s_exit = self._get_price(underlying_id, actual_exit_date)
             if s_exit is None:
+                unpriced_exit_legs += 1
                 logger.debug(
                     "No underlying price for %s on %s — skipping order in decision_id=%s",
                     underlying_id, actual_exit_date, decision_id,
@@ -1144,6 +1368,7 @@ class OutcomeEvaluator:
             premium_at_risk = entry_price * quantity * multiplier
             total_pnl += order_pnl
             total_premium += premium_at_risk
+            priceable_legs += 1
 
             order_results.append({
                 "underlying_id": underlying_id,
@@ -1157,12 +1382,39 @@ class OutcomeEvaluator:
                 "order_pnl": round(order_pnl, 2),
             })
 
+        total_legs = len(orders)
+        # Legs that contributed nothing to the score: malformed input, zero
+        # entry premium, or no exit price. These are the "missing" legs that
+        # earlier silently shrank a decision's basis.
+        incomplete_legs = total_legs - priceable_legs
+
         if not order_results:
+            # Nothing priceable at all — record an explicitly incomplete,
+            # zero-PnL outcome so the decision is visibly accounted for rather
+            # than silently vanishing from the loop.
             logger.warning(
                 "No valid underlying prices for any order in decision_id=%s at exit_date=%s",
                 decision_id, actual_exit_date,
             )
-            return None
+            return DecisionOutcome(
+                decision_id=decision_id,
+                horizon_days=horizon_days,
+                realized_return=0.0,
+                realized_pnl=0.0,
+                realized_drawdown=0.0,
+                realized_vol=0.0,
+                metadata={
+                    "entry_date": entry_date.isoformat(),
+                    "exit_date": actual_exit_date.isoformat(),
+                    "orders_evaluated": 0,
+                    "total_legs": total_legs,
+                    "incomplete_legs": incomplete_legs,
+                    "unpriced_entry_legs": unpriced_entry_legs,
+                    "unpriced_exit_legs": unpriced_exit_legs,
+                    "complete": False,
+                    "evaluation_error": "no_priceable_legs",
+                },
+            )
 
         # realized_return = P&L / premium at risk
         realized_return = (total_pnl / total_premium) if total_premium > 0 else 0.0
@@ -1171,8 +1423,17 @@ class OutcomeEvaluator:
             "entry_date": entry_date.isoformat(),
             "exit_date": actual_exit_date.isoformat(),
             "orders_evaluated": len(order_results),
+            "total_legs": total_legs,
+            "incomplete_legs": incomplete_legs,
+            "unpriced_entry_legs": unpriced_entry_legs,
+            "unpriced_exit_legs": unpriced_exit_legs,
+            "complete": incomplete_legs == 0,
             "order_details": order_results[:10],  # Cap stored detail
         }
+        if incomplete_legs > 0:
+            metadata["evaluation_error"] = (
+                f"{incomplete_legs}/{total_legs} legs unpriceable"
+            )
 
         return DecisionOutcome(
             decision_id=decision_id,
@@ -1183,6 +1444,128 @@ class OutcomeEvaluator:
             realized_vol=0.0,        # Not applicable
             metadata=metadata,
         )
+
+    def evaluate_universe_decision_outcome(
+        self,
+        *,
+        decision_id: str,
+        decision_as_of_date: date,
+        horizon_days: int,
+        included_instruments: List[str],
+    ) -> "DecisionOutcome | None":
+        """Honest assessment for a UNIVERSE decision.
+
+        A universe selection has no target weights, so we score it as the
+        *forward hit-rate of the selected names*: the fraction of included
+        instruments whose equal-weight forward return over the horizon was
+        positive. ``realized_return`` is the equal-weight basket return — the
+        return you'd have earned holding the selected names equally weighted.
+
+        This turns UNIVERSE from an unscored engine into one that is graded on
+        whether its picks actually went up.
+        """
+        if not included_instruments:
+            return None
+
+        if self._horizon_in_future(decision_id, decision_as_of_date, horizon_days):
+            return None
+
+        exit_date = decision_as_of_date + timedelta(days=horizon_days)
+        if self.calendar is not None:
+            trading_days = self.calendar.trading_days_between(
+                start_date=decision_as_of_date, end_date=exit_date,
+            )
+            entry_date = trading_days[0] if trading_days else decision_as_of_date
+            actual_exit_date = trading_days[-1] if trading_days else exit_date
+        else:
+            entry_date = decision_as_of_date
+            actual_exit_date = exit_date
+
+        entry_prices = self._get_prices_for_instruments(included_instruments, entry_date)
+        exit_prices = self._get_prices_for_instruments(included_instruments, actual_exit_date)
+
+        rets: List[float] = []
+        wins = 0
+        for inst_id in included_instruments:
+            ep = entry_prices.get(inst_id)
+            xp = exit_prices.get(inst_id)
+            if ep is None or xp is None or ep <= 0:
+                continue
+            r = (xp / ep) - 1.0
+            rets.append(r)
+            if r > 0:
+                wins += 1
+
+        priced = len(rets)
+        total = len(included_instruments)
+        if priced == 0:
+            logger.warning(
+                "No priceable names for UNIVERSE decision_id=%s at %s",
+                decision_id, actual_exit_date,
+            )
+            return DecisionOutcome(
+                decision_id=decision_id,
+                horizon_days=horizon_days,
+                realized_return=0.0,
+                realized_pnl=0.0,
+                realized_drawdown=0.0,
+                realized_vol=0.0,
+                metadata={
+                    "entry_date": entry_date.isoformat(),
+                    "exit_date": actual_exit_date.isoformat(),
+                    "selected_count": total,
+                    "priced_count": 0,
+                    "complete": False,
+                    "evaluation_error": "no_priceable_names",
+                },
+            )
+
+        basket_return = sum(rets) / priced
+        hit_rate = wins / priced
+        return DecisionOutcome(
+            decision_id=decision_id,
+            horizon_days=horizon_days,
+            realized_return=basket_return,
+            realized_pnl=0.0,   # universe has no notional — return-only metric
+            realized_drawdown=0.0,
+            realized_vol=0.0,
+            metadata={
+                "entry_date": entry_date.isoformat(),
+                "exit_date": actual_exit_date.isoformat(),
+                "selected_count": total,
+                "priced_count": priced,
+                "hit_rate": round(hit_rate, 4),
+                "complete": priced == total,
+                "assessment": "forward_hit_rate_of_selected_names",
+            },
+        )
+
+    def _batch_load_universe_instruments(
+        self, decision_ids: List[str],
+    ) -> Dict[str, List[str]]:
+        """Batch-load included_instruments for UNIVERSE decisions."""
+        if not decision_ids:
+            return {}
+        sql = """
+            SELECT decision_id, output_refs
+            FROM engine_decisions
+            WHERE decision_id = ANY(%s)
+              AND engine_name = 'UNIVERSE'
+        """
+        with self.db_manager.get_runtime_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(sql, [decision_ids])
+                rows = cursor.fetchall()
+            finally:
+                cursor.close()
+        result: Dict[str, List[str]] = {}
+        for decision_id, output_refs in rows:
+            refs = output_refs or {}
+            names = refs.get("included_instruments", [])
+            if names:
+                result[str(decision_id)] = list(names)
+        return result
 
     def _batch_load_decision_orders(
         self, decision_ids: List[str],
@@ -1195,7 +1578,7 @@ class OutcomeEvaluator:
             SELECT decision_id, output_refs
             FROM engine_decisions
             WHERE decision_id = ANY(%s)
-              AND engine_name = 'OPTIONS'
+              AND engine_name IN ('OPTIONS', 'OPTIONS_SHADOW')
         """
         with self.db_manager.get_runtime_connection() as conn:
             cursor = conn.cursor()

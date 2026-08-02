@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 class StrategyCategory(str, Enum):
     """Logical grouping for capital budgeting."""
     DIRECTIONAL = "DIRECTIONAL"     # Bull call spreads, LEAPS
-    INCOME = "INCOME"               # Iron condor, butterfly, covered call, short put, wheel
+    INCOME = "INCOME"               # Iron condor, butterfly, covered call
     HEDGE = "HEDGE"                 # Protective put, collar, sector put spread, VIX tail
     VOLATILITY = "VOLATILITY"       # Straddle/strangle, calendar spread
     FUTURES = "FUTURES"             # Futures overlay, futures options
@@ -50,18 +50,8 @@ STRATEGY_CATEGORIES: Dict[str, StrategyCategory] = {
     "covered_call": StrategyCategory.INCOME,
     "sector_put_spread": StrategyCategory.HEDGE,
     "vix_tail_hedge": StrategyCategory.HEDGE,
-    "short_put": StrategyCategory.INCOME,
-    "futures_overlay": StrategyCategory.FUTURES,
-    "futures_option": StrategyCategory.FUTURES,
-    "bull_call_spread": StrategyCategory.DIRECTIONAL,
-    "momentum_call": StrategyCategory.DIRECTIONAL,
-    "leaps": StrategyCategory.DIRECTIONAL,
     "iron_condor": StrategyCategory.INCOME,
     "iron_butterfly": StrategyCategory.INCOME,
-    "collar": StrategyCategory.HEDGE,
-    "calendar_spread": StrategyCategory.VOLATILITY,
-    "straddle_strangle": StrategyCategory.VOLATILITY,
-    "wheel": StrategyCategory.INCOME,
     "crisis_alpha": StrategyCategory.HEDGE,
 }
 
@@ -93,28 +83,20 @@ class AllocationDirective:
 # Strategies not listed for a situation are disabled.
 REGIME_STRATEGY_MAP: Dict[str, Set[str]] = {
     "RISK_ON": {
-        "bull_call_spread", "momentum_call", "leaps", "covered_call",
-        "wheel", "iron_condor", "iron_butterfly", "vix_tail_hedge",
-        # short_put removed: VIX-as-IV-proxy understates single-stock IV → consistently -EV
+        "covered_call", "iron_condor", "iron_butterfly", "vix_tail_hedge",
     },
     "NEUTRAL": {
-        "covered_call", "iron_condor", "iron_butterfly",
-        "calendar_spread", "wheel", "vix_tail_hedge",
-        # short_put removed (same reason)
+        "covered_call", "iron_condor", "iron_butterfly", "vix_tail_hedge",
     },
     "RECOVERY": {
-        "collar", "protective_put", "covered_call",
-        "straddle_strangle", "vix_tail_hedge", "futures_overlay",
-        # short_put removed (same reason)
+        "protective_put", "covered_call", "vix_tail_hedge",
     },
     "RISK_OFF": {
         "protective_put", "sector_put_spread", "vix_tail_hedge",
-        "collar", "futures_overlay", "futures_option",
         "crisis_alpha",
     },
     "CRISIS": {
-        "protective_put", "vix_tail_hedge", "futures_overlay",
-        "futures_option", "crisis_alpha",
+        "protective_put", "vix_tail_hedge", "crisis_alpha",
     },
 }
 
@@ -232,16 +214,10 @@ class StrategyAllocator:
             strategy_name → AllocationDirective
         """
         nav = signals.get("nav", 0.0)
-        vix = signals.get("vix_level", 20.0)
-        frag = signals.get("frag", 0.0)
 
         # Determine which strategies are allowed
         allowed = set(self._regime_map.get(market_situation, set()))
         allowed |= self._config.always_on_strategies
-
-        # Add vol strategies if conditions are met
-        if vix <= self._config.vol_strategy_max_vix and frag >= self._config.vol_strategy_min_frag:
-            allowed.add("straddle_strangle")
 
         # Get capital template for this regime
         template = self._capital_templates.get(
@@ -422,8 +398,6 @@ class StrategyAllocator:
         # Blend allocations by probability weight.
         all_strategy_names = set(STRATEGY_CATEGORIES.keys())
         blended: Dict[str, AllocationDirective] = {}
-
-        nav = signals.get("nav", 0.0)
 
         for strat_name in all_strategy_names:
             weighted_capital_pct = 0.0

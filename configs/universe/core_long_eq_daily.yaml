@@ -11,20 +11,66 @@
 #       lambda_predictions_csv: <path to predictions CSV>
 #       lambda_experiment_id: <optional experiment_id filter>
 #       lambda_score_column: lambda_hat  # optional, defaults to "lambda_hat"
-#       lambda_score_weight: 10.0        # non-zero to enable lambda
+#       lambda_score_weight: 0.0         # non-zero would (re)enable lambda-as-alpha (deprecated)
 #
 # All fields are optional. When lambda_predictions_csv is null or
 # lambda_score_weight is 0.0, lambda integration is disabled for that
 # region.
+#
+# LAMBDA-AS-ALPHA SHELVED (2026-06-11): lambda is an opportunity-density /
+# uncertainty (risk-vol) signal, NOT additive alpha. Used as additive alpha
+# it sizes UP into high-uncertainty clusters and hurts Sharpe. We have set
+# lambda_score_weight to 0.0 so the daily UNIVERSES path no longer adds
+# `lambda_weight * lambda_score` to the ranking/sizing score. The CSV
+# prediction infrastructure (data/lambda_predictions_US_EQ.csv), the
+# experiment id, and CsvLambdaClusterScoreProvider are intentionally KEPT —
+# lambda will be repurposed as a RISK signal in a later task. To re-enable
+# the (deprecated) additive-alpha behaviour, set lambda_score_weight back to
+# a non-zero value.
 
 core_long_eq:
-  # Example configuration for the US core long equity universe.
-  #
-  # To enable lambda-aware universes for US, uncomment and customise the
-  # block below. Paths are resolved relative to the project root when
-  # not absolute.
+  # US core long equity universe.
   US:
     lambda_predictions_csv: data/lambda_predictions_US_EQ.csv
     lambda_experiment_id: US_EQ_GL_POLY2_V0
     lambda_score_column: lambda_hat
-    lambda_score_weight: 10.0
+    # SHELVED: 0.0 = lambda is not used as additive alpha (see header note).
+    # Was 10.0 prior to 2026-06-11.
+    lambda_score_weight: 0.0
+
+  # ── Regional core long equity universes (multi-market rollout) ────────
+  # Keys are REGIONS (the loader in prometheus/pipeline/tasks.py,
+  # _load_daily_universe_lambda_config, looks up core_long_eq[region.upper()]).
+  # No lambda prediction CSVs exist for these regions yet, and lambda-as-alpha
+  # is shelved anyway, so lambda is fully disabled: null CSV + weight 0.0.
+  # Other defaults mirror US.
+
+  UK:
+    lambda_predictions_csv: null
+    lambda_experiment_id: null
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 0.0
+
+  EU:
+    lambda_predictions_csv: null
+    lambda_experiment_id: null
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 0.0
+
+  HK:
+    lambda_predictions_csv: null
+    lambda_experiment_id: null
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 0.0
+
+  KR:
+    lambda_predictions_csv: null
+    lambda_experiment_id: null
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 0.0
+
+  AU:
+    lambda_predictions_csv: null
+    lambda_experiment_id: null
+    lambda_score_column: lambda_hat
+    lambda_score_weight: 0.0

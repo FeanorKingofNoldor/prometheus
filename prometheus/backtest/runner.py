@@ -87,6 +87,16 @@ class BacktestRunner:
         if end_date < start_date:
             raise ValueError("end_date must be >= start_date")
 
+        # Backtests write orders/fills/snapshots into shared tables —
+        # refuse to run under a live id (see prometheus/backtest/naming.py).
+        from prometheus.backtest.naming import assert_backtest_namespace
+
+        assert_backtest_namespace(
+            getattr(config, "sleeve_id", None),
+            getattr(config, "strategy_id", None),
+            getattr(config, "portfolio_id", None),
+        )
+
         run_id = generate_uuid()
         # Single meta-level decision identifier for this sleeve backtest
         # run. This id is propagated to orders (via apply_execution_plan),
@@ -1216,6 +1226,11 @@ class BacktestRunner:
             as_of_date=end_date,
             config_id=config.sleeve_id,
             input_refs={
+                # Tag mode explicitly so the scorecard / analysis layer can
+                # filter backtest-fantasy returns out of live PnL aggregates.
+                # Without this tag we'd conflate 73 % mean-return backtest
+                # OPTIONS decisions with live trading.
+                "mode": "backtest",
                 "run_id": run_id,
                 "sleeve_id": config.sleeve_id,
                 "portfolio_id": config.portfolio_id,

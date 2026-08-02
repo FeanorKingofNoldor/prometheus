@@ -18,7 +18,15 @@ from typing import List, Optional
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 
+from prometheus.decisions.run_boundary import clamp_window_start, current_run_start
+
 logger = get_logger(__name__)
+
+# Minimum outcome count before hit-rate style insights may carry a
+# warning/critical severity. Below this we emit an explicit
+# INSUFFICIENT_DATA info insight with the observed n instead of teaching
+# the meta layer lessons from a handful of samples.
+MIN_SEVERITY_N = 100
 
 
 @dataclass
@@ -31,6 +39,7 @@ class FeedbackInsight:
     metric_value: float
     benchmark: float    # expected/historical value
     deviation: float    # how far from benchmark (signed)
+    sample_size: Optional[int] = None  # n behind metric_value (None = n/a)
 
 
 @dataclass
@@ -53,9 +62,13 @@ def compute_feedback_report(
     """Compute feedback report from recent decision outcomes.
 
     Analyzes the last `lookback_days` of decision outcomes to find
-    systematic patterns — good or bad.
+    systematic patterns — good or bad. The window never reaches past the
+    current account-reset boundary (pre-reset outcomes are a different run).
     """
-    start = as_of_date - timedelta(days=lookback_days * 2)  # Extra buffer for weekends
+    start = clamp_window_start(
+        as_of_date - timedelta(days=lookback_days * 2),  # Extra buffer for weekends
+        current_run_start(db_manager),
+    )
     insights: List[FeedbackInsight] = []
 
     portfolio_hit_rate = None
@@ -82,55 +95,89 @@ def compute_feedback_report(
                 drawdowns = [float(r[1]) for r in port_outcomes if r[1] is not None]
 
                 if returns:
-                    hit_rate = sum(1 for r in returns if r > 0) / len(returns)
+                    n_returns = len(returns)
+                    hit_rate = sum(1 for r in returns if r > 0) / n_returns
                     portfolio_hit_rate = hit_rate
-                    avg_return = sum(returns) / len(returns)
+                    avg_return = sum(returns) / n_returns
 
-                    # Insight: portfolio hit rate
-                    if hit_rate < 0.45:
+                    if n_returns < MIN_SEVERITY_N:
+                        # Small-N honesty: below MIN_SEVERITY_N outcomes a
+                        # hit rate is noise — report INSUFFICIENT_DATA rather
+                        # than a warning/critical verdict.
                         insights.append(FeedbackInsight(
                             category="portfolio_quality",
-                            severity="critical",
-                            message=f"Portfolio hit rate {hit_rate:.0%} is below 45% over last {lookback_days} days",
+                            severity="info",
+                            message=(
+                                f"INSUFFICIENT_DATA: portfolio hit rate {hit_rate:.0%} "
+                                f"from only n={n_returns} outcomes (need >= {MIN_SEVERITY_N} "
+                                "for a severity verdict)"
+                            ),
                             metric_name="portfolio_hit_rate",
                             metric_value=hit_rate,
                             benchmark=0.55,
                             deviation=hit_rate - 0.55,
+                            sample_size=n_returns,
                         ))
-                    elif hit_rate < 0.50:
-                        insights.append(FeedbackInsight(
-                            category="portfolio_quality",
-                            severity="warning",
-                            message=f"Portfolio hit rate {hit_rate:.0%} is below coin-flip threshold",
-                            metric_name="portfolio_hit_rate",
-                            metric_value=hit_rate,
-                            benchmark=0.50,
-                            deviation=hit_rate - 0.50,
-                        ))
+                    else:
+                        # Insight: portfolio hit rate
+                        if hit_rate < 0.45:
+                            insights.append(FeedbackInsight(
+                                category="portfolio_quality",
+                                severity="critical",
+                                message=(
+                                    f"Portfolio hit rate {hit_rate:.0%} is below 45% over last "
+                                    f"{lookback_days} days (n={n_returns})"
+                                ),
+                                metric_name="portfolio_hit_rate",
+                                metric_value=hit_rate,
+                                benchmark=0.55,
+                                deviation=hit_rate - 0.55,
+                                sample_size=n_returns,
+                            ))
+                        elif hit_rate < 0.50:
+                            insights.append(FeedbackInsight(
+                                category="portfolio_quality",
+                                severity="warning",
+                                message=(
+                                    f"Portfolio hit rate {hit_rate:.0%} is below coin-flip "
+                                    f"threshold (n={n_returns})"
+                                ),
+                                metric_name="portfolio_hit_rate",
+                                metric_value=hit_rate,
+                                benchmark=0.50,
+                                deviation=hit_rate - 0.50,
+                                sample_size=n_returns,
+                            ))
 
-                    # Insight: average return
-                    if avg_return < -0.02:
-                        insights.append(FeedbackInsight(
-                            category="portfolio_quality",
-                            severity="warning",
-                            message=f"Average portfolio decision return is {avg_return:.1%} — consistently losing",
-                            metric_name="avg_decision_return",
-                            metric_value=avg_return,
-                            benchmark=0.0,
-                            deviation=avg_return,
-                        ))
+                        # Insight: average return
+                        if avg_return < -0.02:
+                            insights.append(FeedbackInsight(
+                                category="portfolio_quality",
+                                severity="warning",
+                                message=(
+                                    f"Average portfolio decision return is {avg_return:.1%} — "
+                                    f"consistently losing (n={n_returns})"
+                                ),
+                                metric_name="avg_decision_return",
+                                metric_value=avg_return,
+                                benchmark=0.0,
+                                deviation=avg_return,
+                                sample_size=n_returns,
+                            ))
 
                 if drawdowns:
-                    avg_dd = sum(drawdowns) / len(drawdowns)
-                    if avg_dd < -0.10:
+                    n_dd = len(drawdowns)
+                    avg_dd = sum(drawdowns) / n_dd
+                    if avg_dd < -0.10 and n_dd >= MIN_SEVERITY_N:
                         insights.append(FeedbackInsight(
                             category="portfolio_quality",
                             severity="warning",
-                            message=f"Average decision drawdown {avg_dd:.1%} — risk too high",
+                            message=f"Average decision drawdown {avg_dd:.1%} — risk too high (n={n_dd})",
                             metric_name="avg_decision_drawdown",
                             metric_value=avg_dd,
                             benchmark=-0.05,
                             deviation=avg_dd - (-0.05),
+                            sample_size=n_dd,
                         ))
 
             # ── Assessment decision accuracy ────────────────────────
@@ -161,40 +208,68 @@ def compute_feedback_report(
                         continue
 
                 if high_score_rets and low_score_rets:
+                    n_spread = len(high_score_rets) + len(low_score_rets)
                     high_avg = sum(high_score_rets) / len(high_score_rets)
                     low_avg = sum(low_score_rets) / len(low_score_rets)
                     spread = high_avg - low_avg
 
-                    if spread < 0:
+                    if n_spread < MIN_SEVERITY_N:
                         insights.append(FeedbackInsight(
                             category="assessment_accuracy",
-                            severity="critical",
-                            message=f"Assessment model inverted: high-score decisions return {high_avg:.1%} vs low-score {low_avg:.1%}",
+                            severity="info",
+                            message=(
+                                f"INSUFFICIENT_DATA: assessment spread {spread:.3%} from only "
+                                f"n={n_spread} outcomes (need >= {MIN_SEVERITY_N} for a "
+                                "severity verdict)"
+                            ),
                             metric_name="assessment_spread",
                             metric_value=spread,
                             benchmark=0.01,
                             deviation=spread - 0.01,
+                            sample_size=n_spread,
+                        ))
+                    elif spread < 0:
+                        insights.append(FeedbackInsight(
+                            category="assessment_accuracy",
+                            severity="critical",
+                            message=(
+                                f"Assessment model inverted: high-score decisions return "
+                                f"{high_avg:.1%} vs low-score {low_avg:.1%} (n={n_spread})"
+                            ),
+                            metric_name="assessment_spread",
+                            metric_value=spread,
+                            benchmark=0.01,
+                            deviation=spread - 0.01,
+                            sample_size=n_spread,
                         ))
                     elif spread < 0.005:
                         insights.append(FeedbackInsight(
                             category="assessment_accuracy",
                             severity="warning",
-                            message=f"Assessment model has near-zero spread: {spread:.3%} between high/low scores",
+                            message=(
+                                f"Assessment model has near-zero spread: {spread:.3%} between "
+                                f"high/low scores (n={n_spread})"
+                            ),
                             metric_name="assessment_spread",
                             metric_value=spread,
                             benchmark=0.01,
                             deviation=spread - 0.01,
+                            sample_size=n_spread,
                         ))
                     else:
                         assessment_accuracy = spread
                         insights.append(FeedbackInsight(
                             category="assessment_accuracy",
                             severity="info",
-                            message=f"Assessment model working: {spread:.3%} spread between high/low scores",
+                            message=(
+                                f"Assessment model working: {spread:.3%} spread between "
+                                f"high/low scores (n={n_spread})"
+                            ),
                             metric_name="assessment_spread",
                             metric_value=spread,
                             benchmark=0.01,
                             deviation=spread - 0.01,
+                            sample_size=n_spread,
                         ))
 
             # ── Turnover analysis ───────────────────────────────────

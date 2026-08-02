@@ -336,6 +336,68 @@ class TestLimitOrders:
         assert orders[0].limit_price is None
 
 
+class TestLimitOrderTickRounding:
+    """Currency-aware limit price rounding (KRW/JPY quote in whole units)."""
+
+    @patch("prometheus.execution.order_planner.generate_uuid", return_value="o1")
+    def test_krw_rounds_to_whole_units(self, _mock_uuid):
+        """KRW limit prices round to 0 decimals (Korean ticks are integral won)."""
+        orders = plan_orders(
+            current_positions={},
+            target_positions={"000660.KO": 10.0},
+            order_type=OrderType.LIMIT,
+            prices={"000660.KO": 285_400.0},
+            limit_buffer_pct=0.001,
+            min_rebalance_pct=0.0,
+            currency_by_instrument={"000660.KO": "KRW"},
+        )
+        assert len(orders) == 1
+        expected = round(285_400.0 * 1.001, 0)
+        assert orders[0].limit_price == pytest.approx(expected)
+        assert orders[0].limit_price == float(int(orders[0].limit_price))
+
+    @patch("prometheus.execution.order_planner.generate_uuid", return_value="o1")
+    def test_jpy_sell_rounds_to_whole_units(self, _mock_uuid):
+        orders = plan_orders(
+            current_positions={"7203.TSE": _pos("7203.TSE", 100.0)},
+            target_positions={"7203.TSE": 0.0},
+            order_type=OrderType.LIMIT,
+            prices={"7203.TSE": 3125.0},
+            limit_buffer_pct=0.001,
+            min_rebalance_pct=0.0,
+            currency_by_instrument={"7203.TSE": "JPY"},
+        )
+        assert orders[0].limit_price == pytest.approx(round(3125.0 * 0.999, 0))
+        assert orders[0].limit_price == float(int(orders[0].limit_price))
+
+    @patch("prometheus.execution.order_planner.generate_uuid", return_value="o1")
+    def test_two_decimal_currency_unchanged(self, _mock_uuid):
+        """EUR (and any 2dp currency) keeps the historical 2dp rounding."""
+        orders = plan_orders(
+            current_positions={},
+            target_positions={"BMW.XETRA": 10.0},
+            order_type=OrderType.LIMIT,
+            prices={"BMW.XETRA": 88.555},
+            limit_buffer_pct=0.0,
+            min_rebalance_pct=0.0,
+            currency_by_instrument={"BMW.XETRA": "EUR"},
+        )
+        assert orders[0].limit_price == pytest.approx(round(88.555, 2))
+
+    @patch("prometheus.execution.order_planner.generate_uuid", return_value="o1")
+    def test_no_currency_mapping_defaults_to_two_decimals(self, _mock_uuid):
+        """Backward compatibility: omitting currency_by_instrument → 2dp."""
+        orders = plan_orders(
+            current_positions={},
+            target_positions={"AAPL": 100.0},
+            order_type=OrderType.LIMIT,
+            prices={"AAPL": 150.0},
+            limit_buffer_pct=0.01,
+            min_rebalance_pct=0.0,
+        )
+        assert orders[0].limit_price == pytest.approx(round(150.0 * 1.01, 2))
+
+
 # ---------------------------------------------------------------------------
 # Fractional shares
 # ---------------------------------------------------------------------------
@@ -436,3 +498,82 @@ class TestEdgeCases:
         )
         assert orders[0].quantity > 0
         assert orders[0].quantity == pytest.approx(150.0)
+
+
+# ---------------------------------------------------------------------------
+# Order idempotency: deterministic order keys (audit fix #4)
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicOrderKey:
+    """Re-planning the same cycle must yield the same order id (idempotent),
+    while a re-trade on a new date yields a new id."""
+
+    def test_replan_same_cycle_is_idempotent(self):
+        from datetime import date
+
+        kwargs = dict(
+            current_positions={},
+            target_positions={"AAPL.US": 100.0, "MSFT.US": 50.0},
+            min_rebalance_pct=0.0,
+            portfolio_id="BOOK1",
+            as_of_date=date(2026, 6, 11),
+        )
+        first = plan_orders(**kwargs)
+        # A crash-then-retry of the SAME cycle re-plans identically. The
+        # deterministic key path must NOT be swallowed by the time-window
+        # dedup, so the same orders (same ids) come back.
+        second = plan_orders(**kwargs)
+
+        assert len(first) == len(second) == 2
+        ids_first = {o.instrument_id: o.order_id for o in first}
+        ids_second = {o.instrument_id: o.order_id for o in second}
+        assert ids_first == ids_second
+
+    def test_new_date_yields_new_key(self):
+        from datetime import date
+
+        base = dict(
+            current_positions={},
+            target_positions={"AAPL.US": 100.0},
+            min_rebalance_pct=0.0,
+            portfolio_id="BOOK1",
+        )
+        day1 = plan_orders(**base, as_of_date=date(2026, 6, 11))
+        day2 = plan_orders(**base, as_of_date=date(2026, 6, 12))
+
+        assert len(day1) == 1 and len(day2) == 1
+        # A legitimate re-trade on a new date is a NEW order.
+        assert day1[0].order_id != day2[0].order_id
+
+    def test_key_varies_with_side_and_instrument(self):
+        from datetime import date
+
+        from prometheus.execution.order_planner import deterministic_order_id
+
+        d = date(2026, 6, 11)
+        buy = deterministic_order_id("BOOK1", "AAPL.US", OrderSide.BUY, d)
+        sell = deterministic_order_id("BOOK1", "AAPL.US", OrderSide.SELL, d)
+        other = deterministic_order_id("BOOK1", "MSFT.US", OrderSide.BUY, d)
+        same = deterministic_order_id("BOOK1", "AAPL.US", OrderSide.BUY, d)
+
+        assert buy == same          # deterministic
+        assert buy != sell          # side matters
+        assert buy != other         # instrument matters
+
+    def test_missing_context_falls_back_to_uuid(self):
+        """Without portfolio_id/as_of_date we cannot be deterministic, so a
+        fresh (random) id is minted each call (legacy/backtest path).
+
+        ``generate_uuid`` is patched to a real uuid generator here so the
+        test is robust to other suites that stub it to a constant.
+        """
+        import uuid
+
+        from prometheus.execution import order_planner as _op
+        from prometheus.execution.order_planner import deterministic_order_id
+
+        with patch.object(_op, "generate_uuid", lambda: str(uuid.uuid4())):
+            a = deterministic_order_id(None, "AAPL.US", OrderSide.BUY, None)
+            b = deterministic_order_id(None, "AAPL.US", OrderSide.BUY, None)
+        assert a != b

@@ -74,7 +74,7 @@ def load_shadow_decisions(
             cur.execute(
                 """
                 SELECT decision_id, as_of_date, sleeve, template_name, kind,
-                       underlying, right, strike, expiry, quantity,
+                       underlying, "right", strike, expiry, quantity,
                        limit_price, iv_used, iv_source, delta,
                        reason, skip_reason
                 FROM derivatives_shadow_decisions

@@ -197,15 +197,18 @@ class TestMaxOrderNotional:
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions")
     @patch("prometheus.execution.risk_broker.get_db_manager")
-    def test_order_exceeding_limit_blocked(self, mock_db, mock_insert):
+    def test_order_exceeding_limit_clamped(self, mock_db, mock_insert):
+        """An oversized order is CLAMPED down to fit the notional cap and
+        still submitted (not hard-rejected)."""
         positions = {"AAPL": Position("AAPL", 50, 150.0, 7500.0, 0.0)}
         inner = FakeBroker(positions=positions)
         cfg = _make_config(max_order_notional=1000.0)
         rb = RiskCheckingBroker(inner, config=cfg)
         order = _make_order(quantity=10)  # 10 * 150 = 1500 > 1000
-        with pytest.raises(RiskLimitExceeded, match="max_order_notional"):
-            rb.submit_order(order)
-        assert len(inner._submitted) == 0
+        rb.submit_order(order)
+        assert len(inner._submitted) == 1
+        # Clamped to 1000 / 150 = 6.667 shares.
+        assert inner._submitted[0].quantity == pytest.approx(1000.0 / 150.0)
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions")
     @patch("prometheus.execution.risk_broker.get_db_manager")
@@ -240,15 +243,19 @@ class TestMaxPositionNotional:
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions")
     @patch("prometheus.execution.risk_broker.get_db_manager")
-    def test_position_exceeding_limit_blocked(self, mock_db, mock_insert):
+    def test_position_exceeding_limit_clamped(self, mock_db, mock_insert):
+        """A BUY that would overshoot the position cap is clamped to the
+        residual headroom and still submitted."""
         positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
         inner = FakeBroker(positions=positions)
         cfg = _make_config(max_position_notional=20_000.0)
         rb = RiskCheckingBroker(inner, config=cfg)
         order = _make_order(quantity=50, side=OrderSide.BUY)  # (100+50)*150=22500 > 20000
-        with pytest.raises(RiskLimitExceeded, match="max_position_notional"):
-            rb.submit_order(order)
-        assert len(inner._submitted) == 0
+        rb.submit_order(order)
+        assert len(inner._submitted) == 1
+        # Position cap 20000 / 150 = 133.33 shares max; current = 100,
+        # so allowed delta = 33.33 shares.
+        assert inner._submitted[0].quantity == pytest.approx(20_000.0 / 150.0 - 100.0)
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions")
     @patch("prometheus.execution.risk_broker.get_db_manager")
@@ -401,30 +408,47 @@ class TestBlockRecordsRiskAction:
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions")
     @patch("prometheus.execution.risk_broker.get_db_manager")
-    def test_block_inserts_risk_action(self, mock_get_db, mock_insert):
+    def test_clamp_records_risk_action(self, mock_get_db, mock_insert):
+        """Clamping an oversized order records a risk_action so operators
+        can see the resize, and submits the clamped order."""
         inner = FakeBroker()
         rb = RiskCheckingBroker(inner, config=_make_config(max_order_notional=1.0))
         rb.strategy_id = "strat-1"
         rb.portfolio_id = "port-1"
 
         order = _make_order(quantity=100)
-        with pytest.raises(RiskLimitExceeded):
-            rb.submit_order(order)
+        rb.submit_order(order)
 
         mock_insert.assert_called_once()
         actions = mock_insert.call_args[1].get("actions") or mock_insert.call_args[0][1]
         assert len(actions) == 1
         assert actions[0].strategy_id == "strat-1"
+        assert "CLAMPED" in actions[0].details["reason"]
+        assert len(inner._submitted) == 1
 
     @patch("prometheus.execution.risk_broker.insert_risk_actions", side_effect=Exception("DB down"))
     @patch("prometheus.execution.risk_broker.get_db_manager")
-    def test_block_still_raises_if_risk_action_insert_fails(self, mock_get_db, mock_insert):
-        """Even if persisting the risk action fails, the order is still blocked."""
+    def test_clamp_still_submits_if_risk_action_insert_fails(self, mock_get_db, mock_insert):
+        """Even if persisting the risk action fails, the clamped order is
+        still submitted (logging is best-effort, never order-blocking)."""
         inner = FakeBroker()
         rb = RiskCheckingBroker(inner, config=_make_config(max_order_notional=1.0))
         order = _make_order(quantity=100)
-        with pytest.raises(RiskLimitExceeded):
+        rb.submit_order(order)
+        assert len(inner._submitted) == 1
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_leverage_breach_still_hard_rejects(self, mock_get_db, mock_insert):
+        """Limits that can't be satisfied by resizing one order (leverage)
+        still raise RiskLimitExceeded — the batch loop skips that order."""
+        positions = {"AAPL": Position("AAPL", 1000, 150.0, 150_000.0, 0.0)}
+        inner = FakeBroker(positions=positions, account_state={"equity": 100_000.0})
+        rb = RiskCheckingBroker(inner, config=_make_config(max_leverage=1.5))
+        order = _make_order(quantity=500)
+        with pytest.raises(RiskLimitExceeded, match="max_leverage"):
             rb.submit_order(order)
+        assert len(inner._submitted) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -444,3 +468,210 @@ class TestGrossExposure:
         }
         # abs(15000) + abs(-10000) = 25000
         assert RiskCheckingBroker._gross_exposure(positions) == 25_000.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: safe-by-default gate behaviour (audit fix #3)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeByDefaultGate:
+    """With the gate ACTIVE and sane limits, a normal order passes and an
+    oversized order is gated (clamped), never aborting the flow."""
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_normal_order_passes_through_gate(self, mock_db, mock_insert):
+        # Book ~$1M; $100k per-order cap.
+        positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
+        inner = FakeBroker(positions=positions, account_state={"equity": 1_000_000.0})
+        cfg = _make_config(
+            max_order_notional=100_000.0,
+            max_position_notional=150_000.0,
+            max_leverage=1.5,
+        )
+        rb = RiskCheckingBroker(inner, config=cfg)
+        # 50 * 150 = $7.5k order; position becomes (100+50)*150 = $22.5k. All fine.
+        order = _make_order(quantity=50)
+        rb.submit_order(order)
+        assert len(inner._submitted) == 1
+        assert inner._submitted[0].quantity == 50  # not clamped
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_oversized_order_is_gated_by_clamp(self, mock_db, mock_insert):
+        inner = FakeBroker(account_state={"equity": 1_000_000.0})
+        cfg = _make_config(
+            max_order_notional=100_000.0,
+            max_position_notional=150_000.0,
+            max_leverage=1.5,
+        )
+        rb = RiskCheckingBroker(inner, config=cfg)
+        # No position -> conservative $1000 price fallback. 500 shares =>
+        # $500k order, well over the $100k cap -> clamped to 100 shares.
+        order = _make_order(instrument_id="ZZZ", quantity=500)
+        rb.submit_order(order)
+        assert len(inner._submitted) == 1
+        assert inner._submitted[0].quantity == pytest.approx(100.0)  # 100k / 1000
+
+
+# ---------------------------------------------------------------------------
+# Tests: drawdown breaker + exposure-reducing exemption
+# ---------------------------------------------------------------------------
+
+
+class TestDrawdownBreakerExemptsDerisking:
+    def _broker_in_drawdown(self, positions=None):
+        """Broker whose equity is 30% below its high-water mark."""
+        inner = FakeBroker(
+            positions=positions or {},
+            account_state={"equity": 70_000.0, "high_water_mark": 100_000.0},
+        )
+        return inner, RiskCheckingBroker(
+            inner, config=_make_config(max_drawdown_pct=0.20)
+        )
+
+    def test_buy_blocked_in_drawdown(self):
+        positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
+        inner, rb = self._broker_in_drawdown(positions)
+        with pytest.raises(RiskLimitExceeded, match="drawdown circuit breaker"):
+            rb.submit_order(_make_order(side=OrderSide.BUY, quantity=10))
+        assert inner._submitted == []
+
+    def test_sell_of_long_passes_in_drawdown(self):
+        """De-risking must never be blocked by the breaker."""
+        positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
+        inner, rb = self._broker_in_drawdown(positions)
+        rb.submit_order(_make_order(side=OrderSide.SELL, quantity=100))
+        assert len(inner._submitted) == 1
+
+    def test_sell_opening_short_blocked_in_drawdown(self):
+        """A SELL beyond the long position opens a short — not de-risking."""
+        positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
+        inner, rb = self._broker_in_drawdown(positions)
+        with pytest.raises(RiskLimitExceeded, match="drawdown circuit breaker"):
+            rb.submit_order(_make_order(side=OrderSide.SELL, quantity=200))
+
+    def test_leverage_block_exempts_sells(self):
+        """Over max leverage, a position-reducing SELL still goes through."""
+        positions = {"AAPL": Position("AAPL", 2000, 150.0, 300_000.0, 0.0)}
+        inner = FakeBroker(
+            positions=positions, account_state={"equity": 100_000.0}
+        )
+        rb = RiskCheckingBroker(inner, config=_make_config(max_leverage=2.0))
+        # Gross 300k / equity 100k = 3x > 2x: buys blocked, sells pass.
+        with pytest.raises(RiskLimitExceeded, match="leverage"):
+            rb.submit_order(_make_order(side=OrderSide.BUY, quantity=10))
+        rb.submit_order(
+            _make_order(side=OrderSide.SELL, quantity=500, order_id="ord-2")
+        )
+        assert len(inner._submitted) == 1
+
+    def test_netliquidation_key_resolved(self):
+        """Equity provided only as NetLiquidation is honoured by the breaker."""
+        positions = {"AAPL": Position("AAPL", 100, 150.0, 15000.0, 0.0)}
+        inner = FakeBroker(
+            positions=positions,
+            account_state={"NetLiquidation": 70_000.0, "high_water_mark": 100_000.0},
+        )
+        rb = RiskCheckingBroker(inner, config=_make_config(max_drawdown_pct=0.20))
+        with pytest.raises(RiskLimitExceeded, match="drawdown circuit breaker"):
+            rb.submit_order(_make_order(side=OrderSide.BUY, quantity=10))
+
+
+# ---------------------------------------------------------------------------
+# Tests: FX conversion of price estimates
+# ---------------------------------------------------------------------------
+
+
+class _StubFx:
+    """FxConverter stand-in with a fixed rate book keyed by currency."""
+
+    def __init__(self, rates: dict[str, float] | None = None):
+        self._rates = rates or {}
+
+    def usd_rate(self, currency: str, as_of) -> float:
+        from prometheus.execution.fx import FxRateUnavailable
+
+        if currency == "USD":
+            return 1.0
+        if currency not in self._rates:
+            raise FxRateUnavailable(f"no {currency}USD rate")
+        return self._rates[currency]
+
+    def to_usd(self, amount: float, currency: str, as_of) -> float:
+        return amount * self.usd_rate(currency, as_of)
+
+    def price_to_usd(self, price: float, currency: str, instrument_id: str, as_of) -> float:
+        from prometheus.execution.fx import _pence_divisor
+
+        return (price / _pence_divisor(instrument_id)) * self.usd_rate(currency, as_of)
+
+
+class TestFxConvertedRiskChecks:
+    """Notional/leverage math runs on USD-converted price estimates."""
+
+    def _broker(self, positions, cfg, fx, currency: str):
+        inner = FakeBroker(positions=positions)
+        rb = RiskCheckingBroker(inner, config=cfg, fx=fx)
+        # Pin the instrument's currency (bypasses the DB lookup).
+        rb._currency_cache = {iid: currency for iid in positions}
+        return inner, rb
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_notional_check_uses_usd_converted_price(self, mock_db, mock_insert):
+        """A GBP position priced in pence is converted before the notional cap.
+
+        AAL.LSE at 3741 GBX = £37.41 ≈ $49.68 at GBPUSD 1.3279. A 100-share
+        BUY is ~$4,968 notional — over a $2,000 cap it must be clamped using
+        the USD price, not the raw 3741 quote.
+        """
+        positions = {"AAL.LSE": Position("AAL.LSE", 10, 3741.0, 37410.0, 0.0)}
+        fx = _StubFx({"GBP": 1.3279})
+        cfg = _make_config(max_order_notional=2000.0)
+        inner, rb = self._broker(positions, cfg, fx, "GBP")
+
+        order = _make_order(instrument_id="AAL.LSE", quantity=100)
+        rb.submit_order(order)
+
+        assert len(inner._submitted) == 1
+        usd_price = (3741.0 / 100.0) * 1.3279
+        assert inner._submitted[0].quantity == pytest.approx(2000.0 / usd_price)
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_usd_instrument_unaffected(self, mock_db, mock_insert):
+        """USD instruments never touch the FX converter."""
+        positions = {"AAPL": Position("AAPL", 50, 150.0, 7500.0, 0.0)}
+        fx = _StubFx({})  # would raise for any non-USD currency
+        cfg = _make_config(max_order_notional=20_000.0)
+        inner, rb = self._broker(positions, cfg, fx, "USD")
+        rb.submit_order(_make_order(quantity=10))
+        assert len(inner._submitted) == 1
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_fx_rate_unavailable_blocks_order(self, mock_db, mock_insert):
+        """No FX rate → the order is BLOCKED, never sized on a raw local price."""
+        positions = {"005930.KO": Position("005930.KO", 10, 285_400.0, 2_854_000.0, 0.0)}
+        fx = _StubFx({})  # KRW missing
+        cfg = _make_config(max_order_notional=20_000.0)
+        inner, rb = self._broker(positions, cfg, fx, "KRW")
+
+        with pytest.raises(RiskLimitExceeded, match="FX rate unavailable"):
+            rb.submit_order(_make_order(instrument_id="005930.KO", quantity=10))
+        assert len(inner._submitted) == 0
+        # The block was recorded to risk_actions.
+        assert mock_insert.called
+
+    @patch("prometheus.execution.risk_broker.insert_risk_actions")
+    @patch("prometheus.execution.risk_broker.get_db_manager")
+    def test_estimate_price_converts_eur(self, mock_db, mock_insert):
+        """_estimate_price returns USD for a EUR instrument."""
+        positions = {"BMW.XETRA": Position("BMW.XETRA", 10, 88.5, 885.0, 0.0)}
+        fx = _StubFx({"EUR": 1.1432})
+        cfg = _make_config()
+        _, rb = self._broker(positions, cfg, fx, "EUR")
+        price = rb._estimate_price("BMW.XETRA", positions)
+        assert price == pytest.approx(88.5 * 1.1432)

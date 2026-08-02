@@ -3,9 +3,9 @@
 The selection layer (Phase 1+) needs IV per candidate strike to pick
 the right delta. Today the codebase uses VIX as a stand-in for sigma
 everywhere, which biases strike selection systematically for anything
-that is not SPY — and is the documented reason ``ShortPutStrategy`` is
-disabled (-EV in backtest because single-stock IV is much higher than
-VIX).
+that is not SPY — and is the documented reason single-name
+short-premium was disabled in the legacy backtest (-EV because
+single-stock IV is much higher than VIX).
 
 This module returns a per-contract IV with explicit provenance, in
 priority order:

@@ -40,7 +40,7 @@ from prometheus.execution.ib_compat import (
     Order as IbOrder,
 )
 from prometheus.execution.ibkr_client import IbkrClient, IbkrConnectionConfig
-from prometheus.execution.instrument_mapper import InstrumentMapper
+from prometheus.execution.instrument_mapper import ContractQualificationError, InstrumentMapper
 
 logger = get_logger(__name__)
 
@@ -244,6 +244,37 @@ class IbkrClientImpl(IbkrClient):
             order.metadata = meta
             return order.order_id
 
+        # Broker-side idempotency: Prometheus order ids are deterministic
+        # and stored in IBKR's orderRef at submit time. If a non-terminal
+        # trade with this orderRef already exists at the broker (a previous
+        # attempt crashed/timed out after placeOrder but before persisting),
+        # re-submitting would double the position. Adopt the existing trade
+        # instead.
+        existing_trade = self._find_active_trade(order.order_id)
+        if existing_trade is not None:
+            status = self._map_order_status(existing_trade)
+            self._trades_by_ref[order.order_id] = existing_trade
+            self._order_statuses[order.order_id] = status
+            existing_order = getattr(existing_trade, "order", None)
+            meta["ibkr"] = {
+                "orderId": int(existing_order.orderId) if existing_order else None,
+                "permId": (
+                    int(existing_order.permId)
+                    if existing_order and getattr(existing_order, "permId", None)
+                    else None
+                ),
+            }
+            meta["resubmission_suppressed"] = True
+            order.metadata = meta
+            logger.warning(
+                "submit_order: order %s already exists at IBKR with non-terminal "
+                "status=%s (orderId=%s) — NOT re-submitting; adopting existing trade",
+                order.order_id,
+                status.value,
+                existing_order.orderId if existing_order else "unknown",
+            )
+            return order.order_id
+
         # Translate Prometheus order to IBKR contract and order.
         # If the caller pre-built a Contract (e.g. options chain discovery
         # produced an ad-hoc instrument_id that won't match the database),
@@ -368,6 +399,34 @@ class IbkrClientImpl(IbkrClient):
             return None
         return None
 
+    # IBKR statuses that mean an order is finished working (per the
+    # ib_insync/ib_async OrderStatus "DoneStates" plus Inactive).
+    _TERMINAL_IB_STATUSES = frozenset(
+        {"FILLED", "CANCELLED", "APICANCELLED", "API_CANCELLED", "INACTIVE"}
+    )
+
+    def _find_active_trade(self, order_id: str) -> Trade | None:
+        """Locate a *non-terminal* IB Trade by orderRef.
+
+        Used by :meth:`submit_order` for broker-side idempotency: a match
+        means a previous submission of this Prometheus order is still
+        working at IBKR and must not be duplicated.
+        """
+        try:
+            for t in self._ib.trades():
+                try:
+                    if not (t.order and t.order.orderRef == order_id):
+                        continue
+                    raw = str(getattr(t.orderStatus, "status", "") or "").strip().upper()
+                    if raw in self._TERMINAL_IB_STATUSES:
+                        continue
+                    return t
+                except Exception:
+                    continue
+        except Exception:
+            return None
+        return None
+
     @staticmethod
     def _map_order_status(trade: Trade) -> OrderStatus:
         """Map ib_insync trade status to Prometheus OrderStatus."""
@@ -464,21 +523,54 @@ class IbkrClientImpl(IbkrClient):
     def _create_contract(self, instrument_id: str) -> Contract:
         """Create IBKR contract from Prometheus instrument_id.
 
-        Uses InstrumentMapper to translate instrument_id to IBKR contract.
+        Uses InstrumentMapper to translate instrument_id to IBKR contract,
+        then qualifies it against IBKR.
+
+        Qualification failure behavior:
+        - Non-US contracts (``primaryExchange`` set by the EODHD->IBKR
+          translation) MUST qualify — an unqualified directed contract
+          would be rejected or resolve to the wrong listing, so we raise
+          :class:`ContractQualificationError`.
+        - US SMART contracts keep the historical lenient fallback and
+          return the unqualified contract.
         """
         # Use mapper to get contract
         contract = self._mapper.get_contract(instrument_id)
 
+        # Non-US contracts carry an explicit primaryExchange; those must
+        # qualify exactly.
+        strict = bool(getattr(contract, "primaryExchange", "") or "")
+
         # Qualify contract to ensure it's valid
         try:
             contracts = self._ib.qualifyContracts(contract)
-            if not contracts:
-                raise ValueError(f"Could not qualify contract for {instrument_id}")
-            return contracts[0]
         except Exception as e:
+            if strict:
+                raise ContractQualificationError(
+                    f"IBKR failed to qualify non-US contract for "
+                    f"{instrument_id} (symbol={contract.symbol!r}, "
+                    f"primaryExchange={contract.primaryExchange!r}, "
+                    f"currency={contract.currency!r}): {e}"
+                ) from e
             logger.error("Failed to qualify contract for %s: %s", instrument_id, e)
-            # Return unqualified contract and hope for the best
+            # US SMART path: return unqualified contract and hope for the best
             return contract
+
+        if not contracts:
+            if strict:
+                raise ContractQualificationError(
+                    f"IBKR returned no qualified contract for non-US "
+                    f"instrument {instrument_id} (symbol={contract.symbol!r}, "
+                    f"primaryExchange={contract.primaryExchange!r}, "
+                    f"currency={contract.currency!r})"
+                )
+            logger.error(
+                "Could not qualify contract for %s; using unqualified contract",
+                instrument_id,
+            )
+            return contract
+
+        return contracts[0]
 
     def _create_ib_order(self, order: Order) -> IbOrder:
         """Create IBKR order from Prometheus order."""

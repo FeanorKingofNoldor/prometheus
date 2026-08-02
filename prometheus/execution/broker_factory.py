@@ -33,7 +33,7 @@ from prometheus.execution.ibkr_config import (
     load_credentials,
 )
 from prometheus.execution.live_broker import LiveBroker
-from prometheus.execution.paper_broker import PaperBroker
+from prometheus.execution.paper_broker import PaperBroker, assert_not_live
 from prometheus.execution.risk_broker import RiskCheckingBroker
 
 logger = get_logger(__name__)
@@ -137,7 +137,9 @@ def create_live_broker(
 
     exec_risk = get_config().execution_risk
     if exec_risk.enabled:
-        broker = RiskCheckingBroker(inner=base_broker, config=exec_risk)
+        broker = RiskCheckingBroker(
+            inner=base_broker, config=exec_risk, equity_history_portfolio_id="IBKR_LIVE"
+        )
     else:
         broker = base_broker
 
@@ -203,6 +205,11 @@ def create_paper_broker(
         readonly=readonly,
     )
 
+    # Defense-in-depth: hard-stop before building any client if the paper
+    # config has been pointed at the live gateway/account (the only thing
+    # otherwise separating paper from live is the port number).
+    assert_not_live(port=config.port, account_id=config.account_id)
+
     # Create instrument mapper
     if mapper is None:
         try:
@@ -253,7 +260,9 @@ def create_paper_broker(
 
     exec_risk = get_config().execution_risk
     if exec_risk.enabled:
-        broker = RiskCheckingBroker(inner=base_broker, config=exec_risk)
+        broker = RiskCheckingBroker(
+            inner=base_broker, config=exec_risk, equity_history_portfolio_id="IBKR_PAPER"
+        )
     else:
         broker = base_broker
 

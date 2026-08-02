@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, List
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 
-from prometheus.risk.constraints import StrategyRiskConfig, get_strategy_risk_config
+from prometheus.risk.constraints import get_strategy_risk_config
 from prometheus.risk.dynamic_constraints import get_dynamic_strategy_risk_config
 from prometheus.risk.engine import apply_risk_to_decision
 from prometheus.risk.storage import RiskAction, insert_risk_actions

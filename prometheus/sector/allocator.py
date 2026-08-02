@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-
 from apatheon.core.logging import get_logger
 from apatheon.sector.health import SectorHealthResult
 from apatheon.sector.mapper import SectorMapper
@@ -313,10 +312,15 @@ class SectorAllocator:
         if market_mhi is not None:
             if market_mhi <= cfg.mhi_systemic_crisis_threshold:
                 level = StressLevel.SYSTEMIC_CRISIS
-            elif market_mhi <= cfg.mhi_broad_stress_threshold and level.value < StressLevel.BROAD_STRESS.value:
+            elif market_mhi <= cfg.mhi_broad_stress_threshold and level in (
+                StressLevel.NORMAL,
+                StressLevel.SECTOR_STRESS,
+            ):
                 # Only escalate if current level is below BROAD_STRESS.
-                if level in (StressLevel.NORMAL, StressLevel.SECTOR_STRESS):
-                    level = StressLevel.BROAD_STRESS
+                # (A string `<` on the enum values compared alphabetically —
+                # "NORMAL" < "BROAD_STRESS" is False — so this branch was
+                # previously unreachable.)
+                level = StressLevel.BROAD_STRESS
 
         return level, sick, weak, healthy, sector_scores
 

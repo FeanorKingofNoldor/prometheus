@@ -1,8 +1,15 @@
 """Prometheus -- Daily Embedding Generation Pipeline.
 
-Generates numeric window embeddings for all active instruments on a given
-date, then computes cross-sectional features (distance from universe mean)
-used by the assessment model.
+Generates numeric window embeddings (``num-regime-core-v1``) for all active
+instruments on a given date. These embeddings are consumed downstream by the
+joint-context / joint-profile backfills (see ``scripts/backfill/``) and the
+standalone ``run_numeric_regime`` job.
+
+(Historically these embeddings also fed a cross-sectional outlier penalty in
+the assessment model. That penalty was removed — it carried no information
+beyond raw vol/return — so the cross-sectional scoring helper was deleted. The
+embedding *generation* is retained because the joint backfills still read the
+``numeric_window_embeddings`` table.)
 
 Numeric-only by design: 63 days of price/volume/returns patterns capture
 actual market behavior. Text/news embeddings were evaluated and rejected —
@@ -16,24 +23,12 @@ Called by the daily pipeline during the signals phase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List
-
-import numpy as np
 
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class CrossSectionalScore:
-    """Cross-sectional embedding features for one instrument."""
-    instrument_id: str
-    cosine_distance: float    # Distance from universe mean (0 = typical, 1 = outlier)
-    percentile_rank: float    # Where this instrument ranks (0 = most typical, 1 = most outlier)
 
 
 def generate_numeric_embeddings(
@@ -51,10 +46,10 @@ def generate_numeric_embeddings(
     from apatheon.core.time import TradingCalendar
     from apatheon.data.reader import DataReader
     from apatheon.encoders import (
+        NumericEmbeddingStore,
         NumericWindowBuilder,
         NumericWindowEncoder,
         NumericWindowSpec,
-        NumericEmbeddingStore,
     )
     from apatheon.encoders.models_simple_numeric import PadToDimNumericEmbeddingModel
 
@@ -94,74 +89,3 @@ def generate_numeric_embeddings(
         count, len(instruments), market_id, as_of_date,
     )
     return count
-
-
-def compute_cross_sectional_scores(
-    db_manager: DatabaseManager,
-    instrument_ids: List[str],
-    as_of_date: date,
-    model_id: str = "num-regime-core-v1",
-) -> Dict[str, CrossSectionalScore]:
-    """Compute cross-sectional embedding features for instruments.
-
-    For each instrument, computes cosine distance from the universe mean
-    embedding. Instruments far from the mean are in unusual states relative
-    to the rest of the universe.
-
-    Returns: {instrument_id: CrossSectionalScore}
-    """
-    # Batch-load all embeddings for the date
-    with db_manager.get_historical_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT entity_id, vector
-                FROM numeric_window_embeddings
-                WHERE model_id = %s
-                  AND as_of_date = %s
-                  AND entity_type = 'INSTRUMENT'
-                  AND entity_id = ANY(%s)
-            """, (model_id, as_of_date, list(instrument_ids)))
-            rows = cur.fetchall()
-
-    if len(rows) < 10:
-        logger.debug("Too few embeddings (%d) for cross-sectional scoring on %s", len(rows), as_of_date)
-        return {}
-
-    # Parse vectors
-    vectors: Dict[str, np.ndarray] = {}
-    for entity_id, vec_bytes in rows:
-        vectors[entity_id] = np.frombuffer(vec_bytes, dtype=np.float32).copy()
-
-    # Compute universe mean
-    all_vecs = np.stack(list(vectors.values()))
-    universe_mean = np.mean(all_vecs, axis=0)
-    mean_norm = np.linalg.norm(universe_mean)
-
-    if mean_norm < 1e-10:
-        return {}
-
-    # Compute cosine distances
-    distances: Dict[str, float] = {}
-    for inst_id, vec in vectors.items():
-        vec_norm = np.linalg.norm(vec)
-        if vec_norm < 1e-10:
-            distances[inst_id] = 1.0  # Degenerate vector = maximum outlier
-        else:
-            cosine_sim = float(np.dot(vec, universe_mean) / (vec_norm * mean_norm))
-            distances[inst_id] = max(0.0, 1.0 - cosine_sim)  # 0 = identical, 2 = opposite
-
-    # Compute percentile ranks
-    sorted_dists = sorted(distances.values())
-    n = len(sorted_dists)
-
-    results: Dict[str, CrossSectionalScore] = {}
-    for inst_id, dist in distances.items():
-        # Rank: what fraction of instruments are closer to the mean
-        rank = sum(1 for d in sorted_dists if d <= dist) / n
-        results[inst_id] = CrossSectionalScore(
-            instrument_id=inst_id,
-            cosine_distance=dist,
-            percentile_rank=rank,
-        )
-
-    return results

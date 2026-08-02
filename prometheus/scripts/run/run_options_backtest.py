@@ -53,6 +53,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                         help="Path to equity backtest results JSON")
     parser.add_argument("--slippage", type=float, default=0.25,
                         help="Slippage as fraction of half-spread (0.25 = 25%%)")
+    parser.add_argument("--fill-mode", type=str, default="next_bar",
+                        choices=["next_bar", "same_bar"],
+                        help="Fill convention: 'next_bar' (default, honest — "
+                             "select contract on day d's signals but price/enter "
+                             "at the next bar) or 'same_bar' (look-ahead parity/debug, "
+                             "decide and fill at day d).")
     parser.add_argument("--max-positions", type=int, default=100,
                         help="Maximum simultaneous option positions")
     parser.add_argument("--log-frequency", type=int, default=63,
@@ -66,11 +72,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                              "(e.g. AAPL.US,MSFT.US,GOOGL.US). Requires --use-db.")
     parser.add_argument("--load-equity-universe", action="store_true",
                         help="Auto-load the full US_EQ equity universe from the runtime DB. "
-                             "Gives short_put meaningful single-stock underlyings. Requires --use-db.")
+                             "Gives single-name option strategies meaningful underlyings. Requires --use-db.")
     parser.add_argument("--persist", action="store_true",
                         help="Persist trades, daily positions, and summary to runtime DB")
     parser.add_argument("--lambda-csv", type=str, default=None,
-                        help="Enable real λ-factorial scores for short_put / bull_call_spread "
+                        help="Enable real λ-factorial scores for single-name "
                              "stock selection (requires --use-db). When set, per-instrument "
                              "scores are loaded from the instrument_scores DB table "
                              "(strategy US_CORE_LONG_EQ, horizon 21). The path argument is "
@@ -101,6 +107,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         equity_universe_ids=equity_universe_ids,
         load_equity_universe_from_db=args.load_equity_universe,
         lambda_csv_path=args.lambda_csv,
+        fill_mode=args.fill_mode,
     )
 
     # Optionally connect to database for historical data
@@ -141,10 +148,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.equity_backtest:
         print(f"  Equity Backtest: {args.equity_backtest}")
     print(f"  Slippage: {args.slippage*100:.0f}% of half-spread")
+    print(f"  Fill Mode: {args.fill_mode}"
+          + ("  (honest next-bar)" if args.fill_mode == "next_bar" else "  (LOOK-AHEAD same-bar)"))
     if equity_universe_ids:
         print(f"  Equity Universe: {len(equity_universe_ids)} explicit instruments")
     if args.load_equity_universe:
-        print("  Equity Universe: auto-loading US_EQ from DB (gives short_put real underlyings)")
+        print("  Equity Universe: auto-loading US_EQ from DB (gives single-name strategies real underlyings)")
     if args.lambda_csv:
         print(f"  λ-factorial scores: {args.lambda_csv}")
     if writer:

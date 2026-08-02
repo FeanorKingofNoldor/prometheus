@@ -73,3 +73,6 @@ files = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: requires the real runtime Postgres (auto-skipped when unreachable)",
+]

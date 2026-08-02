@@ -69,6 +69,10 @@ class JobMetadata:
         job_type: Logical type (e.g., "ingest_prices", "compute_returns", "run_regime")
         market_id: Market this job belongs to (None for global jobs)
         required_state: Market state required to run (None = any state OK)
+        required_states: Optional set of acceptable market states.  When
+            set, it takes precedence over ``required_state`` — use it for
+            jobs that may run in more than one state (e.g. fill
+            reconciliation in PRE_OPEN *or* SESSION).
         dependencies: List of job_ids that must complete before this job
         run_phase: Optional RunPhase this job maps to (for engine jobs)
         max_retries: Maximum retry attempts on failure
@@ -81,6 +85,7 @@ class JobMetadata:
     job_type: str
     market_id: str | None
     required_state: MarketState | None = None
+    required_states: tuple[MarketState, ...] | None = None
     dependencies: tuple[str, ...] = field(default_factory=tuple)
     run_phase: RunPhase | None = None
     max_retries: int = 3
@@ -143,8 +148,12 @@ class DAG:
             if not deps_satisfied:
                 continue
 
-            # Check market state requirement
-            if job.required_state is not None and job.required_state != current_market_state:
+            # Check market state requirement.  ``required_states`` (multi)
+            # wins over the single ``required_state`` when set.
+            if job.required_states is not None:
+                if current_market_state not in job.required_states:
+                    continue
+            elif job.required_state is not None and job.required_state != current_market_state:
                 continue
 
             runnable.append(job)
@@ -231,6 +240,38 @@ class DAG:
 # ============================================================================
 
 
+@dataclass(frozen=True)
+class MarketDagProfile:
+    """Per-market DAG composition knobs.
+
+    ``include_options`` — the derivatives pipeline (SPY/VIX based) is a
+    US-only concept; other markets skip straight from execution to
+    finalize.
+
+    ``include_account_global`` — reconcile_fills / snapshot_positions /
+    geo_exposure_scan operate on the ONE IBKR account, not on a market.
+    Running them in every market's DAG is redundant (and, concurrently,
+    would fight over the fixed IBKR client ids), so they live only in the
+    home-market (US_EQ) DAG. Fill telemetry for Asia/Europe sessions is
+    captured by the US-window reconcile via its 48h lookback.
+    """
+
+    include_options: bool = True
+    include_account_global: bool = True
+
+
+MARKET_DAG_PROFILES: dict[str, MarketDagProfile] = {
+    "US_EQ": MarketDagProfile(),
+}
+
+# Non-US markets: pure regional equity pipeline (ingest → features →
+# signals → universes → books → execution → finalize).
+DEFAULT_MARKET_DAG_PROFILE = MarketDagProfile(
+    include_options=False,
+    include_account_global=False,
+)
+
+
 def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     """Build a standard daily DAG for a market.
 
@@ -258,6 +299,7 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     """
     dag_id = f"{market_id.lower()}_daily_{as_of_date.isoformat()}"
     date_str = as_of_date.isoformat()
+    profile = MARKET_DAG_PROFILES.get(market_id, DEFAULT_MARKET_DAG_PROFILE)
 
     # Job ID helper
     def job_id(job_type: str) -> str:
@@ -288,6 +330,52 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         dependencies=(),
         priority=JobPriority.STANDARD,
     )
+
+    # ========================================================================
+    # Phase 1b: Fill reconciliation (two passes)
+    #
+    # IBKR's reqExecutions only reports executions from the CURRENT gateway
+    # day — the overnight IBC restart clears it.  Orders are submitted
+    # POST_CLOSE and fill at the NEXT session's open, so a morning-only
+    # reconcile can never see those fills: at 08:30 ET the session hasn't
+    # happened, and by the next morning the executions are gone.  (That
+    # exact gap silently cancelled every order 2026-07-13 → 2026-08-01.)
+    #
+    # reconcile_fills      — PRE_OPEN/SESSION, capture-ONLY (never expires
+    #                        orders); catches intraday-restart stragglers.
+    # reconcile_fills_eod  — POST_CLOSE, runs BEFORE run_execution: captures
+    #                        today's executions while still visible, updates
+    #                        order statuses, and is the only pass allowed to
+    #                        expire stale orders.  run_execution depends on
+    #                        it so order state is current before planning;
+    #                        SKIPPED (retries exhausted) still unblocks.
+    # Real markets only (IRIS/INTEL DAGs are built elsewhere).
+    # ========================================================================
+
+    if profile.include_account_global:
+        jobs[job_id("reconcile_fills")] = JobMetadata(
+            job_id=job_id("reconcile_fills"),
+            job_type="reconcile_fills",
+            market_id=market_id,
+            required_states=(MarketState.PRE_OPEN, MarketState.SESSION),
+            dependencies=(),
+            priority=JobPriority.OPTIONAL,
+            max_retries=3,
+            retry_delay_seconds=300,
+            timeout_seconds=300,
+        )
+
+        jobs[job_id("reconcile_fills_eod")] = JobMetadata(
+            job_id=job_id("reconcile_fills_eod"),
+            job_type="reconcile_fills_eod",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(),
+            priority=JobPriority.STANDARD,
+            max_retries=3,
+            retry_delay_seconds=120,
+            timeout_seconds=300,
+        )
 
     # ========================================================================
     # Phase 2: Feature Computation (depends on ingestion)
@@ -373,12 +461,18 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     # Phase 5: Execution (depends on books, POST_CLOSE required)
     # ========================================================================
 
+    execution_deps = (job_id("run_books"),)
+    if profile.include_account_global:
+        # Same-day fill capture + order-state refresh must precede planning:
+        # the planner's open-order dedup and position math read orders/fills.
+        execution_deps = (job_id("run_books"), job_id("reconcile_fills_eod"))
+
     jobs[job_id("run_execution")] = JobMetadata(
         job_id=job_id("run_execution"),
         job_type="run_execution",
         market_id=market_id,
         required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("run_books"),),
+        dependencies=execution_deps,
         run_phase=RunPhase.EXECUTION_DONE,
         priority=JobPriority.CRITICAL,
         timeout_seconds=600,  # 10 minutes for order execution
@@ -388,55 +482,104 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
     # Phase 6: Options (depends on execution, POST_CLOSE required)
     # ========================================================================
 
-    jobs[job_id("run_options")] = JobMetadata(
-        job_id=job_id("run_options"),
-        job_type="run_options",
-        market_id=market_id,
-        required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("run_execution"),),
-        run_phase=RunPhase.OPTIONS_DONE,
-        priority=JobPriority.CRITICAL,
-        timeout_seconds=600,  # 10 minutes for options evaluation + execution
-    )
+    finalize_dep = job_id("run_execution")
+
+    if profile.include_options:
+        jobs[job_id("run_options")] = JobMetadata(
+            job_id=job_id("run_options"),
+            job_type="run_options",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(job_id("run_execution"),),
+            run_phase=RunPhase.OPTIONS_DONE,
+            priority=JobPriority.CRITICAL,
+            timeout_seconds=600,  # 10 minutes for options evaluation + execution
+        )
+        finalize_dep = job_id("run_options")
 
     # ========================================================================
     # Phase 6b: Snapshot positions — daily IBKR position snapshot for the
     # equity curve chart. Runs after options, before finalize. Non-blocking:
     # if IBKR is down, snapshot fails silently and finalize still runs.
+    # Account-global: only in the home-market (US_EQ) DAG.
     # ========================================================================
 
-    jobs[job_id("snapshot_positions")] = JobMetadata(
-        job_id=job_id("snapshot_positions"),
-        job_type="snapshot_positions",
-        market_id=market_id,
-        required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("run_options"),),
-        run_phase=RunPhase.OPTIONS_DONE,
-        priority=JobPriority.LOW,
-        timeout_seconds=120,
-        max_retries=1,
-        retry_delay_seconds=60,
-    )
+    if profile.include_account_global:
+        jobs[job_id("snapshot_positions")] = JobMetadata(
+            job_id=job_id("snapshot_positions"),
+            job_type="snapshot_positions",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(finalize_dep,),
+            run_phase=RunPhase.OPTIONS_DONE,
+            priority=JobPriority.LOW,
+            timeout_seconds=120,
+            max_retries=1,
+            retry_delay_seconds=60,
+        )
 
-    # ========================================================================
-    # Phase 6c: Geo-exposure scan — calls Apatheon's analyze_exposure on the
-    # freshly snapshotted IBKR holdings to compute conflict / chokepoint /
-    # sovereign / sector risk for the live portfolio. Runs after the
-    # position snapshot so it scores today's actual book.
-    # ========================================================================
+        # ====================================================================
+        # Phase 6b2: Execution-telemetry invariants — pure-DB cross-check of
+        # positions_snapshots vs fills vs orders vs equity history, pushing
+        # violations to the notifications inbox.  Exists because the
+        # 2026-07 fill blindness ran three weeks undetected.  Dangles off
+        # the snapshot with no dependents; needs no IBKR connection.
+        # ====================================================================
 
-    jobs[job_id("geo_exposure_scan")] = JobMetadata(
-        job_id=job_id("geo_exposure_scan"),
-        job_type="geo_exposure_scan",
-        market_id=market_id,
-        required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("snapshot_positions"),),
-        run_phase=RunPhase.OPTIONS_DONE,
-        priority=JobPriority.OPTIONAL,
-        timeout_seconds=300,
-        max_retries=1,
-        retry_delay_seconds=60,
-    )
+        jobs[job_id("invariants_check")] = JobMetadata(
+            job_id=job_id("invariants_check"),
+            job_type="invariants_check",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(job_id("snapshot_positions"),),
+            run_phase=RunPhase.OPTIONS_DONE,
+            priority=JobPriority.OPTIONAL,
+            timeout_seconds=120,
+            max_retries=1,
+            retry_delay_seconds=60,
+        )
+
+        # ====================================================================
+        # Phase 6c: Geo-exposure scan — calls Apatheon's analyze_exposure on
+        # the freshly snapshotted IBKR holdings to compute conflict /
+        # chokepoint / sovereign / sector risk for the live portfolio. Runs
+        # after the position snapshot so it scores today's actual book.
+        # ====================================================================
+
+        jobs[job_id("geo_exposure_scan")] = JobMetadata(
+            job_id=job_id("geo_exposure_scan"),
+            job_type="geo_exposure_scan",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(job_id("snapshot_positions"),),
+            run_phase=RunPhase.OPTIONS_DONE,
+            priority=JobPriority.OPTIONAL,
+            timeout_seconds=300,
+            max_retries=1,
+            retry_delay_seconds=60,
+        )
+        finalize_dep = job_id("geo_exposure_scan")
+
+        # ====================================================================
+        # Phase 6d: FX settlement sweep — zeroes negative non-USD cash
+        # balances left by non-US books' buys ("convert once, fixed local
+        # pots" policy — see prometheus/execution/fx_sweep.py). Account-
+        # global; dangles off the snapshot with no dependents so it can
+        # never block finalize. No-op while only USD balances exist.
+        # ====================================================================
+
+        jobs[job_id("fx_sweep")] = JobMetadata(
+            job_id=job_id("fx_sweep"),
+            job_type="fx_sweep",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(job_id("snapshot_positions"),),
+            run_phase=RunPhase.OPTIONS_DONE,
+            priority=JobPriority.OPTIONAL,
+            timeout_seconds=180,
+            max_retries=1,
+            retry_delay_seconds=120,
+        )
 
     # ========================================================================
     # Phase 7: Finalize — marks run COMPLETED regardless of whether options
@@ -448,7 +591,7 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         job_type="finalize",
         market_id=market_id,
         required_state=MarketState.POST_CLOSE,
-        dependencies=(job_id("geo_exposure_scan"),),
+        dependencies=(finalize_dep,),
         run_phase=RunPhase.COMPLETED,
         priority=JobPriority.CRITICAL,
         timeout_seconds=60,
@@ -713,7 +856,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
 # 1. Outcome evaluation — must run first; evaluates all pending decisions
     jobs[f"iris_outcome_eval_{date_str}"] = JobMetadata(
         job_id=f"iris_outcome_eval_{date_str}",
-        job_type=f"iris_outcome_eval",
+        job_type="iris_outcome_eval",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -727,7 +870,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     #    63d horizon processes 250K+ evaluations and needs >10 min; no timeout.
     jobs[f"iris_scorecard_{date_str}"] = JobMetadata(
         job_id=f"iris_scorecard_{date_str}",
-        job_type=f"iris_scorecard",
+        job_type="iris_scorecard",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),
@@ -740,7 +883,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 3. Lambda scorecard — evaluates lambda_hat directional accuracy
     jobs[f"iris_lambda_sc_{date_str}"] = JobMetadata(
         job_id=f"iris_lambda_sc_{date_str}",
-        job_type=f"iris_lambda_scorecard",
+        job_type="iris_lambda_scorecard",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),
@@ -753,7 +896,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 4. Diagnostics — analyzes backtest performance (non-fatal if no data)
     jobs[f"iris_diagnostics_{date_str}"] = JobMetadata(
         job_id=f"iris_diagnostics_{date_str}",
-        job_type=f"iris_diagnostics",
+        job_type="iris_diagnostics",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -766,7 +909,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 5. Proposals — generates config-improvement proposals from diagnostics
     jobs[f"iris_proposals_{date_str}"] = JobMetadata(
         job_id=f"iris_proposals_{date_str}",
-        job_type=f"iris_proposals",
+        job_type="iris_proposals",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_diagnostics_{date_str}",),
@@ -779,7 +922,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 7. Live performance — rolling Sharpe/drawdown from live outcomes
     jobs[f"iris_live_perf_{date_str}"] = JobMetadata(
         job_id=f"iris_live_perf_{date_str}",
-        job_type=f"iris_live_perf",
+        job_type="iris_live_perf",
         market_id=None,
         required_state=None,
         dependencies=(),
@@ -792,7 +935,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 8. Regime-conditioned evaluation — depends on outcome_eval for fresh data
     jobs[f"iris_regime_eval_{date_str}"] = JobMetadata(
         job_id=f"iris_regime_eval_{date_str}",
-        job_type=f"iris_regime_eval",
+        job_type="iris_regime_eval",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),
@@ -805,7 +948,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 9. Fragility signal check — depends on outcome_eval
     jobs[f"iris_fragility_check_{date_str}"] = JobMetadata(
         job_id=f"iris_fragility_check_{date_str}",
-        job_type=f"iris_fragility_check",
+        job_type="iris_fragility_check",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),
@@ -818,7 +961,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 10. Hedge effectiveness — depends on outcome_eval
     jobs[f"iris_hedge_eval_{date_str}"] = JobMetadata(
         job_id=f"iris_hedge_eval_{date_str}",
-        job_type=f"iris_hedge_eval",
+        job_type="iris_hedge_eval",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),
@@ -831,7 +974,7 @@ def build_iris_dag(as_of_date: date) -> DAG:
     # 6. Log-health LLM report — runs after outcome eval for fresh data
     jobs[f"iris_log_report_{date_str}"] = JobMetadata(
         job_id=f"iris_log_report_{date_str}",
-        job_type=f"iris_log_report",
+        job_type="iris_log_report",
         market_id=None,
         required_state=None,
         dependencies=(f"iris_outcome_eval_{date_str}",),

@@ -94,6 +94,7 @@ def record_orders(
             decision_id,
             metadata
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (order_id) DO NOTHING
     """
 
     mode_up = str(mode).upper()

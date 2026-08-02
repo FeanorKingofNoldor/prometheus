@@ -221,8 +221,8 @@ def test_reproduces_covered_call_share_based_formula():
     assert r.capacity_bound is True
 
 
-def test_reproduces_wheel_concurrent_cap():
-    # WheelStrategy: max_concurrent = 3, currently 2 open.
+def test_reproduces_concurrent_cap():
+    # Concurrent-position cap: max_concurrent = 3, currently 2 open.
     nav = 200_000.0
     budget = nav * 0.04
     premium_per_csp = 300.0

@@ -58,7 +58,6 @@ OPTIONS_DEFAULTS = {
     "derivatives_budget_pct": 0.15,
     "iron_butterfly_max_vix": 18.0,
     "iron_condor_max_vix": 20.0,
-    "momentum_call_min_momentum": 0.02,
     "vix_tail_nav_pct": 0.03,
 }
 
@@ -86,7 +85,6 @@ OPTIONS_GRID = {
     "derivatives_budget_pct": [0.05, 0.10, 0.15, 0.20, 0.25, 0.30],
     "iron_butterfly_max_vix": [14, 16, 18, 20, 22, 25],
     "iron_condor_max_vix": [16, 18, 20, 22, 25, 30],
-    "momentum_call_min_momentum": [0.00, 0.01, 0.02, 0.03, 0.05],
     "vix_tail_nav_pct": [0.005, 0.01, 0.02, 0.03, 0.04, 0.05],
 }
 
@@ -389,8 +387,6 @@ def _build_strategy_overrides(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         overrides.setdefault("IronButterflyConfig", {})["max_vix"] = cfg["iron_butterfly_max_vix"]
     if "iron_condor_max_vix" in cfg:
         overrides.setdefault("IronCondorConfig", {})["max_vix"] = cfg["iron_condor_max_vix"]
-    if "momentum_call_min_momentum" in cfg:
-        overrides.setdefault("MomentumCallConfig", {})["min_momentum_63d"] = cfg["momentum_call_min_momentum"]
 
     # Global nav_pct scaling — multiply each strategy's base nav_pct
     if scale != 1.0:
@@ -398,9 +394,6 @@ def _build_strategy_overrides(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             ("VixTailHedgeConfig", "nav_pct", 0.03),
             ("IronButterflyConfig", "nav_pct", 0.03),
             ("IronCondorConfig", "nav_pct", 0.04),
-            ("BullCallSpreadConfig", "max_risk_per_trade_pct", 0.03),
-            ("WheelConfig", "max_nav_pct_per_position", 0.06),
-            ("MomentumCallConfig", "nav_pct", 0.03),
         ]
         for cls_name, attr, base_val in nav_pct_map:
             d = overrides.setdefault(cls_name, {})

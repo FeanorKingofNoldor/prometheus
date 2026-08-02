@@ -154,6 +154,11 @@ def run_sleeve(
     remaining_headroom = greeks_headroom
     checker: MarginChecker = margin_checker or NullMarginChecker()
 
+    # Ensure signals carry the evaluation date so trigger-side IV-event
+    # guards (Phase 5.2) anchor to it, not to wall-clock today.
+    if today is not None and isinstance(signals, dict) and "as_of_date" not in signals:
+        signals = {**signals, "as_of_date": today}
+
     for tmpl in sleeve_cfg.templates:
         outcomes, remaining_headroom = _evaluate_template(
             tmpl,

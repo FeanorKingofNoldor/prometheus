@@ -70,6 +70,9 @@ class _FakeConnection:
     def cursor(self) -> _FakeCursor:
         return _FakeCursor(self._db)
 
+    def commit(self) -> None:
+        return None
+
     def __enter__(self) -> "_FakeConnection":
         return self
 
@@ -300,6 +303,65 @@ def test_run_shadow_pass_uses_default_sleeves_when_unspecified():
     )
     sleeves_seen = {r.sleeve for r in results}
     assert sleeves_seen == set(sleeves.default_sleeves().keys())
+
+
+def test_commodity_sleeve_walked_by_shadow_pass():
+    """The COMMODITY sleeve must be enumerated by the shadow pass and
+    produce per-template rows (skips when no intel) — not be silently
+    omitted from the fixed sleeve list."""
+    db = _FakeDb()
+    results, _ = shadow.run_shadow_pass(
+        db_manager=db, run_id="r-comm", as_of_date=date(2026, 5, 24),
+        nav=200_000.0, signals={},  # no intel → COMMODITY templates skip
+        open_contracts_by_template={},
+        underlying_price_fn=lambda _u: 75.0,
+        discovery=_StubDiscovery({}),
+        iv_lookup=iv_lookup.IvLookupService(ib=None),
+        liquidity=liquidity_filter.LiquidityFilter(ib=None),
+    )
+    comm = [r for r in results if r.sleeve is sleeves.Sleeve.COMMODITY]
+    assert comm, "COMMODITY sleeve missing from shadow pass results"
+    comm_result = comm[0]
+    # All four templates evaluated → one skip row each (no intel signals).
+    comm_cfg = sleeves.default_sleeves()[sleeves.Sleeve.COMMODITY]
+    assert comm_result.skipped == len(comm_cfg.templates) == 4
+    skipped_names = {s.template_name for s in comm_result.skips}
+    assert skipped_names == {t.name for t in comm_cfg.templates}
+    # And the COMMODITY skip rows were persisted to the shadow table.
+    comm_rows = [
+        row for row in db.rows
+        if row["sleeve"] == sleeves.Sleeve.COMMODITY.value
+    ]
+    assert len(comm_rows) == 4
+
+
+def test_commodity_templates_in_leg_count_and_open_contracts_maps():
+    """Re-fire bug fix: every COMMODITY template must be in the
+    leg-count map (single-leg → 1) and recognised by the
+    open-contracts lookup even though it has no legacy strategy."""
+    from prometheus.scripts.run.run_derivatives_daily import (
+        _LEGACY_STRATEGY_TO_TEMPLATE,
+        _TEMPLATE_LEG_COUNT,
+        _open_contracts_by_template,
+    )
+
+    comm_cfg = sleeves.default_sleeves()[sleeves.Sleeve.COMMODITY]
+    comm_names = [t.name for t in comm_cfg.templates]
+
+    # (1) all present in the leg-count map, each single-leg.
+    for name in comm_names:
+        assert _TEMPLATE_LEG_COUNT.get(name) == 1, name
+
+    # (2) COMMODITY has no legacy-strategy correspondence (shadow-only).
+    assert not (set(comm_names) & set(_LEGACY_STRATEGY_TO_TEMPLATE.values()))
+
+    # (3) a position tagged with the template name itself registers as
+    #     "already open" so the template won't re-fire daily.
+    target = comm_names[0]
+    open_counts = _open_contracts_by_template(
+        [{"strategy": target}, {"strategy": target}],
+    )
+    assert open_counts.get(target) == 2
 
 
 # Suppress lint warnings for imports used only via fixture data

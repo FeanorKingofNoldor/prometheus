@@ -45,18 +45,12 @@ class LifecycleConfig:
     """Configuration for position lifecycle management."""
     # Roll thresholds
     default_roll_dte: int = 14           # Default: roll at 14 DTE
-    leaps_roll_dte: int = 90             # LEAPS: roll at 90 DTE
 
-    # Profit targets (by strategy category)
+    # Default profit target / stop loss — applied to any strategy not
+    # explicitly listed in STRATEGY_PROFIT_TARGETS / STRATEGY_STOP_LOSSES.
+    # Per-strategy entries in those tables override these defaults.
     default_profit_target: float = 0.50  # Close at 50% profit
-    directional_profit_target: float = 0.60
-    income_profit_target: float = 0.50
-    vol_profit_target: float = 1.00       # Vol plays: 100% profit (double)
-
-    # Stop losses
     default_stop_loss: float = 1.00       # Close at 100% loss (debit paid)
-    income_stop_loss: float = 2.00        # Income: close at 2x credit
-    vol_stop_loss: float = 0.50           # Vol: close at 50% loss
 
     # Assignment risk
     assignment_risk_dte: int = 7          # Check ITM risk within 7 DTE
@@ -74,17 +68,14 @@ STRATEGY_PROFIT_TARGETS: Dict[str, float] = {
     "covered_call": 0.80,
     "sector_put_spread": 0.0,
     "vix_tail_hedge": 0.0,
-    "short_put": 0.50,
-    "futures_overlay": 0.0,
-    "futures_option": 0.0,
-    "bull_call_spread": 0.60,
-    "leaps": 0.0,                 # Hold LEAPS, don't profit-take
     "iron_condor": 0.50,
     "iron_butterfly": 0.50,  # matches IronButterflyConfig.profit_target (v36)
-    "collar": 0.0,                # Don't profit-take hedges
-    "calendar_spread": 0.50,
-    "straddle_strangle": 1.00,
-    "wheel": 0.50,
+    "crisis_alpha": 2.50,         # matches CrisisAlphaStrategyConfig.profit_target — multi-bagger by design
+    # COMMODITY sleeve templates — match TemplateConfig.profit_target_pct
+    "commodity.crude_chokepoint_call": 1.50,
+    "commodity.natgas_supply_call": 1.50,
+    "commodity.gold_sanctions_call": 2.00,
+    "commodity.wheat_blacksea_call": 1.50,
 }
 
 # Stop losses per strategy (0.0 = no stop loss)
@@ -93,17 +84,14 @@ STRATEGY_STOP_LOSSES: Dict[str, float] = {
     "covered_call": 0.0,
     "sector_put_spread": 0.0,
     "vix_tail_hedge": 0.0,
-    "short_put": 2.00,
-    "futures_overlay": 0.0,
-    "futures_option": 0.0,
-    "bull_call_spread": 1.00,
-    "leaps": 0.50,
     "iron_condor": 2.00,
     "iron_butterfly": 2.00,
-    "collar": 0.0,
-    "calendar_spread": 0.50,
-    "straddle_strangle": 0.50,
-    "wheel": 2.00,
+    "crisis_alpha": 1.00,         # full debit on the put — let it run via min_hold_days
+    # COMMODITY sleeve templates — match TemplateConfig.stop_loss_multiplier
+    "commodity.crude_chokepoint_call": 1.00,
+    "commodity.natgas_supply_call": 1.00,
+    "commodity.gold_sanctions_call": 1.00,
+    "commodity.wheat_blacksea_call": 1.00,
 }
 
 # Roll DTE per strategy
@@ -112,17 +100,35 @@ STRATEGY_ROLL_DTE: Dict[str, int] = {
     "covered_call": 14,
     "sector_put_spread": 14,
     "vix_tail_hedge": 14,
-    "short_put": 14,
-    "futures_overlay": 0,   # Futures rolling handled by FuturesManager
-    "futures_option": 14,
-    "bull_call_spread": 0,  # Close, don't roll
-    "leaps": 90,
     "iron_condor": 14,
     "iron_butterfly": 14,
-    "collar": 14,
-    "calendar_spread": 7,
-    "straddle_strangle": 7,
-    "wheel": 14,
+    "crisis_alpha": 0,      # Close, don't roll — driven by signal + cooldown_days
+    # COMMODITY sleeve templates — TemplateConfig.close_at_dte semantics.
+    # legacy lifecycle emits ROLL at this DTE; for FOP we want a CLOSE at
+    # the same DTE. Phase 4.5 work: extend lifecycle to consult sleeve
+    # close_at_dte for sleeve-tagged positions. For now, roll-at-DTE is
+    # a no-op for FOPs the broker can't roll anyway, so positions just
+    # ride until expiry. Acceptable for v1.
+    "commodity.crude_chokepoint_call": 14,
+    "commodity.natgas_supply_call": 14,
+    "commodity.gold_sanctions_call": 21,
+    "commodity.wheat_blacksea_call": 14,
+}
+
+
+# Trailing-stop give-back fraction per strategy (0.0 / missing = no
+# trailing stop). When current unrealized gain has retraced more than
+# this fraction of the peak gain seen so far, emit CLOSE.
+STRATEGY_TRAILING_STOPS: Dict[str, float] = {
+    # CONVEX sleeve — let winners run but stop the give-back
+    "convex.thematic_sector_put": 0.30,
+    "convex.vix_escalation_call": 0.30,
+    "convex.convergence_straddle": 0.30,
+    # COMMODITY sleeve — same intent on the directional commodity bets
+    "commodity.crude_chokepoint_call": 0.30,
+    "commodity.natgas_supply_call": 0.30,
+    "commodity.gold_sanctions_call": 0.30,
+    "commodity.wheat_blacksea_call": 0.30,
 }
 
 
@@ -139,6 +145,12 @@ class PositionLifecycleManager:
 
     def __init__(self, config: Optional[LifecycleConfig] = None) -> None:
         self._config = config or LifecycleConfig()
+        # Per-position peak unrealized PnL%, keyed by stable position
+        # tuple. In-memory only — resets on daemon restart. Re-seeds
+        # conservatively from current PnL% on first observation after
+        # restart (peak may understate true historical max, which means
+        # trailing fires slightly later, never earlier).
+        self._peak_gains: Dict[tuple, float] = {}
 
     def evaluate(
         self,
@@ -165,6 +177,7 @@ class PositionLifecycleManager:
         directives.extend(self.check_rolls(positions, as_of))
         directives.extend(self.check_profit_targets(positions))
         directives.extend(self.check_stop_losses(positions))
+        directives.extend(self.check_trailing_stops(positions))
         directives.extend(self.check_assignment_risk(positions, signals, as_of))
         directives.extend(self.check_gamma_risk(positions, as_of))
         directives.extend(self.check_barrier_stops(positions, signals))
@@ -190,6 +203,10 @@ class PositionLifecycleManager:
         directives: List[OptionTradeDirective] = []
         today = as_of or date.today()
 
+        from prometheus.execution.futures_option_specs import (
+            is_commodity_fop_symbol,
+        )
+
         for pos in positions:
             strategy = pos.get("strategy", "")
             roll_dte = STRATEGY_ROLL_DTE.get(strategy, self._config.default_roll_dte)
@@ -200,17 +217,28 @@ class PositionLifecycleManager:
             if dte > roll_dte:
                 continue
 
+            # Commodity FOPs aren't rolled by our broker — emit CLOSE
+            # instead so the position exits at the template's close_at_dte.
+            # Detected via strategy name prefix OR symbol being a
+            # registered commodity FOP underlying.
+            is_fop = (
+                strategy.startswith("commodity.")
+                or is_commodity_fop_symbol(pos.get("symbol", ""))
+            )
+            action = TradeAction.CLOSE if is_fop else TradeAction.ROLL
+            verb = "close" if is_fop else "roll"
+
             directives.append(OptionTradeDirective(
                 strategy=strategy,
-                action=TradeAction.ROLL,
+                action=action,
                 symbol=pos["symbol"],
                 right=pos.get("right", ""),
                 expiry=pos.get("expiry", ""),
                 strike=pos.get("strike", 0.0),
                 quantity=-pos.get("quantity", 0),
-                reason=f"Lifecycle roll: {pos['symbol']} {dte} DTE "
+                reason=f"Lifecycle {verb}: {pos['symbol']} {dte} DTE "
                        f"(threshold={roll_dte})",
-                metadata={"lifecycle": "roll", "dte": dte},
+                metadata={"lifecycle": verb, "dte": dte},
             ))
 
         return directives
@@ -309,6 +337,92 @@ class PositionLifecycleManager:
 
         return directives
 
+    # ── Trailing stop check ─────────────────────────────────────────
+
+    @staticmethod
+    def _position_key(pos: Dict[str, Any]) -> tuple:
+        """Stable identity for peak tracking. Strategy + contract.
+
+        Includes a sign-of-quantity tag so a long and short on the same
+        contract get separate peaks (rare but possible during rolls).
+        """
+        qty = pos.get("quantity", 0) or 0
+        return (
+            pos.get("strategy", ""),
+            pos.get("symbol", ""),
+            pos.get("expiry", ""),
+            pos.get("strike", 0.0),
+            pos.get("right", ""),
+            1 if qty > 0 else -1,
+        )
+
+    def check_trailing_stops(
+        self,
+        positions: List[Dict[str, Any]],
+    ) -> List[OptionTradeDirective]:
+        """Close positions that gave back too much of their peak gain.
+
+        Tracks peak unrealized PnL% per position in an instance-scoped
+        dict. A position with no entry in ``STRATEGY_TRAILING_STOPS`` is
+        skipped — the existing profit_target / stop_loss machinery owns
+        those exits.
+        """
+        directives: List[OptionTradeDirective] = []
+
+        for pos in positions:
+            strategy = pos.get("strategy", "")
+            trailing_pct = STRATEGY_TRAILING_STOPS.get(strategy, 0.0)
+            if trailing_pct <= 0:
+                continue
+
+            entry_price = pos.get("entry_price", 0) or 0
+            current_price = pos.get("current_price", entry_price) or entry_price
+            qty = pos.get("quantity", 0) or 0
+            if entry_price <= 0 or current_price <= 0 or qty == 0:
+                continue
+
+            if qty > 0:
+                pnl_pct = (current_price - entry_price) / entry_price
+            else:
+                pnl_pct = (entry_price - current_price) / entry_price
+
+            key = self._position_key(pos)
+            peak = self._peak_gains.get(key, pnl_pct)
+            if pnl_pct > peak:
+                peak = pnl_pct
+            self._peak_gains[key] = peak
+
+            # Only fire when we had a real gain to trail and have now
+            # given back more than trailing_pct of that peak.
+            if peak <= 0:
+                continue
+            give_back_threshold = peak * (1.0 - trailing_pct)
+            if pnl_pct >= give_back_threshold:
+                continue
+
+            directives.append(OptionTradeDirective(
+                strategy=strategy,
+                action=TradeAction.CLOSE,
+                symbol=pos["symbol"],
+                right=pos.get("right", ""),
+                expiry=pos.get("expiry", ""),
+                strike=pos.get("strike", 0.0),
+                quantity=-qty,
+                reason=(
+                    f"Lifecycle trailing stop: {pos['symbol']} "
+                    f"peak={peak:.0%} current={pnl_pct:.0%} "
+                    f"(give back ≥ {trailing_pct:.0%})"
+                ),
+                metadata={
+                    "lifecycle": "trailing_stop",
+                    "peak_pnl_pct": peak,
+                    "current_pnl_pct": pnl_pct,
+                    "trailing_pct": trailing_pct,
+                },
+            ))
+
+        return directives
+
     # ── Assignment risk check ────────────────────────────────────────
 
     def check_assignment_risk(
@@ -394,9 +508,6 @@ class PositionLifecycleManager:
                 continue
 
             strategy = pos.get("strategy", "")
-            # Skip strategies that already handle their own near-expiry logic
-            if strategy in ("futures_overlay", "futures_option"):
-                continue
 
             directives.append(OptionTradeDirective(
                 strategy=strategy,
@@ -568,4 +679,5 @@ __all__ = [
     "STRATEGY_PROFIT_TARGETS",
     "STRATEGY_STOP_LOSSES",
     "STRATEGY_ROLL_DTE",
+    "STRATEGY_TRAILING_STOPS",
 ]

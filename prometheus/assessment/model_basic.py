@@ -27,6 +27,7 @@ from apatheon.stability.storage import StabilityStorage
 from apatheon.stability.types import SoftTargetState
 
 from prometheus.assessment.api import AssessmentModel, InstrumentScore
+from prometheus.pricing_utils import adjusted_close_series as _adjusted_close_series
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,8 @@ logger = get_logger(__name__)
 _WARNING_LIMIT_PER_RUN = 50
 _WARNING_MAX_KEYS = 500  # Bound dict size to prevent memory leak in long-running daemons
 _warning_counts: Dict[str, int] = {}
+
+
 _warning_lock = threading.Lock()
 
 
@@ -83,6 +86,27 @@ class BasicAssessmentModel(AssessmentModel):
     # 6-month moves are larger than 1-month; 20% (~1 std of annual return)
     # gives a well-distributed signal across the universe.
     momentum_ref: float = 0.20  # 20% move over 6-month window
+
+    # Most-recent trading days EXCLUDED from the momentum lookback (the
+    # "skip-month" of the 12-1/6-1 momentum convention). The last month of
+    # returns exhibits short-term reversal, so measuring momentum up to
+    # t-21 instead of t improves IC. Realised vol still uses the full
+    # window (it is a risk estimate, not a signal). Set to 0 to disable.
+    momentum_skip_days: int = 21
+
+    # Signal-label thresholds for the standardized (cross-sectional
+    # z-score) path, in z units. The legacy buy/sell thresholds below are
+    # on the raw-return scale and only apply to the single-instrument
+    # fallback path.
+    z_buy_threshold: float = 0.5
+    z_strong_buy_threshold: float = 1.5
+
+    # Rough calibration for expected_return on the standardized path:
+    # forward return attributed per 1 sigma of cross-sectional momentum
+    # tilt, per 21 trading days of horizon. Placeholder until live
+    # scorecard data provides an empirical spread; consumers should treat
+    # expected_return as indicative, `score` as the ranking signal.
+    expected_return_per_sigma: float = 0.025
 
     # Strength of the fragility penalty applied to raw momentum. Higher
     # values produce more conservative scores in the presence of high
@@ -158,10 +182,15 @@ class BasicAssessmentModel(AssessmentModel):
                 )
 
             df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
-            closes = df_sorted["close"].astype(float).to_numpy()
+            closes = _adjusted_close_series(df_sorted)
 
+        # Momentum over the window EXCLUDING the most recent
+        # ``momentum_skip_days`` (short-term reversal region). Falls back
+        # to the full window when history is too short for the skip.
+        skip = max(0, int(self.momentum_skip_days))
+        end_idx = -1 - skip if skip and len(closes) > skip + 1 else -1
         if closes[0] > 0.0:
-            momentum = float((closes[-1] - closes[0]) / closes[0])
+            momentum = float((closes[end_idx] - closes[0]) / closes[0])
         else:
             momentum = 0.0
 
@@ -170,6 +199,21 @@ class BasicAssessmentModel(AssessmentModel):
         realised_vol = float(np.std(log_rets[1:], ddof=1)) if log_rets.shape[0] > 1 else 0.0
 
         return momentum, realised_vol
+
+    @staticmethod
+    def _vol_scaled_momentum(momentum: float, realised_vol: float) -> float:
+        """Vol-scale the lookback return by its realised vol over the window.
+
+        Dividing the raw momentum by realised vol converts a return into a
+        per-unit-risk number (a Sharpe-like quantity). Without this, raw
+        momentum is dominated by high-vol names and the signal is effectively a
+        volatility bet (the harness showed strong NEGATIVE vol-IC for the raw
+        version). When realised vol is unavailable/zero we fall back to the raw
+        momentum so the signal degrades gracefully rather than blowing up.
+        """
+        if realised_vol is not None and realised_vol > 1e-9:
+            return float(momentum / realised_vol)
+        return float(momentum)
 
     def _lookup_stab_state(self, instrument_id: str, as_of_date: date) -> SoftTargetState | None:
         if self.stability_storage is None:
@@ -257,23 +301,44 @@ class BasicAssessmentModel(AssessmentModel):
         market_id: str,
         as_of_date: date,
         horizon_days: int,
+        momentum_component: float | None = None,
     ) -> InstrumentScore:
         """Compute an InstrumentScore for a single instrument.
 
         This method is resilient to data gaps: if price history is
         insufficient, it returns a neutral HOLD score with zero
         confidence and an ``insufficient_history`` flag in metadata.
+
+        ``momentum_component`` is the cross-sectionally standardized,
+        vol-scaled momentum z-score for this instrument on ``as_of_date``,
+        precomputed by :meth:`score_instruments` so every name is z-scored
+        against the same as-of cross-section. When None (single-instrument
+        scoring without a cross-section), the method falls back to the raw
+        vol-scaled momentum for this instrument alone.
         """
 
         window_days = self.momentum_window_days
 
         insufficient_history = False
+        # Reuse price features computed once in score_instruments' Pass 1 so we
+        # never re-query/recompute (and never double-count read_prices calls).
+        feature_cache = getattr(self, "_feature_cache", None)
+        have_cache_entry = feature_cache is not None and instrument_id in feature_cache
+        cached_features = feature_cache.get(instrument_id) if have_cache_entry else None
         try:
-            momentum, realised_vol = self._compute_price_features(
-                instrument_id=instrument_id,
-                as_of_date=as_of_date,
-                window_days=window_days,
-            )
+            if have_cache_entry:
+                if cached_features is None:
+                    # Pass 1 recorded insufficient history for this instrument.
+                    raise ValueError(
+                        f"Insufficient price history for {instrument_id} on {as_of_date}"
+                    )
+                momentum, realised_vol = cached_features
+            else:
+                momentum, realised_vol = self._compute_price_features(
+                    instrument_id=instrument_id,
+                    as_of_date=as_of_date,
+                    window_days=window_days,
+                )
         except ValueError as exc:
             # Throttle noisy warnings when many instruments lack sufficient
             # history for the same strategy/date. We log the first
@@ -319,17 +384,6 @@ class BasicAssessmentModel(AssessmentModel):
             if weak_profile:
                 fragility_penalty *= 1.0 + self.weak_profile_penalty_multiplier
 
-        # Cross-sectional embedding score: how far this instrument's
-        # numeric embedding is from the universe mean. High distance =
-        # outlier behavior (unusual momentum/vol/drawdown pattern).
-        # Loaded from _embedding_scores cache set by score_instruments().
-        embedding_penalty = 0.0
-        embedding_cache = getattr(self, "_embedding_scores", {})
-        cs_score = embedding_cache.get(instrument_id)
-        if cs_score is not None and cs_score.percentile_rank > 0.90:
-            # Top 10% outliers get a small penalty (max 3%)
-            embedding_penalty = (cs_score.percentile_rank - 0.90) * 0.30
-
         # Sector guidance penalty: when >25% of a sector's companies have
         # lowered guidance, apply a mild penalty to all instruments in that sector.
         # Uses _instrument_sectors cache (batch-loaded by score_instruments).
@@ -344,43 +398,80 @@ class BasicAssessmentModel(AssessmentModel):
                     # 25% lowered = 0, 50% = 0.025, 75% = 0.05
                     guidance_penalty = min(0.05, (pct_lowered - 0.25) * 0.10)
 
-        # Raw score = simple momentum; adjusted by fragility + embedding + guidance penalty.
-        raw_score = momentum
-        adjusted_score = raw_score - self.fragility_penalty_weight * fragility_penalty - embedding_penalty - guidance_penalty
+        # Momentum component: vol-scaled, then cross-sectionally standardized
+        # (z-scored within the as-of cross-section). ``momentum_component`` is
+        # passed in by score_instruments after computing the cross-section mean
+        # and std of every name's vol-scaled momentum.
+        #
+        # Two scales coexist:
+        #  - standardized (batch / production) path: momentum_component is a
+        #    z-score (~unit std). Penalties (raw-return scale, ~0.05) are mapped
+        #    onto that z-scale by dividing by momentum_ref so they stay
+        #    comparable to the standardized momentum, and the [-1,1] band uses a
+        #    2-std reference (covers ~95% of the cross-section).
+        #  - fallback (single-instrument, no cross-section) path: when no
+        #    cross-section z-score is available we keep the original raw-return
+        #    momentum and the original momentum_ref mapping, so standalone
+        #    _build_score behaviour is unchanged and penalties still bite.
+        standardized = momentum_component is not None
+        if standardized:
+            momentum_component = 0.0 if insufficient_history else float(momentum_component)
+            penalty_term = (
+                self.fragility_penalty_weight * fragility_penalty + guidance_penalty
+            ) / self.momentum_ref
+            ref = 2.0
+        else:
+            # Original behaviour: raw lookback return as the momentum component.
+            momentum_component = 0.0 if insufficient_history else float(momentum)
+            penalty_term = (
+                self.fragility_penalty_weight * fragility_penalty + guidance_penalty
+            )
+            ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
+
+        # Raw score = momentum component; adjusted by fragility + guidance.
+        raw_score = float(momentum_component)
+        adjusted_score = raw_score - penalty_term
 
         # Map adjusted_score into a roughly [-1, 1] band for ranking.
-        ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
-        normalised_score = 0.0
-        if ref > 0.0:
-            normalised_score = float(max(-1.0, min(1.0, adjusted_score / ref)))
+        normalised_score = float(max(-1.0, min(1.0, adjusted_score / ref)))
 
         # Confidence uses adjusted_score (not raw) so penalties are reflected.
-        conf_ref = self.momentum_ref if self.momentum_ref > 0.0 else 0.10
         confidence = 0.0
-        if not insufficient_history and conf_ref > 0.0:
-            confidence = float(min(1.0, max(0.0, abs(adjusted_score) / conf_ref)))
+        if not insufficient_history:
+            confidence = float(min(1.0, max(0.0, abs(adjusted_score) / ref)))
 
-        # Discrete signal label.
+        # Discrete signal label. On the standardized path adjusted_score is
+        # a z-score, so thresholds must be in z units — the legacy raw-return
+        # thresholds (0.01/0.03) would label nearly every above-median name
+        # STRONG_BUY on that scale.
         label = "HOLD"
-        if adjusted_score >= self.strong_buy_threshold:
+        if standardized:
+            buy_t, strong_t = self.z_buy_threshold, self.z_strong_buy_threshold
+        else:
+            buy_t, strong_t = self.buy_threshold, self.strong_buy_threshold
+        sell_t = buy_t if standardized else self.sell_threshold
+        strong_sell_t = strong_t if standardized else self.strong_sell_threshold
+        if adjusted_score >= strong_t:
             label = "STRONG_BUY"
-        elif adjusted_score >= self.buy_threshold:
+        elif adjusted_score >= buy_t:
             label = "BUY"
-        elif adjusted_score <= -self.strong_sell_threshold:
+        elif adjusted_score <= -strong_sell_t:
             label = "STRONG_SELL"
-        elif adjusted_score <= -self.sell_threshold:
+        elif adjusted_score <= -sell_t:
             label = "SELL"
 
         alpha_components: Dict[str, float] = {
             "momentum": float(momentum),
+            "momentum_component": float(momentum_component),
             "fragility_penalty": float(fragility_penalty),
-            "embedding_penalty": float(embedding_penalty),
             "guidance_penalty": float(guidance_penalty),
         }
 
         metadata = {
             "window_days": window_days,
             "realised_vol": realised_vol,
+            "vol_scaled_momentum": float(self._vol_scaled_momentum(momentum, realised_vol)),
+            "momentum_component": float(momentum_component),
             "strategy_id": strategy_id,
             "market_id": market_id,
             "weak_profile": weak_profile,
@@ -388,10 +479,27 @@ class BasicAssessmentModel(AssessmentModel):
         }
         if soft_class_str is not None:
             metadata["soft_target_class"] = soft_class_str
-        if embedding_penalty > 0:
-            metadata["embedding_penalty"] = float(embedding_penalty)
 
-        expected_return = float(adjusted_score)
+        # expected_return semantics: on the standardized path adjusted_score
+        # is a z-score, NOT a return — storing it verbatim poisons any
+        # consumer that treats the field as a forward-return estimate. Map z
+        # to an indicative return via the configured per-sigma spread,
+        # scaled by horizon and capped. On the raw fallback path the
+        # adjusted score already is a return-scale quantity.
+        if standardized:
+            expected_return = float(
+                np.clip(
+                    adjusted_score
+                    * self.expected_return_per_sigma
+                    * (horizon_days / 21.0),
+                    -0.20,
+                    0.20,
+                )
+            )
+            metadata["momentum_z"] = float(momentum_component)
+            metadata["expected_return_calibration"] = "z_x_per_sigma_v1"
+        else:
+            expected_return = float(adjusted_score)
 
         return InstrumentScore(
             instrument_id=instrument_id,
@@ -440,7 +548,7 @@ class BasicAssessmentModel(AssessmentModel):
         if not df_all.empty:
             for inst_id, grp in df_all.groupby("instrument_id"):
                 sorted_grp = grp.sort_values("trade_date")
-                self._price_cache[str(inst_id)] = sorted_grp["close"].astype(float).to_numpy()
+                self._price_cache[str(inst_id)] = _adjusted_close_series(sorted_grp)
 
         # ── Load instrument→sector mapping (batch) ──────────────────
         self._instrument_sectors: Dict[str, str] = {}
@@ -468,9 +576,10 @@ class BasicAssessmentModel(AssessmentModel):
                         cur.execute("""
                             SELECT sector, direction, COUNT(*) as cnt
                             FROM corporate_guidance
-                            WHERE filing_date >= %s AND direction IN ('raised', 'lowered')
+                            WHERE filing_date >= %s AND filing_date <= %s
+                              AND direction IN ('raised', 'lowered')
                             GROUP BY sector, direction
-                        """, (as_of_date - timedelta(days=90),))
+                        """, (as_of_date - timedelta(days=90), as_of_date))
                         sector_counts: Dict[str, Dict[str, int]] = {}
                         for sector, direction, cnt in cur.fetchall():
                             if sector not in sector_counts:
@@ -483,26 +592,54 @@ class BasicAssessmentModel(AssessmentModel):
             except Exception:
                 logger.debug("Failed to load sector guidance (table may not exist yet)", exc_info=True)
 
-        # ── Load cross-sectional embedding scores (if available) ────
-        self._embedding_scores: Dict[str, object] = {}
-        if self.db_manager is not None:
+        # ── Pass 1: cross-sectional standardization of vol-scaled momentum ──
+        # Compute each name's price features ONCE (cached in _feature_cache so
+        # Pass 2 / _build_score never recompute), derive its vol-scaled
+        # momentum, then z-score the whole as-of cross-section so the momentum
+        # component is a standardized tilt rather than a raw return (which is a
+        # volatility bet). Names with insufficient history are recorded as None
+        # in the feature cache, excluded from the mean/std estimate, and get a
+        # neutral 0.0 momentum component downstream.
+        self._feature_cache: Dict[str, tuple[float, float] | None] = {}
+        vol_scaled: Dict[str, float] = {}
+        for inst_id in ids_list:
             try:
-                from prometheus.pipeline.embedding_daily import compute_cross_sectional_scores
-                self._embedding_scores = compute_cross_sectional_scores(
-                    db_manager=self.db_manager,
-                    instrument_ids=ids_list,
+                mom, rvol = self._compute_price_features(
+                    instrument_id=inst_id,
                     as_of_date=as_of_date,
+                    window_days=window_days,
                 )
-                if self._embedding_scores:
-                    logger.debug(
-                        "Cross-sectional scores: %d instruments, mean_dist=%.4f",
-                        len(self._embedding_scores),
-                        sum(s.cosine_distance for s in self._embedding_scores.values()) / len(self._embedding_scores),
-                    )
-            except Exception:
-                logger.debug("Failed to load cross-sectional embedding scores", exc_info=True)
+            except ValueError:
+                self._feature_cache[inst_id] = None
+                continue
+            self._feature_cache[inst_id] = (mom, rvol)
+            vol_scaled[inst_id] = self._vol_scaled_momentum(mom, rvol)
 
-        # ── Score each instrument from cache ────────────────────────
+        momentum_z: Dict[str, float] = {}
+        if vol_scaled:
+            # Robust standardization: median/MAD instead of mean/std. A
+            # single outlier (bad print, residual split artifact, near-zero
+            # vol name blowing up the momentum/vol ratio) inflates the plain
+            # std and compresses every other name's z toward zero; the MAD
+            # is insensitive to it. 1.4826 scales MAD to std-equivalent
+            # units under normality so downstream z thresholds keep their
+            # usual interpretation.
+            vals = np.array(list(vol_scaled.values()), dtype=float)
+            center = float(np.median(vals))
+            mad = float(np.median(np.abs(vals - center)))
+            sigma = 1.4826 * mad
+            if sigma <= 1e-12:
+                # MAD degenerate (>=50% identical values): fall back to std.
+                sigma = float(np.std(vals, ddof=1)) if vals.size > 1 else 0.0
+            if sigma > 1e-12:
+                for inst_id, v in vol_scaled.items():
+                    momentum_z[inst_id] = (v - center) / sigma
+            else:
+                # Degenerate cross-section (all equal): everyone neutral.
+                for inst_id in vol_scaled:
+                    momentum_z[inst_id] = 0.0
+
+        # ── Pass 2: score each instrument from cache ────────────────
         scores: Dict[str, InstrumentScore] = {}
 
         def _score_one(inst_id: str) -> tuple[str, InstrumentScore | None]:
@@ -513,6 +650,7 @@ class BasicAssessmentModel(AssessmentModel):
                     market_id=market_id,
                     as_of_date=as_of_date,
                     horizon_days=horizon_days,
+                    momentum_component=momentum_z.get(inst_id),
                 )
                 return inst_id, score
             except Exception:  # pragma: no cover - defensive
@@ -530,8 +668,8 @@ class BasicAssessmentModel(AssessmentModel):
 
         # Clear caches after use
         self._price_cache = {}
-        self._embedding_scores = {}
         self._sector_guidance = {}
         self._instrument_sectors = {}
+        self._feature_cache = {}
 
         return scores

@@ -20,10 +20,11 @@ Usage
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from apatheon.core.logging import get_logger
 
@@ -362,6 +363,72 @@ class OptionsPortfolio:
             pos = self._positions.get(instrument_id)
             if pos is not None:
                 pos.strategy = strategy
+
+    # Option/FOP instrument_id shape used by tag keys, e.g.
+    # SPY_260918_450P.US or CL_260622_75C.FOP.
+    _TAG_IID_RE = re.compile(r"^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.(US|FOP)$")
+
+    def apply_strategy_tags(self, tags: Mapping[str, str]) -> int:
+        """Bulk-restore strategy provenance from persisted tags.
+
+        ``tags`` maps ``instrument_id → strategy`` (see
+        ``options_storage.load_strategy_tags``). Positions are matched by
+        exact instrument_id first, then by contract signature
+        (symbol, right, strike) with the expiry allowed to differ by one
+        day — VIX contracts qualify at IBKR with settlement-minus-one-day
+        expiries, so the submitted expiry and the position's expiry can be
+        off by one.
+
+        Positions that already carry a strategy are left untouched.
+        Returns the number of positions tagged.
+        """
+        if not tags:
+            return 0
+
+        # Signature index for the ±1-day expiry fallback.
+        fuzzy: Dict[Tuple[str, str, str], List[Tuple[date, str]]] = {}
+        for iid, strategy in tags.items():
+            if not strategy:
+                continue
+            m = self._TAG_IID_RE.match(iid)
+            if not m:
+                continue
+            exp_raw = m.group(2)
+            exp_full = f"20{exp_raw}" if len(exp_raw) == 6 else exp_raw
+            try:
+                exp = datetime.strptime(exp_full, "%Y%m%d").date()
+                strike_key = f"{float(m.group(3)):g}"
+            except ValueError:
+                continue
+            key = (m.group(1), m.group(4), strike_key)
+            fuzzy.setdefault(key, []).append((exp, strategy))
+
+        with self._lock:
+            entries = list(self._positions.values())
+
+        applied = 0
+        for pos in entries:
+            if pos.strategy:
+                continue
+            strategy = tags.get(pos.instrument_id, "")
+            if not strategy:
+                try:
+                    pos_exp = datetime.strptime(pos.expiry[:8], "%Y%m%d").date()
+                    strike_key = f"{pos.strike:g}"
+                except ValueError:
+                    continue
+                key = (pos.symbol, pos.right.upper(), strike_key)
+                for exp, strat in fuzzy.get(key, []):
+                    if abs((exp - pos_exp).days) <= 1:
+                        strategy = strat
+                        break
+            if strategy:
+                self.tag_strategy(pos.instrument_id, strategy)
+                applied += 1
+
+        if applied:
+            logger.info("Restored strategy tags for %d option position(s)", applied)
+        return applied
 
     # ── Queries ──────────────────────────────────────────────────────
 

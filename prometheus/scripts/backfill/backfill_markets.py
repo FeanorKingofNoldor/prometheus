@@ -31,10 +31,19 @@ class MarketSeed:
     timezone: str
 
 
+# Timezones are the exchange_tz values from
+# apatheon/core/market_state.py DEFAULT_CONFIGS — that module is the
+# single source of truth for market timezones (a unit test asserts the
+# two stay in sync). Note EU_EQ is XETRA → Europe/Berlin (the DB
+# previously said Europe/Paris; Berlin is canonical).
 _CANONICAL_MARKETS: list[MarketSeed] = [
     MarketSeed(market_id="US_EQ", name="US Equity", region="US", timezone="America/New_York"),
-    MarketSeed(market_id="EU_EQ", name="EU Equity", region="EU", timezone="Europe/London"),
-    MarketSeed(market_id="ASIA_EQ", name="ASIA Equity", region="ASIA", timezone="Asia/Tokyo"),
+    MarketSeed(market_id="UK_EQ", name="UK Equity", region="UK", timezone="Europe/London"),
+    MarketSeed(market_id="EU_EQ", name="EU Equity", region="EU", timezone="Europe/Berlin"),
+    MarketSeed(market_id="HK_EQ", name="Hong Kong Equity", region="HK", timezone="Asia/Hong_Kong"),
+    MarketSeed(market_id="KR_EQ", name="Korea Equity", region="KR", timezone="Asia/Seoul"),
+    MarketSeed(market_id="AU_EQ", name="Australia Equity", region="AU", timezone="Australia/Sydney"),
+    MarketSeed(market_id="JP_EQ", name="Japan Equity", region="JP", timezone="Asia/Tokyo"),
 ]
 
 

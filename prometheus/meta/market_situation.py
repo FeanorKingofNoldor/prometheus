@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
-
 from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 from apatheon.core.markets import infer_region_from_market_id

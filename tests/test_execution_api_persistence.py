@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import importlib
 import sys
 import types
@@ -91,13 +92,16 @@ class _FakeBroker:
         self._fills = list(fills)
         self.submitted_order_ids: list[str] = []
         self.fills_since_args: list[datetime | None] = []
+        self.cancelled_order_ids: list[str] = []
 
     def submit_order(self, order: Order) -> str:
         self.submitted_order_ids.append(order.order_id)
         return order.order_id
 
     def cancel_order(self, order_id: str) -> bool:
-        return False
+        self.cancelled_order_ids.append(order_id)
+        self._statuses[order_id] = OrderStatus.CANCELLED
+        return True
 
     def get_order_status(self, order_id: str) -> OrderStatus:
         return self._statuses.get(order_id, OrderStatus.SUBMITTED)
@@ -265,6 +269,9 @@ def test_apply_execution_plan_paper_updates_statuses_even_without_fills(monkeypa
         mode="PAPER",
         record_positions=False,
         status_poll_timeout_sec=0.0,
+        # This test is about status persistence, not cancel semantics —
+        # the dedicated overnight-policy tests below cover cancellation.
+        cancel_unfilled_on_timeout=False,
     )
 
     assert captured_statuses == {
@@ -275,3 +282,56 @@ def test_apply_execution_plan_paper_updates_statuses_even_without_fills(monkeypa
     assert record_actions_called["value"] is False
     assert summary.num_orders == 2
     assert summary.num_fills == 0
+
+
+def _run_plan_with_pending_orders(monkeypatch, *, cancel_unfilled_on_timeout: bool):
+    execution_api = _load_execution_api_module(monkeypatch)
+    orders = [
+        _mk_order("ord-n1", side=OrderSide.BUY),
+        _mk_order("ord-n2", side=OrderSide.BUY),
+    ]
+    broker = _FakeBroker(
+        statuses={
+            "ord-n1": OrderStatus.SUBMITTED,
+            "ord-n2": OrderStatus.SUBMITTED,
+        },
+        fills=[],
+    )
+    captured_statuses: dict[str, OrderStatus] = {}
+
+    monkeypatch.setattr(execution_api, "plan_orders", lambda **_kwargs: list(orders))
+    monkeypatch.setattr(execution_api, "record_orders", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        execution_api,
+        "update_order_statuses",
+        lambda *, db_manager, statuses: captured_statuses.update(statuses),
+    )
+    monkeypatch.setattr(execution_api, "record_fills", lambda **_kwargs: None)
+    monkeypatch.setattr(execution_api, "record_executed_actions_for_fills", lambda *_a, **_k: None)
+    monkeypatch.setattr(execution_api, "_blocking_sleep", lambda _s: None)
+
+    execution_api.apply_execution_plan(
+        db_manager=_DummyDbManager(),
+        broker=broker,
+        portfolio_id="US_EQ_CORE",
+        target_positions={"ord-n1.EQ": 10.0, "ord-n2.EQ": 10.0},
+        mode="PAPER",
+        record_positions=False,
+        status_poll_timeout_sec=0.0,
+        cancel_unfilled_on_timeout=cancel_unfilled_on_timeout,
+    )
+    return broker, captured_statuses
+
+
+def test_apply_execution_plan_overnight_policy_leaves_orders_working(monkeypatch) -> None:
+    """Post-close pipelines pass False: working DAY orders survive for the next open."""
+    broker, statuses = _run_plan_with_pending_orders(monkeypatch, cancel_unfilled_on_timeout=False)
+    assert broker.cancelled_order_ids == []
+    assert statuses == {"ord-n1": OrderStatus.SUBMITTED, "ord-n2": OrderStatus.SUBMITTED}
+
+
+def test_apply_execution_plan_default_cancels_and_persists_cancelled_status(monkeypatch) -> None:
+    """Default behavior still cancels at the deadline — and persists CANCELLED, not stale SUBMITTED."""
+    broker, statuses = _run_plan_with_pending_orders(monkeypatch, cancel_unfilled_on_timeout=True)
+    assert sorted(broker.cancelled_order_ids) == ["ord-n1", "ord-n2"]
+    assert statuses == {"ord-n1": OrderStatus.CANCELLED, "ord-n2": OrderStatus.CANCELLED}

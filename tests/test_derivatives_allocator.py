@@ -61,13 +61,14 @@ def test_planner_emits_per_sleeve_dollar_budgets():
     assert plan.sleeve_budgets[Sleeve.HEDGE] == pytest.approx(20_000.0)
     assert plan.sleeve_budgets[Sleeve.INCOME] == pytest.approx(30_000.0)
     assert plan.sleeve_budgets[Sleeve.CONVEX] == pytest.approx(10_000.0)
+    assert plan.sleeve_budgets[Sleeve.COMMODITY] == pytest.approx(10_000.0)
 
 
-def test_planner_sleeve_budgets_sum_to_30pct_of_nav():
+def test_planner_sleeve_budgets_sum_to_35pct_of_nav():
     p = allocator.SleeveBudgetPlanner()
     plan = p.plan(nav=200_000.0)
     total = sum(plan.sleeve_budgets.values())
-    assert total == pytest.approx(60_000.0)
+    assert total == pytest.approx(70_000.0)
 
 
 def test_planner_clamps_negative_nav():
@@ -182,7 +183,6 @@ def test_silenced_strategies_for_hedge_cutover():
     assert "protective_put" in silenced
     assert "sector_put_spread" in silenced
     assert "vix_tail_hedge" in silenced
-    assert "collar" in silenced
     assert "crisis_alpha" in silenced
     # Income/convex strategies not silenced
     assert "iron_condor" not in silenced
@@ -195,7 +195,7 @@ def test_silenced_strategies_unions_across_active_sleeves():
     # Includes both HEDGE strategies and INCOME strategies
     assert "protective_put" in silenced
     assert "iron_condor" in silenced
-    assert "wheel" in silenced
+    assert "covered_call" in silenced
 
 
 def test_silenced_strategies_convex_cutover_adds_nothing():

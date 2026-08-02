@@ -7,7 +7,8 @@ conversation for the Iris chat endpoint.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional
 
 from apatheon.core.database import get_db_manager

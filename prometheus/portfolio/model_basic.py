@@ -226,8 +226,16 @@ class BasicLongOnlyPortfolioModel:
             self._last_members = members
 
         # Base weights from non-negative scores with optional concentration.
+        # Universe scores are offset-shifted (~10 +- z); proportional sizing
+        # on the raw value collapses to near-equal weight, so re-center
+        # within the selected set first (see PortfolioConfig.sizing_min_tilt).
         power = max(0.1, float(getattr(self.config, "score_concentration_power", 1.0)))
-        raw_scores = [max(0.0, m.score) for m in members]
+        min_tilt = float(getattr(self.config, "sizing_min_tilt", 0.0))
+        if members and min_tilt > 0.0:
+            s_min = min(float(m.score) for m in members)
+            raw_scores = [max(0.0, float(m.score) - s_min + min_tilt) for m in members]
+        else:
+            raw_scores = [max(0.0, m.score) for m in members]
         if power != 1.0:
             raw_scores = [s ** power for s in raw_scores]
         total_score = sum(raw_scores)

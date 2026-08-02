@@ -13,15 +13,18 @@ Key features:
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import time
-from typing import Dict, List, Optional, Tuple
+from datetime import date
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from apatheon.core.ids import generate_uuid
 from apatheon.core.logging import get_logger
 
 from prometheus.execution.broker_interface import Order, OrderSide, OrderType, Position
+from prometheus.execution.fx import CURRENCY_DECIMALS, DEFAULT_CURRENCY_DECIMALS
 
 logger = get_logger(__name__)
 
@@ -31,12 +34,48 @@ MIN_ABS_QUANTITY: float = 1e-6
 
 # Duplicate order prevention: if the same (instrument_id, side) was
 # ordered within this window (seconds), the order is suppressed.
+#
+# NOTE: this process-local, monotonic-time window does NOT survive a
+# restart. The primary, restart-safe idempotency guard is the
+# DETERMINISTIC order key (see ``deterministic_order_id``): re-planning
+# the same pipeline cycle (same portfolio_id + instrument + side +
+# as_of_date) yields the same order_id, and the orders table insert is
+# idempotent (ON CONFLICT (order_id) DO NOTHING), so a crash-then-retry
+# of the same cycle cannot double-submit. The time window remains only as
+# a cheap same-process belt-and-braces guard.
 _DEDUP_WINDOW_SECONDS: float = 60.0
 
 # Module-level dedup ledger: {(instrument_id, side): timestamp}.
 # Stored as a mutable attribute on plan_orders so tests can reliably
 # clear it regardless of how many module copies exist.
 _recent_orders: Dict[Tuple[str, str], float] = {}
+
+
+def deterministic_order_id(
+    portfolio_id: Optional[str],
+    instrument_id: str,
+    side: OrderSide,
+    as_of_date: Optional[date],
+) -> str:
+    """Stable order id for a (portfolio, instrument, side, date) tuple.
+
+    The same pipeline cycle always produces the same id, so a crash and
+    retry of that cycle maps to the same order_id (no double-submit when
+    combined with an idempotent insert). A genuine re-trade on a new date
+    produces a different id. When ``portfolio_id`` or ``as_of_date`` are
+    not supplied we cannot guarantee determinism, so a random UUID is
+    returned (legacy/backtest callers that don't thread these through).
+    """
+    if portfolio_id is None or as_of_date is None:
+        return generate_uuid()
+    raw = f"{portfolio_id}|{instrument_id}|{side.value}|{as_of_date.isoformat()}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    # Format as a UUID-shaped string so downstream code/columns that
+    # expect a uuid-like token keep working.
+    return (
+        f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-"
+        f"{digest[16:20]}-{digest[20:32]}"
+    )
 
 # Compiled defaults — kept as constants for backward compatibility.
 _COMPILED_MIN_REBALANCE_PCT: float = 0.02
@@ -90,6 +129,9 @@ def plan_orders(
     limit_buffer_pct: float | object = _USE_ENV_DEFAULT,
     sells_first: bool = True,
     long_only: bool = False,
+    portfolio_id: Optional[str] = None,
+    as_of_date: Optional[date] = None,
+    currency_by_instrument: Optional[Mapping[str, str]] = None,
 ) -> List[Order]:
     """Compute orders required to move from current to target positions.
 
@@ -109,6 +151,18 @@ def plan_orders(
             for limit orders (as a fraction, e.g. 0.001 = 10 bps).
         sells_first: When True, SELL orders are placed before BUY orders
             in the returned list to free cash before buying.
+        portfolio_id: Logical portfolio identifier. When supplied together
+            with ``as_of_date`` each order receives a DETERMINISTIC id
+            (hash of portfolio_id + instrument + side + as_of_date) so a
+            crash-then-retry of the same cycle maps to the same id.
+        as_of_date: Trading date of this planning cycle. See
+            ``portfolio_id``.
+        currency_by_instrument: Optional mapping of instrument_id →
+            currency code, used to round limit prices to the local tick
+            convention (KRW/JPY quote in whole units — see
+            ``prometheus.execution.fx.CURRENCY_DECIMALS``). Instruments
+            not in the mapping (or when omitted) round to 2 decimals,
+            preserving the historical behavior.
 
     Returns:
         A list of :class:`Order` objects representing the required trades.
@@ -169,10 +223,16 @@ def plan_orders(
         if order_type == OrderType.LIMIT and prices is not None:
             ref_price = prices.get(instrument_id)
             if ref_price is not None and ref_price > 0:
+                # Tick rounding: local convention when a currency is known
+                # (KRW/JPY quote in whole units), 2dp otherwise.
+                currency = (currency_by_instrument or {}).get(instrument_id, "")
+                decimals = CURRENCY_DECIMALS.get(
+                    currency.upper(), DEFAULT_CURRENCY_DECIMALS
+                )
                 if side == OrderSide.BUY:
-                    limit_price = round(ref_price * (1 + limit_buffer_pct), 2)
+                    limit_price = round(ref_price * (1 + limit_buffer_pct), decimals)
                 else:
-                    limit_price = round(ref_price * (1 - limit_buffer_pct), 2)
+                    limit_price = round(ref_price * (1 - limit_buffer_pct), decimals)
             else:
                 # No price available — fall back to MARKET.
                 effective_type = OrderType.MARKET
@@ -186,23 +246,36 @@ def plan_orders(
             effective_type = OrderType.MARKET
             limit_price = None
 
-        # Duplicate order prevention: skip if the same (instrument, side)
-        # was ordered within the dedup window. The dedup state is stored
-        # as a function attribute so it travels with the function reference
-        # even if the module is reloaded.
-        dedup_key = (instrument_id, side.value)
-        now_ts = time.monotonic()
-        dedup_ledger = plan_orders._dedup_ledger  # type: ignore[attr-defined]
-        last_ts = dedup_ledger.get(dedup_key)
-        if last_ts is not None and (now_ts - last_ts) < _DEDUP_WINDOW_SECONDS:
-            logger.warning(
-                "OrderPlanner: suppressing duplicate order for %s %s (last ordered %.1fs ago)",
-                instrument_id, side.value, now_ts - last_ts,
-            )
-            continue
+        # Duplicate order prevention.
+        #
+        # In DETERMINISTIC mode (portfolio_id + as_of_date supplied) we do
+        # NOT apply the process-local time window: re-planning the same
+        # cycle is *meant* to re-emit the identical order id so the
+        # idempotent DB insert (ON CONFLICT DO NOTHING) absorbs the retry
+        # without dropping the order. The time window would instead silently
+        # swallow a legitimate crash-retry, so it is skipped here.
+        #
+        # In legacy/UUID mode (no as_of_date) we keep the time window: each
+        # call mints a fresh random id, so without it a double-call would
+        # double-submit. The window is process-local and resets on restart,
+        # which is acceptable because that path is backtest/ad-hoc only.
+        deterministic = portfolio_id is not None and as_of_date is not None
+        if not deterministic:
+            dedup_key = (instrument_id, side.value)
+            now_ts = time.monotonic()
+            dedup_ledger = plan_orders._dedup_ledger  # type: ignore[attr-defined]
+            last_ts = dedup_ledger.get(dedup_key)
+            if last_ts is not None and (now_ts - last_ts) < _DEDUP_WINDOW_SECONDS:
+                logger.warning(
+                    "OrderPlanner: suppressing duplicate order for %s %s (last ordered %.1fs ago)",
+                    instrument_id, side.value, now_ts - last_ts,
+                )
+                continue
 
         order = Order(
-            order_id=generate_uuid(),
+            order_id=deterministic_order_id(
+                portfolio_id, instrument_id, side, as_of_date,
+            ),
             instrument_id=instrument_id,
             side=side,
             order_type=effective_type,
@@ -210,7 +283,8 @@ def plan_orders(
             limit_price=limit_price,
         )
         orders.append(order)
-        dedup_ledger[dedup_key] = now_ts
+        if not deterministic:
+            dedup_ledger[dedup_key] = now_ts
 
     # Sort: sells before buys to free cash first.
     if sells_first:

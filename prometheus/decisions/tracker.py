@@ -22,6 +22,30 @@ from prometheus.meta.types import EngineDecision
 logger = get_logger(__name__)
 
 
+def _truthy(s: str | None) -> bool:
+    # Delegates to the shared parser so every PROMETHEUS_* flag accepts the
+    # same token set (see prometheus/env_utils.py).
+    from prometheus.env_utils import parse_flag_token
+
+    return parse_flag_token(s, default=False)
+
+
+def _sleeve_for(strategy: str | None):
+    """Map an order's template name (e.g. "hedge.collar") to its Sleeve."""
+    from prometheus.derivatives.sleeves import Sleeve
+
+    name = (strategy or "").strip().lower()
+    if name.startswith("hedge"):
+        return Sleeve.HEDGE
+    if name.startswith("income"):
+        return Sleeve.INCOME
+    if name.startswith("convex"):
+        return Sleeve.CONVEX
+    if name.startswith("commodity"):
+        return Sleeve.COMMODITY
+    return None
+
+
 @dataclass
 class DecisionTracker:
     """Service for recording engine decisions with structured metadata.
@@ -76,6 +100,7 @@ class DecisionTracker:
         decision_id = generate_uuid()
 
         input_refs = {
+            "mode": "live",
             "candidate_instruments": len(included_instruments) + len(excluded_instruments or []),
         }
 
@@ -164,6 +189,7 @@ class DecisionTracker:
         }
 
         input_refs = {
+            "mode": "live",
             "universe_id": universe_id,
             "instrument_count": len(instrument_scores),
         }
@@ -250,6 +276,7 @@ class DecisionTracker:
         }
 
         input_refs = {
+            "mode": "live",
             "instrument_count": len(target_weights),
         }
 
@@ -331,6 +358,7 @@ class DecisionTracker:
         decision_id = generate_uuid()
 
         input_refs = {
+            "mode": "live",
             "portfolio_id": portfolio_id,
             "order_count": len(orders_generated),
         }
@@ -390,6 +418,7 @@ class DecisionTracker:
         orders: List[Dict[str, Any]],
         signals_snapshot: Dict[str, Any] | None = None,
         run_id: str | None = None,
+        shadow: bool | None = None,
     ) -> str:
         """Record an options/derivatives trade decision.
 
@@ -419,7 +448,51 @@ class DecisionTracker:
         """
         decision_id = generate_uuid()
 
+        # Shadow-mode detection: explicit caller arg wins. Otherwise we look
+        # at PROMETHEUS_DERIVATIVES_SHADOW + per-sleeve cutover flags AND the
+        # sleeve membership of the orders in this decision.
+        #
+        # Per-sleeve cutover semantics:
+        #   - Templates in sleeves.py carry names like "hedge.collar",
+        #     "income.spy_iron_condor", "convex.thematic_sector_put".
+        #   - Order["strategy"] carries that template name.
+        #   - When ALL orders in a decision belong to the same sleeve and
+        #     that sleeve's cutover flag is set, tag the decision as "live".
+        #   - When orders span multiple sleeves and any of them is still
+        #     shadow, the whole decision is "shadow" (safer — never leak
+        #     fantasy returns into live PnL).
+        # This lets `PROMETHEUS_DERIVATIVES_HEDGE_CUTOVER=1` start collecting
+        # real HEDGE PnL even while INCOME/CONVEX stay in shadow.
+        #
+        # Orders carrying LEGACY strategy names (vix_tail_hedge,
+        # iron_condor, covered_call, ...) have no sleeve prefix: they come
+        # from the legacy path, which REALLY submits while shadow mode is
+        # on — PROMETHEUS_DERIVATIVES_SHADOW gates only the new sleeve
+        # pipeline. Classifying them shadow (the pre-2026-07 behaviour)
+        # tagged real submitted orders OPTIONS_SHADOW/mode=shadow and the
+        # _LIVE_GUARD in live_performance excluded them from live metrics.
+        # Legacy-named orders therefore classify as LIVE; only
+        # sleeve-named orders whose sleeve is not yet cut over make the
+        # decision shadow.
+        import os as _os
+
+        from prometheus.derivatives.allocator import SleeveCutoverState
+
+        if shadow is None:
+            shadow_env = _truthy(_os.environ.get("PROMETHEUS_DERIVATIVES_SHADOW", "0"))
+            if not shadow_env:
+                shadow = False
+            else:
+                cutover = SleeveCutoverState.from_env()
+                sleeves_in_decision = {
+                    _sleeve_for(o.get("strategy", "")) for o in orders
+                } - {None}
+                shadow = bool(sleeves_in_decision) and not all(
+                    cutover.is_active(s) for s in sleeves_in_decision
+                )
+
         input_refs: Dict[str, Any] = {
+            "mode": "shadow" if shadow else "live",
             "order_count": len(orders),
         }
         if signals_snapshot is not None:
@@ -438,7 +511,7 @@ class DecisionTracker:
 
         decision = EngineDecision(
             decision_id=decision_id,
-            engine_name="OPTIONS",
+            engine_name="OPTIONS_SHADOW" if shadow else "OPTIONS",
             run_id=run_id,
             strategy_id=strategy_id,
             market_id=market_id,

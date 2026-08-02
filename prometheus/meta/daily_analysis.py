@@ -201,7 +201,10 @@ def _run_signal_validations_step(
         horizon_days=horizon_days,
     )
     sharpe = _safe_float(rolling.get("sharpe"))
-    if sharpe is not None:
+    # Small-N honesty: a Sharpe from <100 live outcomes is noise — the
+    # tracker sets reliable=False and we publish INSUFFICIENT_DATA instead
+    # of a health verdict. n travels in sample_size + details_json.
+    if sharpe is not None and rolling.get("reliable", False):
         if sharpe > 0.5:
             verdict = "SHARPE_HEALTHY"
         elif sharpe > 0:

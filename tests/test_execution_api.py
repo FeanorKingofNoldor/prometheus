@@ -657,3 +657,88 @@ class TestSellsFirst:
         # Sells should be submitted first.
         assert broker.submitted[0].side == OrderSide.SELL
         assert broker.submitted[1].side == OrderSide.BUY
+
+
+# ---------------------------------------------------------------------------
+# Tests: batch resilience — one rejected order must not abort the batch
+# ---------------------------------------------------------------------------
+
+
+class _RejectingBroker(StubBroker):
+    """Broker that raises for a specific instrument to simulate a risk hit."""
+
+    def __init__(self, reject_instrument: str, **kwargs):
+        super().__init__(**kwargs)
+        self._reject_instrument = reject_instrument
+
+    def submit_order(self, order: Order) -> str:
+        if order.instrument_id == self._reject_instrument:
+            from prometheus.execution.risk_broker import RiskLimitExceeded
+
+            raise RiskLimitExceeded(f"limit hit for {order.instrument_id}")
+        return super().submit_order(order)
+
+
+class TestBatchResilience:
+    """A single order tripping a limit must not drop the rest of the batch."""
+
+    @patch("prometheus.execution.api.record_executed_actions_for_fills")
+    @patch("prometheus.execution.api.update_order_statuses")
+    @patch("prometheus.execution.api.record_positions_snapshot")
+    @patch("prometheus.execution.api.record_fills")
+    @patch("prometheus.execution.api.record_orders")
+    @patch("prometheus.execution.api.plan_orders")
+    def test_rejected_order_does_not_abort_batch(
+        self, mock_plan, mock_rec_orders, mock_rec_fills, mock_snap, mock_update, mock_exec_actions
+    ):
+        o1 = _make_order("ord-1", instrument_id="AAA", side=OrderSide.BUY)
+        o2 = _make_order("ord-2", instrument_id="BBB", side=OrderSide.BUY)  # trips limit
+        o3 = _make_order("ord-3", instrument_id="CCC", side=OrderSide.BUY)
+        mock_plan.return_value = [o1, o2, o3]
+
+        broker = _RejectingBroker(reject_instrument="BBB", fills=[])
+        db = _mock_db_manager()
+
+        result = apply_execution_plan(
+            db,
+            broker=broker,
+            portfolio_id="port-1",
+            target_positions={"AAA": 10, "BBB": 10, "CCC": 10},
+            mode="PAPER",
+            status_poll_timeout_sec=0.1,
+            status_poll_interval_sec=0.05,
+        )
+
+        # Order #1 and #3 submitted; #2 skipped.
+        submitted_ids = {o.order_id for o in broker.submitted}
+        assert submitted_ids == {"ord-1", "ord-3"}
+        assert result.num_orders == 2
+
+        # Only the accepted orders are persisted.
+        persisted = mock_rec_orders.call_args.kwargs["orders"]
+        assert {o.order_id for o in persisted} == {"ord-1", "ord-3"}
+
+    @patch("prometheus.execution.api.record_positions_snapshot")
+    @patch("prometheus.execution.api.record_orders")
+    @patch("prometheus.execution.api.plan_orders")
+    def test_all_orders_rejected_persists_nothing(
+        self, mock_plan, mock_rec_orders, mock_snap
+    ):
+        o1 = _make_order("ord-1", instrument_id="BBB", side=OrderSide.BUY)
+        mock_plan.return_value = [o1]
+
+        broker = _RejectingBroker(reject_instrument="BBB", fills=[])
+        db = _mock_db_manager()
+
+        result = apply_execution_plan(
+            db,
+            broker=broker,
+            portfolio_id="port-1",
+            target_positions={"BBB": 10},
+            mode="PAPER",
+            status_poll_timeout_sec=0.1,
+            status_poll_interval_sec=0.05,
+        )
+        assert result.num_orders == 0
+        assert broker.submitted == []
+        mock_rec_orders.assert_not_called()

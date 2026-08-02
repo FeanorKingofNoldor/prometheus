@@ -88,7 +88,13 @@ class MetaStorage:
                 metadata,
                 created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (decision_id, horizon_days) DO NOTHING
+            ON CONFLICT (decision_id, horizon_days) DO UPDATE SET
+                realized_return  = EXCLUDED.realized_return,
+                realized_pnl     = EXCLUDED.realized_pnl,
+                realized_drawdown = EXCLUDED.realized_drawdown,
+                realized_vol     = EXCLUDED.realized_vol,
+                metadata         = EXCLUDED.metadata,
+                created_at       = NOW()
         """
 
         with self.db_manager.get_runtime_connection() as conn:

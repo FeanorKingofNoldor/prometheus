@@ -1,19 +1,18 @@
 """Prometheus v2 – Options & Derivatives Strategy Layer.
 
-Translates high-level allocator directives into concrete option, futures,
-and futures-option trades submitted via the broker.
+Translates high-level allocator directives into concrete option trades
+submitted via the broker.
 
-Strategies
-----------
+Strategies (legacy pre-cutover shadow/live set)
+-----------------------------------------------
 1. **Protective Puts** – Buy SPY puts when MHI drops below threshold.
 2. **Covered Calls** – Sell calls on largest equity positions in
    RISK_ON/NEUTRAL states.
 3. **Sector Put Spreads** – Buy put spreads on sector ETFs when sector
    SHI is in the "reduce" zone (below reduce, above kill).
 4. **VIX Tail Hedge** – Always-on OTM VIX calls as catastrophe insurance.
-5. **Short Puts** – Sell cash-secured puts on high-conviction equity signals.
-6. **Futures Overlay** – ES/NQ futures for portfolio-level beta management.
-7. **Futures Options** – Defined-risk plays on VX and ES via FOP.
+5. **Iron Condor / Iron Butterfly** – Short-premium when vol is rich.
+6. **Crisis Alpha** – Offensive puts during broad sector deterioration.
 
 Each strategy is a self-contained class implementing :class:`OptionStrategy`.
 The :class:`OptionsStrategyManager` orchestrates them.
@@ -145,113 +144,16 @@ class VixTailHedgeConfig:
     exchange: str = "CBOE"
 
 
-@dataclass
-class ShortPutConfig:
-    """Configuration for short (cash-secured) put strategy."""
-    # Disabled: IV engine uses VIX as base vol for single stocks, understating
-    # individual IV — short_put is consistently -EV in backtest.  Valid for live
-    # trading with real IV feeds but not enabled in the model-driven pipeline.
-    enabled: bool = False
-    target_delta: float = 0.25        # Sell 0.20–0.30 delta puts
-    target_dte_min: int = 30
-    target_dte_max: int = 45
-    max_buying_power_pct: float = 0.05  # Max 5% of buying power per underlying
-    profit_target: float = 0.50       # Buy back at 50% profit
-    roll_dte: int = 14
-    min_lambda_score: float = 0.60    # Min λ score (real DB scores [-1,1] post-2015)
-    min_stab_score: float = 0.50      # Must be stable
-    max_positions: int = 10           # Max concurrent short put positions
-    min_vix: float = 15.0             # Only sell when IV is meaningful
-    max_vix: float = 35.0             # Raised from 30 — sell into mildly elevated vol
-    max_loss_stop: float = 3.0        # Close at 3x credit received
 
 
-@dataclass
-class FuturesOverlayConfig:
-    """Configuration for ES/NQ futures overlay strategy."""
-    enabled: bool = True
-    # FRAG-based hedging
-    frag_hedge_threshold: float = 0.65   # Short ES when FRAG above this
-    frag_max_hedge_ratio: float = 0.30   # Max 30% of portfolio notional hedged
-    # Lambda-based leverage
-    lambda_leverage_threshold: float = 0.70  # Add ES longs when lambda > this
-    lambda_max_leverage_pct: float = 0.15    # Max 15% additional ES exposure
-    # Product
-    product: str = "ES"                # Default to E-mini S&P 500
-    exchange: str = "CME"
-    target_beta: float = 1.0           # Target portfolio beta
 
 
-@dataclass
-class FuturesOptionConfig:
-    """Configuration for futures option (FOP) strategy."""
-    enabled: bool = True
-    # VX call spreads — expect vol expansion when FRAG is low
-    vx_frag_low_threshold: float = 0.30  # FRAG below this → buy VX call spread
-    vx_spread_width: float = 5.0         # $5 wide VX call spread
-    vx_nav_pct: float = 0.005            # 0.5% of NAV budget
-    vx_target_dte_min: int = 30
-    vx_target_dte_max: int = 60
-    # ES put spreads — cheaper downside protection than SPY puts
-    es_put_spread_enabled: bool = True
-    es_spread_width_pct: float = 0.05    # 5% wide
-    es_target_dte_min: int = 30
-    es_target_dte_max: int = 60
-    es_mhi_threshold: float = 0.45       # Buy ES put spread when MHI below this
-    es_nav_pct: float = 0.01             # 1% of NAV budget
 
 
-@dataclass
-class BullCallSpreadConfig:
-    """Configuration for bull call spread strategy."""
-    enabled: bool = True
-    min_lambda_score: float = 0.65    # Min momentum proxy score (see momentum_scores in signals)
-    min_stab_score: float = 0.50
-    spread_width_pct: float = 0.07    # 7% between long and short strikes
-    target_dte_min: int = 30
-    target_dte_max: int = 60
-    max_risk_per_trade_pct: float = 0.04   # 4% NAV risk per trade (raised from 3%)
-    max_positions: int = 6            # Reduced from 12 — less directional concentration
-    profit_target: float = 0.60       # Close at 60% of max profit
-    long_delta: float = 0.55          # Slightly ITM long leg
-    short_delta: float = 0.30         # OTM short leg
 
 
-@dataclass
-class MomentumCallConfig:
-    """Configuration for momentum call overlay strategy.
-
-    Buys SPY ATM call spreads during RISK_ON when 63-day momentum is
-    positive.  Designed to capture bull-market upside that the
-    vol-harvesting strategies miss.
-    """
-    enabled: bool = True
-    underlying: str = "SPY"
-    max_vix: float = 22.0              # Raised from 20 — allow mildly elevated vol
-    min_momentum_63d: float = 0.01     # Lowered from 0.02 — SPY up ≥ 1% over 63 days
-    spread_width_pct: float = 0.05     # 5% wide call spread
-    target_dte_min: int = 30
-    target_dte_max: int = 60
-    nav_pct: float = 0.03              # Kept at 0.03 — larger size degrades Sharpe (directional debit, no calm-market gate)
-    max_positions: int = 3             # Max concurrent positions
-    profit_target: float = 0.70        # Close at 70% of max profit
-    roll_dte: int = 14                 # Close/roll when DTE < 14
-    long_delta: float = 0.55           # Slightly ITM long leg
 
 
-@dataclass
-class LEAPSConfig:
-    """Configuration for LEAPS (stock replacement) strategy."""
-    enabled: bool = True
-    min_lambda_score: float = 0.70
-    min_stab_score: float = 0.60
-    target_delta: float = 0.75        # Deep ITM
-    target_dte_min: int = 180         # 6 months minimum
-    target_dte_max: int = 365         # Up to 1 year
-    roll_dte: int = 90                # Roll when DTE < 90
-    max_replacement_pct: float = 0.30 # Replace up to 30% of position
-    min_position_value: float = 50_000  # Only on large positions
-    max_positions: int = 5
 
 
 @dataclass
@@ -289,65 +191,12 @@ class IronButterflyConfig:
     max_positions: int = 2            # Max 2 simultaneous (was 6 — 120% exposure)
 
 
-@dataclass
-class CollarConfig:
-    """Configuration for collar strategy."""
-    enabled: bool = True
-    put_delta: float = 0.25           # Further OTM put (cheaper protection)
-    call_delta: float = 0.25          # Further OTM call (less cap on upside)
-    target_dte_min: int = 45
-    target_dte_max: int = 90
-    roll_dte: int = 14
-    min_position_shares: int = 100
-    min_position_value: float = 25_000
-    max_positions: int = 5
 
 
-@dataclass
-class CalendarSpreadConfig:
-    """Configuration for calendar spread strategy."""
-    enabled: bool = True
-    underlying: str = "SPY"
-    front_dte_min: int = 25
-    front_dte_max: int = 35
-    back_dte_min: int = 55
-    back_dte_max: int = 90
-    nav_pct: float = 0.01             # 1% of NAV
-    profit_target: float = 0.50
-    max_loss_pct: float = 0.50        # Close at 50% loss of debit paid
-    max_positions: int = 2
-    min_vix_contango: float = 0.08    # Min 8% term structure slope (tightened from 5%)
 
 
-@dataclass
-class StraddleStrangleConfig:
-    """Configuration for straddle/strangle strategy."""
-    enabled: bool = True
-    max_entry_vix: float = 18.0       # Only buy vol when it's cheap
-    strangle_otm_pct: float = 0.05    # 5% OTM for strangle legs
-    target_dte_min: int = 14
-    target_dte_max: int = 30
-    nav_pct: float = 0.01             # 1% of NAV
-    profit_target: float = 1.00       # Close at 100% profit (double)
-    max_loss_pct: float = 0.50        # Close at 50% loss
-    max_positions: int = 2
-    prefer_strangle: bool = True      # Default to strangle (cheaper)
 
 
-@dataclass
-class WheelConfig:
-    """Configuration for wheel strategy (CSP → assignment → CC cycle)."""
-    enabled: bool = True
-    min_lambda_score: float = 0.60
-    min_stab_score: float = 0.55
-    csp_target_delta: float = 0.28    # CSP: ~0.25-0.30 delta
-    cc_target_delta: float = 0.30     # CC: ~0.30 delta
-    target_dte_min: int = 30
-    target_dte_max: int = 45
-    profit_target: float = 0.50       # Close at 50% profit
-    roll_dte: int = 14
-    max_nav_pct_per_position: float = 0.04  # 4% NAV per wheel position (was 6%)
-    max_positions: int = 3            # Max 3 concurrent (was 5)
 
 
 # ── Trade directive (output of strategies) ───────────────────────────
@@ -984,1069 +833,16 @@ class VixTailHedgeStrategy(OptionStrategy):
         return candidates[0].strftime("%Y%m%d")
 
 
-# ── Short Puts (cash-secured) ─────────────────────────────────────────
 
-class ShortPutStrategy(OptionStrategy):
-    """Sell cash-secured puts on high-conviction equities.
 
-    Triggered by lambda universe scores + STAB.  Targets 0.20–0.30 delta
-    puts at 30–45 DTE.  Position sizing: max N% of buying power per
-    underlying.  Rolls/closes at 14 DTE or 50% profit.
-    """
 
-    def __init__(
-        self,
-        config: Optional[ShortPutConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or ShortPutConfig()
-        self._discovery = discovery
 
-    @property
-    def name(self) -> str:
-        return "short_put"
 
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
 
-        nav = signals.get("nav", 0.0)
-        buying_power = signals.get("buying_power", nav)
-        lambda_scores: Dict[str, float] = signals.get("lambda_scores", {})
-        stab_scores: Dict[str, float] = signals.get("stab_scores", {})
-        equity_prices: Dict[str, float] = signals.get("equity_prices", {})
 
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
 
-        # Manage existing short puts — profit target, stop-loss & roll
-        existing_puts = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-        managed_symbols: set = set()
 
-        for opt in existing_puts:
-            managed_symbols.add(opt["symbol"])
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
 
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            if entry_price > 0 and current_price > 0:
-                # Profit target: buy back at 50% decay
-                profit_pct = (entry_price - current_price) / entry_price
-                if profit_pct >= self._config.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="P",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Profit target {profit_pct:.0%} on {opt['symbol']}",
-                    ))
-                    continue
-
-                # Stop-loss: close when loss exceeds max_loss_stop x credit received
-                loss_multiple = (current_price - entry_price) / max(entry_price, 0.01)
-                if loss_multiple >= self._config.max_loss_stop:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="P",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Short put stop-loss: {loss_multiple:.1f}x on {opt['symbol']}",
-                    ))
-                    continue
-
-            # Roll at low DTE
-            if dte <= self._config.roll_dte:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol=opt["symbol"],
-                    right="P",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Rolling {opt['symbol']} short put: {dte} DTE",
-                ))
-
-        # Open new positions — find high-conviction names
-        current_count = len(existing_puts)
-        if current_count >= self._config.max_positions:
-            return directives
-
-        if buying_power <= 0:
-            return directives
-
-        # VIX gate: only sell puts when there's real premium and market isn't already pricing in collapse
-        vix = signals.get("vix_level", 20.0)
-        if vix < self._config.min_vix or vix > self._config.max_vix:
-            return directives
-
-        max_per_underlying = buying_power * self._config.max_buying_power_pct
-
-        # Score candidates by lambda + stab
-        candidates: List[tuple] = []
-        for symbol, lam_score in lambda_scores.items():
-            if symbol in managed_symbols:
-                continue
-            stab = stab_scores.get(symbol, 0.0)
-            if lam_score < self._config.min_lambda_score:
-                continue
-            if stab < self._config.min_stab_score:
-                continue
-            price = equity_prices.get(symbol, 0.0)
-            if price <= 0:
-                continue
-            candidates.append((symbol, lam_score + stab, price))
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-
-        slots = self._config.max_positions - current_count
-        for symbol, score, price in candidates[:slots]:
-            # Determine expiry and strike via discovery or heuristic
-            expiry = self._find_expiry(symbol, today)
-            strike = self._find_strike(symbol, expiry, price)
-
-            if strike is None or expiry is None:
-                continue
-
-            # Position sizing: notional = strike * 100; max N% of buying power
-            notional_per_contract = strike * 100
-            n_contracts = max(1, int(max_per_underlying / max(notional_per_contract, 1)))
-
-            directives.append(OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="P",
-                expiry=expiry,
-                strike=strike,
-                quantity=-n_contracts,  # Short
-                order_type=OrderType.LIMIT,
-                reason=(
-                    f"Short put {symbol}: {n_contracts}x {strike}P "
-                    f"(lambda={score:.2f})"
-                ),
-                metadata={"lambda_score": score, "stab": stab_scores.get(symbol, 0)},
-            ))
-
-        return directives
-
-    def _find_expiry(self, symbol: str, as_of: Optional[date] = None) -> Optional[str]:
-        """Find target expiry via discovery service or heuristic."""
-        if self._discovery is not None:
-            exp = self._discovery.get_best_expiry(
-                symbol,
-                min_dte=self._config.target_dte_min,
-                max_dte=self._config.target_dte_max,
-            )
-            if exp:
-                return exp
-        return ProtectivePutStrategy._find_target_expiry(
-            as_of or date.today(),
-            self._config.target_dte_min,
-            self._config.target_dte_max,
-        )
-
-    def _find_strike(self, symbol: str, expiry: Optional[str], price: float) -> Optional[float]:
-        """Find target strike via discovery delta selection or heuristic."""
-        if self._discovery is not None and expiry is not None:
-            strike = self._discovery.get_option_by_delta(
-                symbol, expiry, "P",
-                target_delta=self._config.target_delta,
-                underlying_price=price,
-            )
-            if strike is not None:
-                return strike
-        # Heuristic: 0.25 delta put ≈ 5-8% OTM
-        return round(price * 0.93, 1)
-
-
-# ── Futures Overlay ──────────────────────────────────────────────────
-
-class FuturesOverlayStrategy(OptionStrategy):
-    """Use ES/NQ futures for portfolio-level beta management.
-
-    * When FRAG signal is elevated → short ES to hedge equity exposure.
-    * When lambda scores are strongly positive → add ES longs for leverage.
-    * Position sizing targets portfolio beta via delta-equivalent.
-    """
-
-    def __init__(
-        self,
-        config: Optional[FuturesOverlayConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or FuturesOverlayConfig()
-        self._discovery = discovery
-
-    @property
-    def name(self) -> str:
-        return "futures_overlay"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        frag = signals.get("frag", 0.0)
-        lambda_agg = signals.get("lambda_aggregate", 0.0)
-        nav = signals.get("nav", 0.0)
-        futures_positions: Dict[str, Any] = signals.get("futures_positions", {})
-        es_price = signals.get("es_price", 0.0)
-
-        directives: List[OptionTradeDirective] = []
-
-        if nav <= 0 or es_price <= 0:
-            return directives
-
-        from prometheus.execution.futures_manager import PRODUCTS
-        product = PRODUCTS.get(self._config.product)
-        if product is None:
-            return directives
-
-        multiplier = product.multiplier  # ES = $50 per point
-
-        # Current futures delta exposure
-        current_futures_notional = sum(
-            p.get("quantity", 0) * es_price * multiplier
-            for p in futures_positions.values()
-            if p.get("symbol") == self._config.product
-        ) if futures_positions else 0.0
-
-        # Determine target
-        target_notional = 0.0
-        reason = ""
-
-        if frag >= self._config.frag_hedge_threshold:
-            # FRAG elevated → hedge (short)
-            hedge_ratio = min(
-                (frag - self._config.frag_hedge_threshold) / (1.0 - self._config.frag_hedge_threshold),
-                1.0,
-            ) * self._config.frag_max_hedge_ratio
-            target_notional = -nav * hedge_ratio
-            reason = f"FRAG={frag:.2f}: hedge {hedge_ratio:.0%} of NAV"
-
-        elif lambda_agg >= self._config.lambda_leverage_threshold:
-            # Lambda strong → add leverage (long)
-            lev_ratio = min(
-                (lambda_agg - self._config.lambda_leverage_threshold)
-                / (1.0 - self._config.lambda_leverage_threshold),
-                1.0,
-            ) * self._config.lambda_max_leverage_pct
-            target_notional = nav * lev_ratio
-            reason = f"Lambda={lambda_agg:.2f}: leverage {lev_ratio:.0%} of NAV"
-
-        # Delta to target
-        delta_notional = target_notional - current_futures_notional
-        contract_value = es_price * multiplier
-        if contract_value <= 0:
-            return directives
-
-        delta_contracts = int(delta_notional / contract_value)
-        if delta_contracts == 0:
-            return directives
-
-        # Find front-month expiry
-        expiry = self._get_front_expiry(signals.get('as_of_date'))
-
-        side_label = "BUY" if delta_contracts > 0 else "SELL"
-        directives.append(OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.HEDGE if frag >= self._config.frag_hedge_threshold else TradeAction.OPEN,
-            symbol=self._config.product,
-            right="",  # N/A for futures
-            expiry=expiry or "",
-            strike=0.0,  # N/A for futures
-            quantity=delta_contracts,
-            order_type=OrderType.MARKET,
-            reason=f"{side_label} {abs(delta_contracts)} {self._config.product}: {reason}",
-            metadata={
-                "frag": frag,
-                "lambda_agg": lambda_agg,
-                "target_notional": target_notional,
-                "current_notional": current_futures_notional,
-                "is_futures": True,
-            },
-        ))
-
-        return directives
-
-    def _get_front_expiry(self, as_of: Optional[date] = None) -> Optional[str]:
-        """Get front-month futures expiry via discovery or heuristic."""
-        if self._discovery is not None:
-            front = self._discovery.get_front_month_future(
-                self._config.product, self._config.exchange,
-            )
-            if front is not None:
-                return front.last_trade_date
-        # Heuristic: next quarterly expiry (3rd Friday of Mar/Jun/Sep/Dec)
-        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
-        product = PRODUCTS.get(self._config.product)
-        if product is None:
-            return None
-        today_str = (as_of or date.today()).strftime("%Y%m%d")
-        return FuturesManager._find_next_expiry(product, today_str)
-
-
-# ── Futures Options (FOP) Strategy ───────────────────────────────────
-
-class FuturesOptionStrategy(OptionStrategy):
-    """Defined-risk plays on VX and ES via futures options.
-
-    * **VX call spreads**: When FRAG is low (expect vol expansion), buy
-      call spreads on VX futures.
-    * **ES put spreads**: Cheaper downside protection than SPY puts,
-      triggered by low MHI.
-    """
-
-    def __init__(
-        self,
-        config: Optional[FuturesOptionConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or FuturesOptionConfig()
-        self._discovery = discovery
-
-    @property
-    def name(self) -> str:
-        return "futures_option"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        directives: List[OptionTradeDirective] = []
-        directives.extend(self._evaluate_vx_call_spreads(signals, existing_options))
-        directives.extend(self._evaluate_es_put_spreads(signals, existing_options))
-        return directives
-
-    def _evaluate_vx_call_spreads(
-        self,
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        """Buy VX call spreads when FRAG is low (expect vol expansion)."""
-        frag = signals.get("frag", 0.5)
-        nav = signals.get("nav", 0.0)
-        vix_level = signals.get("vix_level", 20.0)
-        today = signals.get("as_of_date", date.today())
-
-        existing_vx = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name and opt.get("symbol") == "VX"
-        ]
-
-        directives: List[OptionTradeDirective] = []
-
-        # Roll existing positions if needed
-        for opt in existing_vx:
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            if dte <= 14:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol="VX",
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Rolling VX call spread: {dte} DTE",
-                    metadata={"is_fop": True},
-                ))
-            else:
-                return directives  # Active position exists, hold
-
-        # Only open new if FRAG is low
-        if frag >= self._config.vx_frag_low_threshold:
-            return directives
-
-        if nav <= 0:
-            return directives
-
-        # Determine strikes
-        long_strike = round(vix_level + 2, 0)
-        short_strike = long_strike + self._config.vx_spread_width
-
-        # Expiry
-        expiry = self._get_vx_expiry(signals.get('as_of_date'))
-
-        # Size
-        budget = nav * self._config.vx_nav_pct
-        max_loss_per_spread = self._config.vx_spread_width * 1000  # VX multiplier = 1000
-        n_contracts = max(1, int(budget / max(max_loss_per_spread, 1)))
-
-        long_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="VX",
-            right="C",
-            expiry=expiry or "",
-            strike=long_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"VX call spread: FRAG={frag:.2f}, VIX={vix_level:.1f}",
-            metadata={"is_fop": True, "leg": "long"},
-        )
-
-        short_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="VX",
-            right="C",
-            expiry=expiry or "",
-            strike=short_strike,
-            quantity=-n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"VX call spread short leg @ {short_strike}",
-            metadata={"is_fop": True, "leg": "short"},
-        )
-
-        long_leg.spread_leg = short_leg
-        directives.append(long_leg)
-
-        return directives
-
-    def _evaluate_es_put_spreads(
-        self,
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        """Buy ES put spreads for downside protection when MHI is low."""
-        if not self._config.es_put_spread_enabled:
-            return []
-
-        mhi = signals.get("mhi", 1.0)
-        nav = signals.get("nav", 0.0)
-        es_price = signals.get("es_price", 0.0)
-        today = signals.get("as_of_date", date.today())
-
-        existing_es = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name and opt.get("symbol") == "ES"
-        ]
-
-        directives: List[OptionTradeDirective] = []
-
-        # Manage existing
-        for opt in existing_es:
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            if mhi >= self._config.es_mhi_threshold + 0.10:
-                # MHI recovered — close
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol="ES",
-                    right="P",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"MHI recovered to {mhi:.2f}, closing ES put spread",
-                    metadata={"is_fop": True},
-                ))
-            elif dte <= 14:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol="ES",
-                    right="P",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Rolling ES put spread: {dte} DTE",
-                    metadata={"is_fop": True},
-                ))
-            else:
-                return directives  # Hold
-
-        if mhi >= self._config.es_mhi_threshold:
-            return directives
-
-        if nav <= 0 or es_price <= 0:
-            return directives
-
-        # Strikes
-        long_strike = round(es_price * 0.97, 0)   # ~3% OTM
-        short_strike = round(es_price * (0.97 - self._config.es_spread_width_pct), 0)
-
-        expiry = self._get_es_expiry(signals.get('as_of_date'))
-
-        # Size: budget / max_loss_per_spread
-        budget = nav * self._config.es_nav_pct
-        spread_width = long_strike - short_strike
-        from prometheus.execution.futures_manager import PRODUCTS
-        es_product = PRODUCTS.get("ES")
-        mult = es_product.multiplier if es_product else 50.0
-        max_loss = spread_width * mult
-        n_contracts = max(1, int(budget / max(max_loss, 1)))
-
-        long_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="ES",
-            right="P",
-            expiry=expiry or "",
-            strike=long_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"ES put spread: MHI={mhi:.2f}, ES={es_price:.0f}",
-            metadata={"is_fop": True, "leg": "long"},
-        )
-
-        short_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="ES",
-            right="P",
-            expiry=expiry or "",
-            strike=short_strike,
-            quantity=-n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"ES put spread short leg @ {short_strike}",
-            metadata={"is_fop": True, "leg": "short"},
-        )
-
-        long_leg.spread_leg = short_leg
-        directives.append(long_leg)
-
-        return directives
-
-    def _get_vx_expiry(self, as_of: Optional[date] = None) -> Optional[str]:
-        """Get VX futures option expiry."""
-        if self._discovery is not None:
-            front = self._discovery.get_front_month_future("VX", "CFE")
-            if front is not None:
-                return front.last_trade_date
-        # Heuristic
-        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
-        product = PRODUCTS.get("VX")
-        if product is None:
-            return None
-        return FuturesManager._find_next_expiry(product, (as_of or date.today()).strftime("%Y%m%d"))
-
-    def _get_es_expiry(self, as_of: Optional[date] = None) -> Optional[str]:
-        """Get ES futures option expiry."""
-        if self._discovery is not None:
-            front = self._discovery.get_front_month_future("ES", "CME")
-            if front is not None:
-                return front.last_trade_date
-        from prometheus.execution.futures_manager import PRODUCTS, FuturesManager
-        product = PRODUCTS.get("ES")
-        if product is None:
-            return None
-        return FuturesManager._find_next_expiry(product, (as_of or date.today()).strftime("%Y%m%d"))
-
-
-# ── Bull Call Spread ──────────────────────────────────────────────────
-
-class BullCallSpreadStrategy(OptionStrategy):
-    """Buy call spreads on high-conviction names in RISK_ON.
-
-    Long ATM/slightly-ITM call + short OTM call for defined-risk
-    directional exposure.  Triggered by lambda scores.
-    """
-
-    def __init__(
-        self,
-        config: Optional[BullCallSpreadConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or BullCallSpreadConfig()
-        self._discovery = discovery
-
-    @property
-    def name(self) -> str:
-        return "bull_call_spread"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        market_state = signals.get("market_state", "NEUTRAL")
-        if market_state != "RISK_ON":
-            return []
-
-        nav = signals.get("nav", 0.0)
-        # Use momentum_scores (63d proxy) for directional conviction;
-        # fall back to lambda_scores when momentum_scores not in signals.
-        lambda_scores: Dict[str, float] = (
-            signals.get("momentum_scores")
-            or signals.get("lambda_scores", {})
-        )
-        stab_scores: Dict[str, float] = signals.get("stab_scores", {})
-        equity_prices: Dict[str, float] = signals.get("equity_prices", {})
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Manage existing
-        existing_spreads = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-        managed_symbols: set = set()
-
-        for opt in existing_spreads:
-            managed_symbols.add(opt["symbol"])
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            if entry_price > 0 and current_price > 0:
-                profit_pct = (current_price - entry_price) / max(entry_price, 0.01)
-                if profit_pct >= self._config.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="C",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Profit target {profit_pct:.0%} on {opt['symbol']} bull call",
-                    ))
-                    continue
-
-            if dte <= 14:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Closing {opt['symbol']} bull call: {dte} DTE",
-                ))
-
-        # Open new positions
-        current_count = len({opt["symbol"] for opt in existing_spreads})
-        if current_count >= self._config.max_positions or nav <= 0:
-            return directives
-
-        max_risk = nav * self._config.max_risk_per_trade_pct
-
-        candidates: List[tuple] = []
-        for symbol, lam_score in lambda_scores.items():
-            if symbol in managed_symbols:
-                continue
-            stab = stab_scores.get(symbol, 0.0)
-            if lam_score < self._config.min_lambda_score:
-                continue
-            if stab < self._config.min_stab_score:
-                continue
-            price = equity_prices.get(symbol, 0.0)
-            if price <= 0:
-                continue
-            candidates.append((symbol, lam_score + stab, price))
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        slots = self._config.max_positions - current_count
-
-        for symbol, score, price in candidates[:slots]:
-            # Long leg: slightly ITM
-            long_strike = round(price * (1 - (1 - self._config.long_delta) * 0.15), 1)
-            # Short leg: OTM
-            short_strike = round(price * (1 + self._config.spread_width_pct), 1)
-
-            expiry = self._find_expiry(symbol, today)
-            if expiry is None:
-                continue
-
-            # Size: max risk / max loss per spread
-            spread_width = short_strike - long_strike
-            if spread_width <= 0:
-                continue
-            max_loss_per_contract = spread_width * 100
-            n_contracts = max(1, int(max_risk / max(max_loss_per_contract, 1)))
-
-            long_leg = OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="C",
-                expiry=expiry,
-                strike=long_strike,
-                quantity=n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Bull call spread {symbol}: {long_strike}/{short_strike} "
-                       f"(lambda={score:.2f})",
-                metadata={"lambda_score": score, "leg": "long"},
-            )
-
-            short_leg = OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="C",
-                expiry=expiry,
-                strike=short_strike,
-                quantity=-n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Bull call spread {symbol} short leg @ {short_strike}",
-                metadata={"lambda_score": score, "leg": "short"},
-            )
-
-            long_leg.spread_leg = short_leg
-            directives.append(long_leg)
-
-        return directives
-
-    def _find_expiry(self, symbol: str, as_of: Optional[date] = None) -> Optional[str]:
-        if self._discovery is not None:
-            exp = self._discovery.get_best_expiry(
-                symbol,
-                min_dte=self._config.target_dte_min,
-                max_dte=self._config.target_dte_max,
-            )
-            if exp:
-                return exp
-        return ProtectivePutStrategy._find_target_expiry(
-            as_of or date.today(),
-            self._config.target_dte_min,
-            self._config.target_dte_max,
-        )
-
-
-# ── Momentum Call Overlay ─────────────────────────────────────────────
-
-class MomentumCallStrategy(OptionStrategy):
-    """Buy SPY ATM call spreads during confirmed bull markets.
-
-    Addresses the bull-year drag problem: when equity rips +30-40%,
-    vol-harvesting strategies contribute but can't keep pace.  This
-    strategy adds directional upside participation via defined-risk
-    call spreads on SPY, gated by regime (RISK_ON only), VIX (< 20),
-    and 63-day momentum (positive trend confirmation).
-    """
-
-    def __init__(
-        self,
-        config: Optional[MomentumCallConfig] = None,
-    ) -> None:
-        self._config = config or MomentumCallConfig()
-
-    @property
-    def name(self) -> str:
-        return "momentum_call"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        cfg = self._config
-        market_state = signals.get("market_state", "NEUTRAL")
-        vix = signals.get("vix_level", 20.0)
-        nav = signals.get("nav", 0.0)
-        spy_price = signals.get("spy_price", 0.0)
-        today = signals.get("as_of_date", date.today())
-
-        directives: List[OptionTradeDirective] = []
-
-        # ── Manage existing positions ──
-        existing = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-
-        for opt in existing:
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            # Profit target
-            if entry_price > 0 and current_price > 0:
-                profit_pct = (current_price - entry_price) / max(entry_price, 0.01)
-                if profit_pct >= cfg.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="C",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Momentum call profit target {profit_pct:.0%}",
-                    ))
-                    continue
-
-            # Close on low DTE
-            if dte <= cfg.roll_dte:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Closing momentum call: {dte} DTE",
-                ))
-                continue
-
-            # Close on regime break — if we're no longer RISK_ON, exit
-            if market_state != "RISK_ON":
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Regime break: {market_state}, closing momentum call",
-                ))
-
-        # ── Entry gating ──
-        if market_state != "RISK_ON":
-            return directives
-        if vix >= cfg.max_vix:
-            return directives
-        if nav <= 0 or spy_price <= 0:
-            return directives
-
-        current_count = len([
-            opt for opt in existing
-            if opt.get("strategy") == self.name
-        ])
-        if current_count >= cfg.max_positions:
-            return directives
-
-        # ── Momentum check ──
-        # Use pre-computed momentum from signals (backtest computes from price cache)
-        momentum = signals.get("spy_momentum_63d", 0.0)
-
-        if momentum < cfg.min_momentum_63d:
-            return directives
-
-        # ── Open new call spread ──
-        # Long leg: slightly ITM (~0.55 delta)
-        long_strike = round(spy_price * (1 - (1 - cfg.long_delta) * 0.10), 0)
-        # Short leg: OTM
-        short_strike = round(spy_price * (1 + cfg.spread_width_pct), 0)
-
-        expiry = ProtectivePutStrategy._find_target_expiry(
-            today, cfg.target_dte_min, cfg.target_dte_max,
-        )
-
-        # Size: nav_pct / max_loss_per_contract
-        spread_width = short_strike - long_strike
-        if spread_width <= 0:
-            return directives
-
-        budget = nav * cfg.nav_pct
-        max_loss_per_contract = spread_width * 100
-        n_contracts = max(1, int(budget / max(max_loss_per_contract, 1)))
-
-        long_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol=cfg.underlying,
-            right="C",
-            expiry=expiry,
-            strike=long_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"Momentum call SPY {long_strike}/{short_strike} "
-                   f"(mom={momentum:.1%}, VIX={vix:.1f})",
-            metadata={
-                "momentum": round(momentum, 4),
-                "vix": vix,
-                "leg": "long",
-            },
-        )
-
-        short_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol=cfg.underlying,
-            right="C",
-            expiry=expiry,
-            strike=short_strike,
-            quantity=-n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"Momentum call SPY short leg @ {short_strike}",
-            metadata={"leg": "short"},
-        )
-
-        long_leg.spread_leg = short_leg
-        directives.append(long_leg)
-
-        return directives
-
-
-# ── LEAPS (Stock Replacement) ────────────────────────────────────────
-
-class LEAPSStrategy(OptionStrategy):
-    """Buy deep ITM LEAPS calls for capital-efficient long exposure.
-
-    Replaces a fraction of large equity positions with deep ITM calls
-    (0.70–0.80 delta, 6–12 month expiry), freeing capital while
-    maintaining upside participation.
-    """
-
-    def __init__(
-        self,
-        config: Optional[LEAPSConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or LEAPSConfig()
-        self._discovery = discovery
-
-    @property
-    def name(self) -> str:
-        return "leaps"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        market_state = signals.get("market_state", "NEUTRAL")
-        if market_state != "RISK_ON":
-            return []
-
-        lambda_scores: Dict[str, float] = signals.get("lambda_scores", {})
-        stab_scores: Dict[str, float] = signals.get("stab_scores", {})
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Manage existing LEAPS — roll when DTE < 90
-        existing_leaps = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-        managed_symbols: set = set()
-
-        for opt in existing_leaps:
-            managed_symbols.add(opt["symbol"])
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            if dte <= self._config.roll_dte:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol=opt["symbol"],
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Rolling LEAPS {opt['symbol']}: {dte} DTE",
-                ))
-
-        # Open new LEAPS on large positions with strong conviction
-        current_count = len(managed_symbols)
-        if current_count >= self._config.max_positions:
-            return directives
-
-        for iid, pos in portfolio.items():
-            symbol = iid.split(".")[0] if "." in iid else iid
-            if symbol in managed_symbols:
-                continue
-
-            qty = pos.quantity
-            mv = pos.market_value
-            if mv < self._config.min_position_value:
-                continue
-
-            lam_score = lambda_scores.get(symbol, 0.0)
-            stab = stab_scores.get(symbol, 0.0)
-            if lam_score < self._config.min_lambda_score:
-                continue
-            if stab < self._config.min_stab_score:
-                continue
-
-            price = mv / max(qty, 1)
-            if price <= 0:
-                continue
-
-            # How many shares to replace with LEAPS
-            replace_shares = int(qty * self._config.max_replacement_pct)
-            n_contracts = replace_shares // 100
-            if n_contracts < 1:
-                continue
-
-            # Deep ITM strike: ~0.75 delta ≈ roughly 10-15% ITM
-            strike = round(price * 0.85, 1)
-
-            expiry = self._find_expiry(symbol, today)
-            if expiry is None:
-                continue
-
-            directives.append(OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="C",
-                expiry=expiry,
-                strike=strike,
-                quantity=n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"LEAPS {symbol}: {n_contracts} contracts @ {strike} "
-                       f"(replacing {replace_shares} shares, lambda={lam_score:.2f})",
-                metadata={
-                    "lambda_score": lam_score,
-                    "stab": stab,
-                    "shares_replaced": replace_shares,
-                },
-            ))
-
-            managed_symbols.add(symbol)
-            if len(managed_symbols) >= self._config.max_positions:
-                break
-
-        return directives
-
-    def _find_expiry(self, symbol: str, as_of: Optional[date] = None) -> Optional[str]:
-        if self._discovery is not None:
-            exp = self._discovery.get_best_expiry(
-                symbol,
-                min_dte=self._config.target_dte_min,
-                max_dte=self._config.target_dte_max,
-            )
-            if exp:
-                return exp
-        return ProtectivePutStrategy._find_target_expiry(
-            as_of or date.today(),
-            self._config.target_dte_min,
-            self._config.target_dte_max,
-        )
 
 
 # ── Iron Condor ────────────────────────────────────────────────────────
@@ -2503,664 +1299,12 @@ class IronButterflyStrategy(OptionStrategy):
         return directives
 
 
-# ── Collar ─────────────────────────────────────────────────────────────
 
-class CollarStrategy(OptionStrategy):
-    """Protect large equity positions with costless collars.
 
-    Buy protective put + sell covered call at approximately equal premium
-    (zero-cost collar).  Deployed in RECOVERY or early RISK_OFF to protect
-    gains without selling the equity position.
-    """
 
-    def __init__(
-        self,
-        config: Optional[CollarConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or CollarConfig()
-        self._discovery = discovery
 
-    @property
-    def name(self) -> str:
-        return "collar"
 
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
 
-        market_state = signals.get("market_state", "NEUTRAL")
-        if market_state not in ("RECOVERY", "RISK_OFF"):
-            return []
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Manage existing collars
-        existing_collars = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-        collared_symbols: set = set()
-
-        for opt in existing_collars:
-            collared_symbols.add(opt["symbol"])
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-
-            if dte <= self._config.roll_dte:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol=opt["symbol"],
-                    right=opt.get("right", "P"),
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Rolling collar {opt['symbol']}: {dte} DTE",
-                ))
-
-        # Find new collar candidates from portfolio
-        if len(collared_symbols) >= self._config.max_positions:
-            return directives
-
-        for iid, pos in portfolio.items():
-            if pos.quantity < self._config.min_position_shares:
-                continue
-
-            symbol = iid.split(".")[0] if "." in iid else iid
-            if symbol in collared_symbols:
-                continue
-
-            if pos.market_value < self._config.min_position_value:
-                continue
-
-            price = pos.market_value / max(pos.quantity, 1)
-            if price <= 0:
-                continue
-
-            n_contracts = pos.quantity // 100
-            if n_contracts < 1:
-                continue
-
-            # Put: ~0.32 delta ≈ ~5-7% OTM
-            put_strike = round(price * 0.94, 1)
-            # Call: ~0.32 delta ≈ ~5-7% OTM
-            call_strike = round(price * 1.06, 1)
-
-            target_expiry = ProtectivePutStrategy._find_target_expiry(
-                today,
-                self._config.target_dte_min,
-                self._config.target_dte_max,
-            )
-
-            # Long put (protective)
-            put_leg = OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="P",
-                expiry=target_expiry,
-                strike=put_strike,
-                quantity=n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Collar {symbol}: buy {put_strike}P "
-                       f"(protecting {pos.quantity:.0f} shares)",
-                metadata={"leg": "protective_put", "position_qty": pos.quantity},
-            )
-
-            # Short call (financing)
-            call_leg = OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="C",
-                expiry=target_expiry,
-                strike=call_strike,
-                quantity=-n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Collar {symbol}: sell {call_strike}C (financing)",
-                metadata={"leg": "financing_call", "position_qty": pos.quantity},
-            )
-
-            put_leg.spread_leg = call_leg
-            directives.append(put_leg)
-
-            collared_symbols.add(symbol)
-            if len(collared_symbols) >= self._config.max_positions:
-                break
-
-        return directives
-
-
-# ── Calendar Spread ───────────────────────────────────────────────────
-
-class CalendarSpreadStrategy(OptionStrategy):
-    """Exploit vol term structure with calendar spreads.
-
-    Sell near-term option + buy longer-term option at same strike.
-    Profits from faster theta decay of the front month and/or
-    normalisation of a steep vol term structure.
-    """
-
-    def __init__(self, config: Optional[CalendarSpreadConfig] = None) -> None:
-        self._config = config or CalendarSpreadConfig()
-
-    @property
-    def name(self) -> str:
-        return "calendar_spread"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        nav = signals.get("nav", 0.0)
-        vix = signals.get("vix_level", 20.0)
-
-        # Check for VIX contango (term structure slope)
-        # In practice, use VIX vs VIX3M; here use a proxy: if VIX < 20,
-        # term structure is likely in contango.
-        vix_contango = signals.get("vix_contango", max(0, (20 - vix) / 100))
-        if vix_contango < self._config.min_vix_contango:
-            return []
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Manage existing calendars
-        existing_cals = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-
-        for opt in existing_cals:
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            if entry_price > 0 and current_price > 0:
-                profit_pct = (current_price - entry_price) / max(entry_price, 0.01)
-                if profit_pct >= self._config.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="C",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Calendar spread profit target: {profit_pct:.0%}",
-                    ))
-                    continue
-
-                loss_pct = (entry_price - current_price) / max(entry_price, 0.01)
-                if loss_pct >= self._config.max_loss_pct:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right="C",
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Calendar spread stop loss: {loss_pct:.0%}",
-                    ))
-                    continue
-
-            # Close front leg at 7 DTE
-            if dte <= 7:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right="C",
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Calendar spread: closing at {dte} DTE",
-                ))
-
-        existing_count = len({opt["expiry"] for opt in existing_cals})
-        if existing_count >= self._config.max_positions or nav <= 0:
-            return directives
-
-        underlying = self._config.underlying
-        spy_price = signals.get("spy_price", 0.0)
-        price = spy_price if underlying == "SPY" else signals.get("equity_prices", {}).get(underlying, 0.0)
-        if price <= 0:
-            return directives
-
-        atm_strike = round(price, 0)
-
-        # Front month: ~30 DTE
-        front_expiry = ProtectivePutStrategy._find_target_expiry(
-            today, self._config.front_dte_min, self._config.front_dte_max,
-        )
-        # Back month: ~60-90 DTE
-        back_expiry = ProtectivePutStrategy._find_target_expiry(
-            today, self._config.back_dte_min, self._config.back_dte_max,
-        )
-
-        if front_expiry == back_expiry:
-            return directives  # Need different expirations
-
-        budget = nav * self._config.nav_pct
-        # Calendar debit is typically ~$2-5 per spread on SPY
-        estimated_debit = max(price * 0.008, 1.0) * 100
-        n_contracts = max(1, int(budget / max(estimated_debit, 1)))
-
-        # Sell front month (short)
-        front_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol=underlying,
-            right="C",
-            expiry=front_expiry,
-            strike=atm_strike,
-            quantity=-n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"Calendar spread {underlying}: sell {atm_strike}C "
-                   f"front ({front_expiry})",
-            metadata={"leg": "front_short"},
-        )
-
-        # Buy back month (long)
-        back_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol=underlying,
-            right="C",
-            expiry=back_expiry,
-            strike=atm_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"Calendar spread {underlying}: buy {atm_strike}C "
-                   f"back ({back_expiry})",
-            metadata={"leg": "back_long"},
-        )
-
-        front_leg.spread_leg = back_leg
-        directives.append(front_leg)
-
-        return directives
-
-
-# ── Straddle / Strangle ───────────────────────────────────────────────
-
-class StraddleStrangleStrategy(OptionStrategy):
-    """Buy volatility around regime transitions or vol-cheap environments.
-
-    Straddle: buy ATM put + ATM call (max gamma, higher cost).
-    Strangle: buy OTM put + OTM call (cheaper, needs bigger move).
-    Deployed when vol is cheap (VIX < threshold) and a regime shift
-    is expected.
-    """
-
-    def __init__(self, config: Optional[StraddleStrangleConfig] = None) -> None:
-        self._config = config or StraddleStrangleConfig()
-
-    @property
-    def name(self) -> str:
-        return "straddle_strangle"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        vix = signals.get("vix_level", 25.0)
-        nav = signals.get("nav", 0.0)
-        frag = signals.get("frag", 0.0)
-        market_state = signals.get("market_state", "NEUTRAL")
-
-        # In RECOVERY, allow higher VIX (betting on continued vol movement);
-        # otherwise only buy vol when it's cheap.
-        vix_cap = 25.0 if market_state == "RECOVERY" else self._config.max_entry_vix
-        if vix > vix_cap:
-            return []
-
-        # Need a catalyst: elevated fragility suggests regime transition
-        # approaching, or market_state is RECOVERY (transitional)
-        regime_transition_signal = (
-            frag >= 0.40  # Fragility rising → vol expansion expected
-            or market_state == "RECOVERY"
-        )
-        if not regime_transition_signal:
-            return []
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Manage existing positions
-        existing_vols = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-
-        for opt in existing_vols:
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            if entry_price > 0 and current_price > 0:
-                profit_pct = (current_price - entry_price) / max(entry_price, 0.01)
-                if profit_pct >= self._config.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right=opt.get("right", "C"),
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Vol play profit target: {profit_pct:.0%}",
-                    ))
-                    continue
-
-                loss_pct = (entry_price - current_price) / max(entry_price, 0.01)
-                if loss_pct >= self._config.max_loss_pct:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right=opt.get("right", "C"),
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Vol play stop loss: {loss_pct:.0%}",
-                    ))
-                    continue
-
-            if dte <= 7:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.CLOSE,
-                    symbol=opt["symbol"],
-                    right=opt.get("right", "C"),
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Vol play: closing at {dte} DTE (theta burn)",
-                ))
-
-        existing_count = len({opt.get("expiry") for opt in existing_vols})
-        if existing_count >= self._config.max_positions or nav <= 0:
-            return directives
-
-        spy_price = signals.get("spy_price", 0.0)
-        if spy_price <= 0:
-            return directives
-
-        target_expiry = ProtectivePutStrategy._find_target_expiry(
-            today, self._config.target_dte_min, self._config.target_dte_max,
-        )
-
-        budget = nav * self._config.nav_pct
-
-        if self._config.prefer_strangle:
-            # Strangle: OTM put + OTM call
-            put_strike = round(spy_price * (1 - self._config.strangle_otm_pct), 0)
-            call_strike = round(spy_price * (1 + self._config.strangle_otm_pct), 0)
-            # Estimated cost: ~$2-4 per strangle on SPY
-            est_cost = max(spy_price * 0.006, 0.5) * 100
-        else:
-            # Straddle: ATM
-            put_strike = round(spy_price, 0)
-            call_strike = put_strike
-            est_cost = max(spy_price * 0.015, 1.0) * 100
-
-        n_contracts = max(1, int(budget / max(est_cost, 1)))
-
-        # Long put
-        put_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="SPY",
-            right="P",
-            expiry=target_expiry,
-            strike=put_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"{'Strangle' if self._config.prefer_strangle else 'Straddle'} "
-                   f"SPY: buy {put_strike}P (VIX={vix:.1f}, FRAG={frag:.2f})",
-            metadata={"leg": "long_put", "vix": vix, "frag": frag},
-        )
-
-        # Long call
-        call_leg = OptionTradeDirective(
-            strategy=self.name,
-            action=TradeAction.OPEN,
-            symbol="SPY",
-            right="C",
-            expiry=target_expiry,
-            strike=call_strike,
-            quantity=n_contracts,
-            order_type=OrderType.LIMIT,
-            reason=f"{'Strangle' if self._config.prefer_strangle else 'Straddle'} "
-                   f"SPY: buy {call_strike}C",
-            metadata={"leg": "long_call", "vix": vix, "frag": frag},
-        )
-
-        put_leg.spread_leg = call_leg
-        directives.append(put_leg)
-
-        return directives
-
-
-# ── Wheel Strategy ───────────────────────────────────────────────────
-
-class WheelStrategy(OptionStrategy):
-    """Systematic wheel: sell CSP → assignment → covered call → repeat.
-
-    Phase 1: Sell cash-secured puts on high-conviction names.
-    Phase 2: If assigned, immediately write covered calls.
-    Phase 3: If called away, restart with CSP.
-    Tracks wheel state per symbol in metadata.
-    """
-
-    def __init__(
-        self,
-        config: Optional[WheelConfig] = None,
-        discovery: Any = None,
-    ) -> None:
-        self._config = config or WheelConfig()
-        self._discovery = discovery
-
-    @property
-    def name(self) -> str:
-        return "wheel"
-
-    def evaluate(
-        self,
-        portfolio: Dict[str, Position],
-        signals: Dict[str, Any],
-        existing_options: List[Dict[str, Any]],
-    ) -> List[OptionTradeDirective]:
-        if not self._config.enabled:
-            return []
-
-        nav = signals.get("nav", 0.0)
-        signals.get("buying_power", nav)
-        lambda_scores: Dict[str, float] = signals.get("lambda_scores", {})
-        stab_scores: Dict[str, float] = signals.get("stab_scores", {})
-        equity_prices: Dict[str, float] = signals.get("equity_prices", {})
-
-        directives: List[OptionTradeDirective] = []
-        today = signals.get("as_of_date", date.today())
-
-        # Track existing wheel positions
-        existing_wheel = [
-            opt for opt in existing_options
-            if opt.get("strategy") == self.name
-        ]
-        wheel_symbols: set = set()
-
-        for opt in existing_wheel:
-            wheel_symbols.add(opt["symbol"])
-            dte = ProtectivePutStrategy._days_to_expiry(opt["expiry"], today)
-            entry_price = opt.get("entry_price", 0)
-            current_price = opt.get("current_price", entry_price)
-
-            # Profit target on existing options
-            if entry_price > 0 and current_price > 0:
-                profit_pct = (entry_price - current_price) / max(entry_price, 0.01)
-                if profit_pct >= self._config.profit_target:
-                    directives.append(OptionTradeDirective(
-                        strategy=self.name,
-                        action=TradeAction.CLOSE,
-                        symbol=opt["symbol"],
-                        right=opt.get("right", "P"),
-                        expiry=opt["expiry"],
-                        strike=opt["strike"],
-                        quantity=-opt["quantity"],
-                        reason=f"Wheel profit target {profit_pct:.0%} on {opt['symbol']}",
-                    ))
-                    continue
-
-            # Roll at low DTE
-            if dte <= self._config.roll_dte:
-                directives.append(OptionTradeDirective(
-                    strategy=self.name,
-                    action=TradeAction.ROLL,
-                    symbol=opt["symbol"],
-                    right=opt.get("right", "P"),
-                    expiry=opt["expiry"],
-                    strike=opt["strike"],
-                    quantity=-opt["quantity"],
-                    reason=f"Wheel roll {opt['symbol']}: {dte} DTE",
-                ))
-
-        # Phase 2: Check for assignments — if we hold shares from a
-        # wheel symbol, write covered calls
-        for iid, pos in portfolio.items():
-            symbol = iid.split(".")[0] if "." in iid else iid
-            if pos.quantity < 100:
-                continue
-
-            # Check if this symbol is a wheel candidate (was assigned)
-            # by looking for metadata or matching lambda/stab criteria
-            wheel_assigned = symbol in wheel_symbols
-            if not wheel_assigned:
-                # Also check if this is a name we'd wheel on
-                lam = lambda_scores.get(symbol, 0.0)
-                stab = stab_scores.get(symbol, 0.0)
-                if lam < self._config.min_lambda_score or stab < self._config.min_stab_score:
-                    continue
-
-            # Check if we already have a CC on this symbol
-            has_cc = any(
-                opt["symbol"] == symbol and opt.get("right") == "C"
-                for opt in existing_wheel
-            )
-            if has_cc:
-                continue
-
-            price = pos.market_value / max(pos.quantity, 1)
-            if price <= 0:
-                continue
-
-            n_contracts = pos.quantity // 100
-            if n_contracts < 1:
-                continue
-
-            # Write covered call
-            call_strike = round(price * 1.06, 1)
-            expiry = self._find_expiry(symbol, today)
-            if expiry is None:
-                continue
-
-            directives.append(OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="C",
-                expiry=expiry,
-                strike=call_strike,
-                quantity=-n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Wheel CC {symbol}: sell {call_strike}C "
-                       f"({pos.quantity:.0f} shares assigned)",
-                metadata={"wheel_phase": "covered_call"},
-            ))
-
-        # Phase 1: Sell new CSPs on high-conviction names
-        if len(wheel_symbols) >= self._config.max_positions or nav <= 0:
-            return directives
-
-        max_capital_per = nav * self._config.max_nav_pct_per_position
-
-        candidates: List[tuple] = []
-        for symbol, lam_score in lambda_scores.items():
-            if symbol in wheel_symbols:
-                continue
-            stab = stab_scores.get(symbol, 0.0)
-            if lam_score < self._config.min_lambda_score:
-                continue
-            if stab < self._config.min_stab_score:
-                continue
-            price = equity_prices.get(symbol, 0.0)
-            if price <= 0:
-                continue
-            candidates.append((symbol, lam_score + stab, price))
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        slots = self._config.max_positions - len(wheel_symbols)
-
-        for symbol, score, price in candidates[:slots]:
-            # CSP strike: ~0.28 delta ≈ ~6-7% OTM
-            strike = round(price * 0.93, 1)
-
-            expiry = self._find_expiry(symbol, today)
-            if expiry is None:
-                continue
-
-            # Size: max capital / (strike * 100)
-            notional = strike * 100
-            n_contracts = max(1, int(max_capital_per / max(notional, 1)))
-
-            directives.append(OptionTradeDirective(
-                strategy=self.name,
-                action=TradeAction.OPEN,
-                symbol=symbol,
-                right="P",
-                expiry=expiry,
-                strike=strike,
-                quantity=-n_contracts,
-                order_type=OrderType.LIMIT,
-                reason=f"Wheel CSP {symbol}: sell {strike}P x{n_contracts} "
-                       f"(lambda={score:.2f})",
-                metadata={"wheel_phase": "csp", "lambda_score": score},
-            ))
-
-        return directives
-
-    def _find_expiry(self, symbol: str, as_of: Optional[date] = None) -> Optional[str]:
-        if self._discovery is not None:
-            exp = self._discovery.get_best_expiry(
-                symbol,
-                min_dte=self._config.target_dte_min,
-                max_dte=self._config.target_dte_max,
-            )
-            if exp:
-                return exp
-        return ProtectivePutStrategy._find_target_expiry(
-            as_of or date.today(),
-            self._config.target_dte_min,
-            self._config.target_dte_max,
-        )
 
 
 # ── Crisis Alpha Strategy ──────────────────────────────────────────────────
@@ -3365,11 +1509,21 @@ class OptionsStrategyManager:
         discovery: Any = None,
         strategies: Optional[List[OptionStrategy]] = None,
         dry_run: bool = False,
+        submission_recorder: Optional[Any] = None,
     ) -> None:
         self._broker = broker
         self._mapper = mapper
         self._discovery = discovery
         self._dry_run = dry_run
+        # Optional callback ``(directive, instrument_id, order_id) -> None``
+        # invoked after each successful submission — used to persist
+        # strategy provenance so positions coming back from the broker
+        # can be re-tagged (see options_storage.record_order_submission).
+        # Must never raise into the submission path; failures are logged.
+        self._submission_recorder = submission_recorder
+        # Failure descriptions from the most recent _submit_directives
+        # call (for callers that use evaluate_all's internal submission).
+        self.last_submission_failures: List[str] = []
 
         if strategies is not None:
             self._strategies = strategies
@@ -3385,25 +1539,14 @@ class OptionsStrategyManager:
     def _build_default_strategies(
         discovery: Any = None,
     ) -> List[OptionStrategy]:
-        """Construct the full set of 15 strategies."""
+        """Construct the live set of legacy (shadow) strategies."""
         return [
-            # Original 7
             ProtectivePutStrategy(),
             CoveredCallStrategy(),
             SectorPutSpreadStrategy(),
             VixTailHedgeStrategy(),
-            ShortPutStrategy(discovery=discovery),
-            FuturesOverlayStrategy(discovery=discovery),
-            FuturesOptionStrategy(discovery=discovery),
-            # New 8
-            BullCallSpreadStrategy(discovery=discovery),
-            LEAPSStrategy(discovery=discovery),
             IronCondorStrategy(),
             IronButterflyStrategy(),
-            CollarStrategy(discovery=discovery),
-            CalendarSpreadStrategy(),
-            StraddleStrangleStrategy(),
-            WheelStrategy(discovery=discovery),
             # Crisis alpha: offensive puts during broad sector deterioration
             CrisisAlphaStrategy(),
         ]
@@ -3489,6 +1632,15 @@ class OptionsStrategyManager:
                     exc_info=True,
                 )
 
+        # Book-level long-debit cap: sum existing + proposed long-debit
+        # gross premium; drop OPEN directives that push total past the
+        # legacy derivatives budget (NAV × 30%). Prevents the failure mode
+        # where many uncoordinated long-debit strategies pile into the same
+        # underlying — observed 2026-06-05 with 73% NAV stacked on SPY 7/17.
+        all_directives = self._apply_long_debit_cap(
+            all_directives, existing_options, signals,
+        )
+
         if self._dry_run:
             for d in all_directives:
                 logger.info(
@@ -3501,18 +1653,156 @@ class OptionsStrategyManager:
 
         return all_directives
 
+    @staticmethod
+    def _apply_long_debit_cap(
+        directives: List[OptionTradeDirective],
+        existing_options: List[Dict[str, Any]],
+        signals: Dict[str, Any],
+        cap_pct: float = 0.30,
+    ) -> List[OptionTradeDirective]:
+        """Drop OPEN long-debit directives that push the book past cap.
+
+        The cap is on **gross long premium paid** (max loss on long
+        options). Existing long positions count against the cap; CLOSE/
+        ROLL directives pass through unchecked; OPEN directives that fit
+        are kept in arrival order, the rest are logged and dropped.
+        """
+        nav = float(signals.get("nav", 0.0) or 0.0)
+        if nav <= 0:
+            return directives  # no NAV → can't enforce, pass through
+
+        cap_usd = nav * cap_pct
+
+        existing_long_premium = 0.0
+        for pos in existing_options:
+            qty = pos.get("quantity", 0) or 0
+            entry_price = pos.get("entry_price", 0.0) or 0.0
+            if qty > 0 and entry_price > 0:
+                existing_long_premium += entry_price * qty * 100.0
+
+        running = existing_long_premium
+        kept: List[OptionTradeDirective] = []
+        dropped: List[OptionTradeDirective] = []
+        for d in directives:
+            if d.action != TradeAction.OPEN or d.quantity <= 0:
+                kept.append(d)
+                continue
+            price = d.limit_price
+            if price is None or price <= 0:
+                # No usable price → can't size; let the broker layer
+                # reject if needed.
+                kept.append(d)
+                continue
+            this_premium = float(price) * int(d.quantity) * 100.0
+            if running + this_premium > cap_usd:
+                dropped.append(d)
+                continue
+            running += this_premium
+            kept.append(d)
+
+        if dropped:
+            logger.warning(
+                "Long-debit cap dropped %d OPEN directive(s): "
+                "existing=$%.0f, cap=$%.0f (%.0f%% of NAV $%.0f)",
+                len(dropped), existing_long_premium, cap_usd,
+                cap_pct * 100, nav,
+            )
+            for d in dropped:
+                logger.warning(
+                    "  dropped %s %s %s %s strike=%.1f qty=%d @ $%.2f",
+                    d.strategy, d.action.value, d.symbol, d.right,
+                    d.strike, d.quantity, d.limit_price or 0.0,
+                )
+        return kept
+
+    @staticmethod
+    def _describe_directive(directive: OptionTradeDirective) -> str:
+        return (
+            f"{directive.strategy} {directive.action.value} {directive.symbol} "
+            f"{directive.right}{directive.strike:g} {directive.expiry} "
+            f"x{directive.quantity}"
+        )
+
     def _submit_directives(
         self,
         directives: List[OptionTradeDirective],
-    ) -> None:
-        """Convert directives to Orders and submit."""
-        from apatheon.core.ids import generate_uuid
+    ) -> List[str]:
+        """Convert directives to Orders and submit.
 
+        Returns a list of human-readable failure descriptions so the
+        caller can surface them (run_derivatives_daily threads them into
+        the run summary's ``warnings``). An empty list means every leg
+        went out.
+
+        Multi-leg spreads (chained via ``spread_leg``) are submitted
+        parent-first; if a chained leg fails AFTER earlier legs were
+        submitted, the already-submitted legs are cancelled
+        (best-effort) so no unpaired leg — e.g. a naked short — is left
+        working overnight. Every leg failure and every cancel outcome is
+        recorded loudly; nothing fails silently.
+        """
+        failures: List[str] = []
         for directive in directives:
             if directive.action == TradeAction.HOLD:
                 continue
 
-            try:
+            ok, parent_order_id = self._submit_single(directive, failures)
+            if not ok:
+                if directive.spread_leg is not None:
+                    msg = (
+                        f"spread aborted: parent leg "
+                        f"{self._describe_directive(directive)} failed — "
+                        f"chained leg(s) NOT submitted"
+                    )
+                    logger.error(msg)
+                    failures.append(msg)
+                continue
+
+            # Submit chained legs; unwind on failure.
+            submitted: List[tuple] = [(directive, parent_order_id)]
+            leg = directive.spread_leg
+            while leg is not None:
+                if leg.action == TradeAction.HOLD:
+                    leg = leg.spread_leg
+                    continue
+                ok, leg_order_id = self._submit_single(leg, failures)
+                if not ok:
+                    self._cancel_submitted_legs(
+                        submitted, failed_leg=leg, failures=failures,
+                    )
+                    break
+                submitted.append((leg, leg_order_id))
+                leg = leg.spread_leg
+
+        self.last_submission_failures = failures
+        return failures
+
+    def _submit_single(
+        self,
+        directive: OptionTradeDirective,
+        failures: List[str],
+    ) -> "tuple[bool, Optional[str]]":
+        """Submit one directive. Returns ``(ok, order_id)``.
+
+        On failure the error is logged AND appended to ``failures`` —
+        never swallowed silently.
+        """
+        from apatheon.core.ids import generate_uuid
+
+        try:
+            # Commodity FOPs (CL/BZ/NG/ZW/GC/HG) take the .FOP
+            # instrument_id format; equity options take .US.
+            from prometheus.execution.futures_option_specs import (
+                is_commodity_fop_symbol,
+            )
+            if is_commodity_fop_symbol(directive.symbol):
+                instrument_id = InstrumentMapper.futures_option_instrument_id(
+                    directive.symbol,
+                    directive.expiry,
+                    directive.strike,
+                    directive.right,
+                )
+            else:
                 instrument_id = InstrumentMapper.option_instrument_id(
                     directive.symbol,
                     directive.expiry,
@@ -3520,42 +1810,98 @@ class OptionsStrategyManager:
                     directive.right,
                 )
 
-                side = OrderSide.BUY if directive.quantity > 0 else OrderSide.SELL
+            side = OrderSide.BUY if directive.quantity > 0 else OrderSide.SELL
 
-                order = Order(
-                    order_id=generate_uuid(),
-                    instrument_id=instrument_id,
-                    side=side,
-                    order_type=directive.order_type,
-                    quantity=abs(directive.quantity),
-                    limit_price=directive.limit_price,
-                    metadata={
-                        "strategy": directive.strategy,
-                        "action": directive.action.value,
-                        "reason": directive.reason,
-                        **directive.metadata,
-                    },
-                )
+            order = Order(
+                order_id=generate_uuid(),
+                instrument_id=instrument_id,
+                side=side,
+                order_type=directive.order_type,
+                quantity=abs(directive.quantity),
+                limit_price=directive.limit_price,
+                metadata={
+                    "strategy": directive.strategy,
+                    "action": directive.action.value,
+                    "reason": directive.reason,
+                    **directive.metadata,
+                },
+            )
 
-                logger.info(
-                    "Submitting option order: %s %s %s x%d (%s)",
-                    side.value, instrument_id,
-                    directive.order_type.value, abs(directive.quantity),
-                    directive.reason,
-                )
+            logger.info(
+                "Submitting option order: %s %s %s x%d (%s)",
+                side.value, instrument_id,
+                directive.order_type.value, abs(directive.quantity),
+                directive.reason,
+            )
 
-                self._broker.submit_order(order)
+            broker_order_id = self._broker.submit_order(order)
+            order_id = str(broker_order_id) if broker_order_id is not None else None
 
-                # Handle spread legs
-                if directive.spread_leg is not None:
-                    self._submit_directives([directive.spread_leg])
+        except Exception as exc:
+            logger.error(
+                "Failed to submit directive %s %s: %s",
+                directive.strategy, directive.symbol, exc,
+                exc_info=True,
+            )
+            failures.append(
+                f"submit failed: {self._describe_directive(directive)}: {exc}"
+            )
+            return False, None
 
+        # Persist strategy provenance (defect: positions came back from
+        # IBKR untagged, blinding every tag-filtered check). The order is
+        # already out — a recorder failure must not look like a
+        # submission failure.
+        if self._submission_recorder is not None:
+            try:
+                self._submission_recorder(directive, instrument_id, order_id)
             except Exception as exc:
                 logger.error(
-                    "Failed to submit directive %s %s: %s",
-                    directive.strategy, directive.symbol, exc,
-                    exc_info=True,
+                    "submission recorder failed for %s (order submitted; "
+                    "provenance NOT persisted): %s",
+                    instrument_id, exc, exc_info=True,
                 )
+
+        return True, order_id
+
+    def _cancel_submitted_legs(
+        self,
+        submitted: List[tuple],
+        *,
+        failed_leg: OptionTradeDirective,
+        failures: List[str],
+    ) -> None:
+        """A chained leg failed after earlier legs went out — cancel the
+        already-submitted legs so no unpaired (possibly naked short) leg
+        is left working. Warn loudly either way."""
+        for prev, prev_order_id in reversed(submitted):
+            desc = self._describe_directive(prev)
+            cancelled = False
+            cancel_err: Optional[str] = None
+            if prev_order_id:
+                try:
+                    cancelled = bool(self._broker.cancel_order(prev_order_id))
+                except Exception as exc:
+                    cancel_err = str(exc)
+            if cancelled:
+                msg = (
+                    f"NAKED-LEG GUARD: leg "
+                    f"{self._describe_directive(failed_leg)} failed after "
+                    f"{desc} was submitted — cancel requested for "
+                    f"order_id={prev_order_id}"
+                )
+            else:
+                msg = (
+                    f"NAKED-LEG RISK: leg "
+                    f"{self._describe_directive(failed_leg)} failed after "
+                    f"{desc} was submitted and the cancel attempt FAILED "
+                    f"(order_id={prev_order_id}"
+                    + (f", error: {cancel_err}" if cancel_err else "")
+                    + ") — an unpaired leg may be working; "
+                    "MANUAL INTERVENTION REQUIRED"
+                )
+            logger.error(msg)
+            failures.append(msg)
 
 
 __all__ = [
@@ -3564,17 +1910,8 @@ __all__ = [
     "CoveredCallConfig",
     "SectorPutSpreadConfig",
     "VixTailHedgeConfig",
-    "ShortPutConfig",
-    "FuturesOverlayConfig",
-    "FuturesOptionConfig",
-    "BullCallSpreadConfig",
-    "LEAPSConfig",
     "IronCondorConfig",
     "IronButterflyConfig",
-    "CollarConfig",
-    "CalendarSpreadConfig",
-    "StraddleStrangleConfig",
-    "WheelConfig",
     # Core types
     "TradeAction",
     "OptionTradeDirective",
@@ -3584,17 +1921,8 @@ __all__ = [
     "CoveredCallStrategy",
     "SectorPutSpreadStrategy",
     "VixTailHedgeStrategy",
-    "ShortPutStrategy",
-    "FuturesOverlayStrategy",
-    "FuturesOptionStrategy",
-    "BullCallSpreadStrategy",
-    "LEAPSStrategy",
     "IronCondorStrategy",
     "IronButterflyStrategy",
-    "CollarStrategy",
-    "CalendarSpreadStrategy",
-    "StraddleStrangleStrategy",
-    "WheelStrategy",
     # Manager
     "OptionsStrategyManager",
 ]

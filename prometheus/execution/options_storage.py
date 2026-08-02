@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from apatheon.core.database import DatabaseManager
@@ -36,6 +36,14 @@ EVENT_ROLL = "ROLL"
 EVENT_EXPIRE = "EXPIRE"
 EVENT_ADJUST = "ADJUST"
 EVENT_MARK = "MARK"
+# Order-submission provenance: written the moment an order goes to the
+# broker, BEFORE any position exists. ``position_id`` carries the
+# sentinel below because the fill (and hence the position row) only
+# shows up on the next sync/reconcile.
+EVENT_SUBMIT = "SUBMIT"
+
+# Sentinel position_id for SUBMIT events (no position row exists yet).
+SUBMIT_POSITION_ID = "PENDING_SUBMIT"
 
 
 @dataclass(frozen=True)
@@ -140,7 +148,7 @@ def record_position_open(
                 INSERT INTO options_positions (
                     position_id, instrument_id, portfolio_id, mode,
                     sleeve, template, strategy,
-                    symbol, right, expiry, strike, multiplier, sec_type,
+                    symbol, "right", expiry, strike, multiplier, sec_type,
                     quantity, avg_cost, opened_at, opened_decision_id,
                     delta, gamma, theta, vega, implied_vol, underlying_price,
                     greeks_updated_at, metadata_json,
@@ -194,8 +202,156 @@ def record_position_open(
                 greeks=greeks,
                 metadata=metadata,
             )
+        conn.commit()
 
     return position_id
+
+
+def record_order_submission(
+    db_manager: DatabaseManager,
+    *,
+    portfolio_id: str,
+    mode: str,
+    instrument_id: str,
+    symbol: str,
+    right: str,
+    expiry: str,
+    strike: float,
+    quantity: int,
+    strategy: str,
+    order_id: str | None = None,
+    limit_price: float | None = None,
+    multiplier: int = 100,
+    sleeve: str | None = None,
+    template: str | None = None,
+    decision_id: str | None = None,
+    as_of_date: date | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Log an order submission (strategy provenance) as a SUBMIT event.
+
+    This is the write half of the strategy-tag round trip: the legacy
+    strategies know *which strategy* emitted each order only at
+    submission time, but positions come back from IBKR with no tag.
+    Recording the contract signature (symbol, right, expiry, strike)
+    plus the strategy here lets ``load_strategy_tags`` restore the tag
+    when the filled position shows up on the next sync.
+    """
+
+    now = _now()
+    with db_manager.get_runtime_connection() as conn:
+        with conn.cursor() as cur:
+            _insert_event(
+                cur,
+                position_id=SUBMIT_POSITION_ID,
+                portfolio_id=portfolio_id,
+                mode=mode,
+                event_type=EVENT_SUBMIT,
+                event_at=now,
+                as_of_date=_as_of(as_of_date),
+                instrument_id=instrument_id,
+                symbol=symbol,
+                right=right,
+                expiry=expiry,
+                strike=float(strike),
+                multiplier=int(multiplier),
+                quantity_delta=int(quantity),
+                price=float(limit_price) if limit_price is not None else None,
+                realized_pnl=None,
+                sleeve=sleeve,
+                template=template,
+                strategy=strategy or None,
+                decision_id=decision_id,
+                order_id=order_id,
+                fill_id=None,
+                greeks=None,
+                metadata=metadata,
+            )
+        conn.commit()
+
+
+def load_submitted_strategies(
+    db_manager: DatabaseManager,
+    *,
+    portfolio_id: str,
+    mode: str,
+    lookback_days: int = 400,
+) -> dict[str, str]:
+    """Return ``instrument_id → strategy`` from recent SUBMIT events.
+
+    Later submissions win when the same contract was submitted twice.
+    ``lookback_days`` bounds the scan: anything older than the longest
+    option expiry we trade is irrelevant.
+    """
+
+    since = _as_of(None) - timedelta(days=lookback_days)
+    out: dict[str, str] = {}
+    with db_manager.get_runtime_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT instrument_id, strategy
+                FROM options_position_events
+                WHERE portfolio_id = %s AND mode = %s
+                  AND event_type = %s AND as_of_date >= %s
+                ORDER BY event_at
+                """,
+                (portfolio_id, mode, EVENT_SUBMIT, since),
+            )
+            for instrument_id, strategy in cur.fetchall():
+                if strategy:
+                    out[str(instrument_id)] = str(strategy)
+    return out
+
+
+def load_strategy_tags(
+    db_manager: DatabaseManager,
+    *,
+    portfolio_id: str,
+    mode: str,
+    lookback_days: int = 400,
+) -> dict[str, str]:
+    """Return ``instrument_id → strategy`` merged from both sources.
+
+    * SUBMIT events (orders sent but possibly not yet reconciled into a
+      position row) — oldest first, later submissions win;
+    * open ``options_positions`` rows with a non-null strategy — these
+      win over submissions because they are the reconciled truth.
+
+    This is what ``OptionsPortfolio.apply_strategy_tags`` consumes each
+    night so tag-filtered strategy logic (re-entry guards,
+    max_positions, profit targets, rolls) sees its own positions.
+    """
+
+    tags = load_submitted_strategies(
+        db_manager, portfolio_id=portfolio_id, mode=mode,
+        lookback_days=lookback_days,
+    )
+    for row in get_open_positions(db_manager, portfolio_id=portfolio_id, mode=mode):
+        if row.strategy:
+            tags[row.instrument_id] = row.strategy
+    return tags
+
+
+def update_position_strategy(
+    db_manager: DatabaseManager,
+    *,
+    position_id: str,
+    strategy: str,
+) -> None:
+    """Backfill the strategy tag on an existing position row."""
+
+    with db_manager.get_runtime_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE options_positions
+                SET strategy = %s, updated_at = %s
+                WHERE position_id = %s
+                """,
+                (strategy, _now(), position_id),
+            )
+        conn.commit()
 
 
 def record_position_close(
@@ -232,7 +388,7 @@ def record_position_close(
             cur.execute(
                 """
                 SELECT instrument_id, portfolio_id, mode,
-                       symbol, right, expiry, strike, multiplier,
+                       symbol, "right", expiry, strike, multiplier,
                        quantity, sleeve, template, strategy
                 FROM options_positions
                 WHERE position_id = %s
@@ -296,6 +452,7 @@ def record_position_close(
                 greeks=None,
                 metadata=metadata,
             )
+        conn.commit()
 
     return removed
 
@@ -363,7 +520,7 @@ def update_position_mark(
                 cur.execute(
                     """
                     SELECT instrument_id, portfolio_id, mode,
-                           symbol, right, expiry, strike, multiplier,
+                           symbol, "right", expiry, strike, multiplier,
                            sleeve, template, strategy
                     FROM options_positions
                     WHERE position_id = %s
@@ -403,6 +560,7 @@ def update_position_mark(
                         greeks=greeks,
                         metadata=None,
                     )
+        conn.commit()
 
 
 @dataclass(frozen=True)
@@ -475,6 +633,16 @@ def reconcile_positions(
                 greeks=greeks_dict,
                 write_mark_event=False,
             )
+            # Backfill strategy provenance on rows persisted before the
+            # tag was known (e.g. the position row was created from a
+            # sync that ran before the SUBMIT event was recorded, or by
+            # code that predates strategy tagging).
+            if strategy and not existing[iid].strategy:
+                update_position_strategy(
+                    db_manager,
+                    position_id=existing[iid].position_id,
+                    strategy=strategy,
+                )
             updated += 1
         else:
             record_position_open(
@@ -559,7 +727,7 @@ def get_open_positions(
                 """
                 SELECT position_id, instrument_id, portfolio_id, mode,
                        sleeve, template, strategy,
-                       symbol, right, expiry, strike, multiplier, sec_type,
+                       symbol, "right", expiry, strike, multiplier, sec_type,
                        quantity, avg_cost, opened_at,
                        market_price, market_value, unrealized_pnl,
                        delta, gamma, theta, vega, implied_vol, underlying_price
@@ -623,7 +791,7 @@ def _insert_event(
         INSERT INTO options_position_events (
             position_id, portfolio_id, mode, event_type,
             event_at, as_of_date,
-            instrument_id, symbol, right, expiry, strike, multiplier,
+            instrument_id, symbol, "right", expiry, strike, multiplier,
             quantity_delta, price, realized_pnl,
             sleeve, template, strategy,
             decision_id, order_id, fill_id,
@@ -663,8 +831,14 @@ __all__ = [
     "EVENT_EXPIRE",
     "EVENT_ADJUST",
     "EVENT_MARK",
+    "EVENT_SUBMIT",
+    "SUBMIT_POSITION_ID",
     "record_position_open",
     "record_position_close",
+    "record_order_submission",
+    "load_submitted_strategies",
+    "load_strategy_tags",
+    "update_position_strategy",
     "update_position_mark",
     "get_open_positions",
     "reconcile_positions",

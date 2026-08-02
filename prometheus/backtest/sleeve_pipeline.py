@@ -878,6 +878,20 @@ def _build_engines_for_sleeve(
     engines using conservative default hyperparameters.
     """
 
+    # Namespace guard: backtests share tables with production and are
+    # isolated ONLY by id. assessment_strategy_id is included because the
+    # pipeline WRITES instrument_scores under it — replaying against live
+    # scores read-only requires the documented env override.
+    from prometheus.backtest.naming import assert_backtest_namespace
+
+    assert_backtest_namespace(
+        config.sleeve_id,
+        config.strategy_id,
+        config.universe_id,
+        config.portfolio_id,
+        config.assessment_strategy_id,
+    )
+
     # Determine the desired level of parallelism for per-instrument
     # scoring from the BACKTEST_NUM_WORKERS environment variable. A value
     # of 1 preserves the original single-threaded behaviour.

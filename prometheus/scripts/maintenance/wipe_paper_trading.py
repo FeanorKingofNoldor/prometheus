@@ -23,6 +23,13 @@ What gets wiped:
   - meta_config_proposals + meta_config_proposal_events (all 57 stale)
   - reports of report_type IN ('trading_daily','trading_weekly')
   - risk_actions (since the boundary — 1.1M rows, the big one)
+  - position_convictions + target_portfolios (LIVE_PORTFOLIO_IDS)
+  - trade_journal (all)
+  - options_positions + options_position_events (mode='PAPER' or live portfolio)
+  - derivatives_shadow_decisions (all)
+  - portfolio_equity_history (all — only if the table exists)
+  - meta_signal_validations, backtest_live_drift, weekly_reports,
+    meta_feedback_insights (all — derived self-calibration outputs)
 
 What stays:
   - All historical / assessment data (instrument_prices, regimes,
@@ -53,6 +60,22 @@ logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ARCHIVE_ROOT = PROJECT_ROOT / "data" / "archive"
+
+# Portfolio ids that hold live-paper state.  US_EQ_LONG_V12 is the book id
+# used by target_portfolios / position_convictions; IBKR_PAPER is the broker
+# account id used by snapshots / options tables.  Backtest sleeves keep
+# their rows.
+LIVE_PORTFOLIO_IDS: list[str] = [
+    "US_EQ_LONG_V12",
+    "IBKR_PAPER",
+    # Regional long-equity book ids (multi-market rollout) — they write
+    # target_portfolios / position_convictions under their book id.
+    "UK_EQ_LONG_V1",
+    "EU_EQ_LONG_V1",
+    "HK_EQ_LONG_V1",
+    "KR_EQ_LONG_V1",
+    "AU_EQ_LONG_V1",
+]
 
 
 def ensure_account_resets_table(cur: Any) -> None:
@@ -129,14 +152,32 @@ def _jsonable(value: Any) -> Any:
 #
 # Each label is also a key in row_counts metadata on the reset marker.
 
-def _build_plan(boundary_date: date) -> list[tuple[str, str, str, tuple]]:
-    return [
+def _build_plan(
+    boundary_date: date,
+    *,
+    include_equity_history: bool = False,
+) -> list[tuple[str, str, str, tuple]]:
+    live_ids = list(LIVE_PORTFOLIO_IDS)
+    plan: list[tuple[str, str, str, tuple]] = [
         # Children first.
         (
             "fills",
             "SELECT * FROM fills WHERE mode='PAPER'",
             "DELETE FROM fills WHERE mode='PAPER'",
             (),
+        ),
+        # options_position_events references options_positions — child first.
+        (
+            "options_position_events",
+            "SELECT * FROM options_position_events WHERE mode='PAPER' OR portfolio_id = ANY(%s)",
+            "DELETE FROM options_position_events WHERE mode='PAPER' OR portfolio_id = ANY(%s)",
+            (live_ids,),
+        ),
+        (
+            "options_positions",
+            "SELECT * FROM options_positions WHERE mode='PAPER' OR portfolio_id = ANY(%s)",
+            "DELETE FROM options_positions WHERE mode='PAPER' OR portfolio_id = ANY(%s)",
+            (live_ids,),
         ),
         (
             "decision_outcomes",
@@ -219,7 +260,81 @@ def _build_plan(boundary_date: date) -> list[tuple[str, str, str, tuple]]:
             "DELETE FROM portfolio_risk_reports WHERE portfolio_id IN ('IBKR_PAPER','IBKR_LIVE')",
             (),
         ),
+        # Conviction lifecycle state — stale conviction scores from the old
+        # run would seed the fresh account's entry/exit logic.
+        (
+            "position_convictions",
+            "SELECT * FROM position_convictions WHERE portfolio_id = ANY(%s)",
+            "DELETE FROM position_convictions WHERE portfolio_id = ANY(%s)",
+            (live_ids,),
+        ),
+        (
+            "target_portfolios",
+            "SELECT * FROM target_portfolios WHERE portfolio_id = ANY(%s)",
+            "DELETE FROM target_portfolios WHERE portfolio_id = ANY(%s)",
+            (live_ids,),
+        ),
+        (
+            "trade_journal",
+            "SELECT * FROM trade_journal",
+            "DELETE FROM trade_journal",
+            (),
+        ),
+        (
+            "derivatives_shadow_decisions",
+            "SELECT * FROM derivatives_shadow_decisions",
+            "DELETE FROM derivatives_shadow_decisions",
+            (),
+        ),
+        # Self-calibration outputs — all derived from the wiped decision /
+        # outcome history, so they must go with it or the meta layer keeps
+        # "learning" from a run that no longer exists.
+        (
+            "meta_signal_validations",
+            "SELECT * FROM meta_signal_validations",
+            "DELETE FROM meta_signal_validations",
+            (),
+        ),
+        (
+            "backtest_live_drift",
+            "SELECT * FROM backtest_live_drift",
+            "DELETE FROM backtest_live_drift",
+            (),
+        ),
+        (
+            "weekly_reports",
+            "SELECT * FROM weekly_reports",
+            "DELETE FROM weekly_reports",
+            (),
+        ),
+        (
+            "meta_feedback_insights",
+            "SELECT * FROM meta_feedback_insights",
+            "DELETE FROM meta_feedback_insights",
+            (),
+        ),
     ]
+
+    if include_equity_history:
+        # Table is created by a separate workstream; only wiped when it
+        # actually exists (caller checks to_regclass).
+        plan.append(
+            (
+                "portfolio_equity_history",
+                "SELECT * FROM portfolio_equity_history",
+                "DELETE FROM portfolio_equity_history",
+                (),
+            )
+        )
+
+    return plan
+
+
+def _table_exists(cur: Any, table_name: str) -> bool:
+    """True if ``table_name`` resolves to an existing relation."""
+    cur.execute("SELECT to_regclass(%s)", (table_name,))
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 # ── Main ──────────────────────────────────────────────────────────
@@ -270,7 +385,17 @@ def main() -> int:
     archive_dir = archive_root / f"paper_wipe_{timestamp}"
 
     db = get_db_manager()
-    plan = _build_plan(boundary)
+
+    # portfolio_equity_history is created by a separate workstream — only
+    # include it in the plan when it exists.
+    with db.get_runtime_connection() as conn:
+        cur = conn.cursor()
+        try:
+            has_equity_history = _table_exists(cur, "portfolio_equity_history")
+        finally:
+            cur.close()
+
+    plan = _build_plan(boundary, include_equity_history=has_equity_history)
 
     if not args.confirm:
         # Dry-run path.  Just print what would happen.

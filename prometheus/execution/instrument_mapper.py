@@ -33,6 +33,48 @@ from prometheus.execution.ib_compat import (
 logger = get_logger(__name__)
 
 
+class ContractQualificationError(Exception):
+    """Raised when IBKR cannot qualify a contract that must be exact.
+
+    Non-US contracts are routed SMART with an explicit ``primaryExchange``;
+    if IBKR cannot qualify such a contract, submitting it anyway would
+    either be rejected or (worse) resolve to the wrong listing.  US SMART
+    contracts keep the historical lenient fallback.
+    """
+
+
+# EODHD exchange suffix -> (IBKR primary exchange, default currency).
+#
+# The IBKR primary exchange is used as ``Contract.primaryExchange`` while
+# routing stays "SMART"; the currency is a fallback only — the instruments
+# table row carries the authoritative local currency.
+EODHD_TO_IBKR: dict[str, tuple[str, str]] = {
+    "LSE": ("LSE", "GBP"),        # London Stock Exchange
+    "XETRA": ("IBIS", "EUR"),     # Deutsche Boerse XETRA
+    "PA": ("SBF", "EUR"),         # Euronext Paris
+    "AS": ("AEB", "EUR"),         # Euronext Amsterdam
+    "BR": ("ENEXT.BE", "EUR"),    # Euronext Brussels
+    "SW": ("EBS", "CHF"),         # SIX Swiss Exchange
+    "MC": ("BM", "EUR"),          # Bolsa de Madrid
+    "HE": ("HEX", "EUR"),         # Nasdaq Helsinki
+    "HK": ("SEHK", "HKD"),        # Hong Kong Stock Exchange
+    "KO": ("KSE", "KRW"),         # Korea Exchange
+    "AU": ("ASX", "AUD"),         # Australian Securities Exchange
+    "US": ("SMART", "USD"),       # US composite (SMART-routed, no primaryExchange)
+}
+
+
+def _normalize_ibkr_symbol(symbol: str, eodhd_exchange: str) -> str:
+    """Normalize an EODHD symbol to its IBKR local symbol.
+
+    Hong Kong numeric tickers drop leading zeros ("0005" -> "5").
+    Korean tickers keep their digits as-is.  Everything else passes through.
+    """
+    if eodhd_exchange == "HK" and symbol.isdigit():
+        return symbol.lstrip("0") or "0"
+    return symbol
+
+
 @dataclass(frozen=True)
 class InstrumentMetadata:
     """Metadata for a single instrument from the database.
@@ -179,19 +221,35 @@ class InstrumentMapper:
         # Normalize common US-equity/ETF exchange labels to SMART routing.
         # (IBKR rejects some directed labels like "NYSE_ARCA" in this path.)
         us_smart_aliases = {"US", "NYSE_ARCA", "ARCA", "NASDAQ", "NYSE", "BATS", "IEX"}
-        exchange = "SMART" if metadata.exchange in us_smart_aliases else metadata.exchange
+
+        primary_exchange = ""
+        currency = metadata.currency
+        if metadata.exchange in us_smart_aliases:
+            exchange = "SMART"
+        elif metadata.exchange in EODHD_TO_IBKR:
+            # Non-US EODHD exchange code: SMART routing pinned to the
+            # listing exchange via primaryExchange.  Currency comes from
+            # the instruments row; the table currency is a fallback only.
+            primary_exchange, table_currency = EODHD_TO_IBKR[metadata.exchange]
+            exchange = "SMART"
+            currency = metadata.currency or table_currency
+        else:
+            # Unknown code: preserve legacy verbatim behavior.
+            exchange = metadata.exchange
 
         if metadata.asset_class in ("EQUITY", "ETF"):
+            symbol = _normalize_ibkr_symbol(metadata.symbol, metadata.exchange)
             contract = Stock(
-                symbol=metadata.symbol,
+                symbol=symbol,
                 exchange=exchange,
-                currency=metadata.currency,
+                currency=currency,
             )
+            if primary_exchange:
+                contract.primaryExchange = primary_exchange
             logger.debug(
-                "Mapped %s (%s) -> Stock(%s, %s, %s)",
-                metadata.instrument_id, metadata.symbol,
-                metadata.asset_class,
-                exchange, metadata.currency,
+                "Mapped %s (%s) -> Stock(%s, %s, %s, primaryExchange=%s)",
+                metadata.instrument_id, metadata.asset_class,
+                symbol, exchange, currency, primary_exchange or "-",
             )
             return contract
 
@@ -281,31 +339,39 @@ class InstrumentMapper:
     def _parse_instrument_id_fallback(self, instrument_id: str) -> Contract:
         """Fallback parser when instrument not found in database.
 
-        Assumes format is "SYMBOL.EXCHANGE" (e.g. "AAPL.US")
+        Assumes format is "SYMBOL.EXCHANGE" (e.g. "AAPL.US", "AAL.LSE").
+        The EODHD suffix determines primary exchange and currency via
+        :data:`EODHD_TO_IBKR`; an unknown suffix raises instead of
+        silently guessing USD.
         """
-        parts = instrument_id.split(".")
+        if "." in instrument_id:
+            symbol_part, exchange_hint = instrument_id.rsplit(".", 1)
+            symbol = symbol_part.upper()
+            exchange_hint = exchange_hint.upper()
 
-        if len(parts) >= 2:
-            symbol = parts[0].upper()
-            exchange_hint = parts[1].upper()
+            if exchange_hint not in EODHD_TO_IBKR:
+                raise ValueError(
+                    f"Unknown EODHD exchange suffix {exchange_hint!r} in "
+                    f"instrument_id {instrument_id!r}; refusing to guess "
+                    f"exchange/currency. Add the suffix to "
+                    f"instrument_mapper.EODHD_TO_IBKR."
+                )
 
-            # Map exchange hint to IBKR exchange
-            if exchange_hint == "US":
-                exchange = "SMART"
-                currency = "USD"
-            else:
-                exchange = exchange_hint
-                currency = "USD"  # Assume USD for now
+            primary_exchange, currency = EODHD_TO_IBKR[exchange_hint]
+            symbol = _normalize_ibkr_symbol(symbol, exchange_hint)
 
             logger.info(
-                "Fallback parsing: %s -> Stock(%s, %s, %s)",
+                "Fallback parsing: %s -> Stock(%s, SMART, %s, primaryExchange=%s)",
                 instrument_id,
                 symbol,
-                exchange,
                 currency,
+                primary_exchange if exchange_hint != "US" else "-",
             )
 
-            return Stock(symbol, exchange, currency)
+            contract = Stock(symbol, "SMART", currency)
+            if exchange_hint != "US":
+                contract.primaryExchange = primary_exchange
+            return contract
         else:
             # Last resort: assume it's just a symbol
             logger.warning(
@@ -504,6 +570,27 @@ class InstrumentMapper:
         return f"{symbol}_{expiry_short}_{strike_str}{right.upper()}.US"
 
     @staticmethod
+    def futures_option_instrument_id(
+        symbol: str,
+        expiry: str,
+        strike: float,
+        right: str,
+    ) -> str:
+        """Generate a human-readable instrument_id for a futures-option (FOP).
+
+        Format: ``{SYMBOL}_{YYMMDD}_{STRIKE}{C|P}.FOP``
+
+        Examples:
+            >>> InstrumentMapper.futures_option_instrument_id("CL", "20260622", 75.0, "C")
+            'CL_260622_75C.FOP'
+            >>> InstrumentMapper.futures_option_instrument_id("ZW", "20260626", 410.5, "P")
+            'ZW_260626_410.5P.FOP'
+        """
+        expiry_short = expiry[2:] if len(expiry) == 8 else expiry
+        strike_str = f"{strike:g}"
+        return f"{symbol}_{expiry_short}_{strike_str}{right.upper()}.FOP"
+
+    @staticmethod
     def contract_to_instrument_id(contract: Contract) -> str:
         """Convert any IBKR contract to a Prometheus instrument_id.
 
@@ -567,6 +654,8 @@ def get_instrument_mapper(db_manager: Optional[DatabaseManager] = None) -> Instr
 
 
 __all__ = [
+    "ContractQualificationError",
+    "EODHD_TO_IBKR",
     "InstrumentMetadata",
     "InstrumentMapper",
     "get_instrument_mapper",

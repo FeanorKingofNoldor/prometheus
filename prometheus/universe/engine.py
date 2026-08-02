@@ -28,7 +28,22 @@ from apatheon.stability.storage import StabilityStorage
 from apatheon.stability.types import SoftTargetClass
 from psycopg2.extras import Json
 
+from prometheus.execution.eligibility import (
+    load_ineligible_instrument_ids,
+    static_fallback_ineligible_ids,
+)
+from prometheus.pricing_utils import adjusted_close_series
+
 logger = get_logger(__name__)
+
+# One-shot guard so the survivorship-bias warning is logged once per process.
+_SURVIVORSHIP_WARNED = [False]
+
+# Constant positive offset applied to the standardized (z-scored) ranking blend
+# before the multiplicative risk-haircut modifiers. Larger than any realistic
+# |z| so the shifted score stays positive (keeping "haircut reduces rank"
+# semantics) while preserving the cross-sectional ordering of the blend.
+_Z_SCORE_OFFSET = 10.0
 
 
 def _default_assessment_horizon_days() -> int:
@@ -355,6 +370,22 @@ class BasicUniverseModel:
     assessment_horizon_days: int = field(default_factory=lambda: _default_assessment_horizon_days())
     assessment_score_weight: float = 50.0
 
+    # Optional regime-conditional, IC-weighted signal-combination layer.
+    #
+    # DEFAULT OFF (2026-06-11): when ``signal_combiner`` is None the blend is the
+    # existing additive z-blend (``z(base) + alpha_weight_z * z(alpha)``), so
+    # production behaviour is UNCHANGED. When a
+    # ``prometheus.research.combiner.SignalCombiner`` is injected, the per-date
+    # cross-section is combined by it instead, over the standardized components
+    # {momentum-z / alpha "alpha_z", STAB/liquidity base "base_z"}. A regime
+    # label for the as-of date may be supplied via ``regime_label_provider``
+    # (any object exposing ``get_label(as_of_date) -> str | RegimeLabel | None``;
+    # None → the combiner falls back to its default weight set). This is
+    # research/backtest infrastructure for when better signals exist; it is not
+    # wired in the daily pipeline.
+    signal_combiner: object | None = None
+    regime_label_provider: object | None = None
+
     # Optional global regime risk integration. When ``regime_forecaster``
     # is provided and ``regime_risk_alpha`` is non-zero, the model will
     # query a per-region, per-horizon regime risk score and apply a
@@ -386,18 +417,34 @@ class BasicUniverseModel:
     # modifier to candidate scores. The provider is expected to expose a
     # ``get_latest(nation, as_of_date=)`` method returning an object with
     # ``composite_risk`` in [0, 1].
+    #
+    # NOT WIRED in the daily pipeline (2026-06-11): the daily UNIVERSES path
+    # (run_universes_for_run in pipeline/tasks.py) does not pass a
+    # ``nation_score_provider``, so it defaults to None and the nation
+    # modifier early-returns the score unchanged. The hook is retained for
+    # research/backtest callers that inject a provider explicitly. To enable
+    # it in production, wire a NationScoreStorage-like provider plus a
+    # non-zero ``nation_risk_alpha`` at the daily call site.
     nation_score_provider: object | None = None
     nation_risk_alpha: float = 0.0
     nation_risk_nation: str = "USA"
 
     # Optional lambda opportunity integration.
     #
-    # Historically we used a single ``lambda_score_weight`` that affected
-    # both:
+    # SHELVED as additive alpha (2026-06-11): lambda is an opportunity-density
+    # / uncertainty (risk-vol) signal, not alpha. As additive alpha it sizes UP
+    # into high-uncertainty clusters and hurts Sharpe. The production daily
+    # config (configs/universe/core_long_eq_daily.yaml) now sets
+    # ``lambda_score_weight: 0.0`` so the additive ``lambda_w * lambda_score``
+    # term below is never applied in the live pipeline. The provider/CSV infra
+    # is KEPT (the term is fully gated on a non-zero weight) so lambda can be
+    # repurposed as a risk signal later. ``lambda_score_weight`` defaults to
+    # 0.0 here; the term only activates when a caller sets a non-zero weight.
+    #
+    # Historically a single ``lambda_score_weight`` affected both:
     #  - the universe inclusion ranking (which names get included), and
     #  - the score stored on UniverseMember.score (used by the portfolio
     #    model for sizing).
-    #
     # For research we often want to separate these effects. The
     # *_selection/_portfolio weights, when provided, take precedence over
     # the legacy ``lambda_score_weight``.
@@ -417,6 +464,20 @@ class BasicUniverseModel:
 
         The resulting sector is used for optional sector caps in the tiering
         phase and for coarse cluster assignment.
+
+        Point-in-time membership / survivorship: the ``instruments`` table has
+        no listing/delisting *date* columns (only a current ``status`` of
+        ACTIVE/DELISTED plus a metadata ``is_delisted`` flag), so we cannot
+        derive exact membership by date here. We therefore include both ACTIVE
+        and DELISTED equities and rely on the price-availability prefilter in
+        ``build_universe`` (requires a close price *on* as_of_date) to enforce
+        tradability point-in-time: a name that delisted in the past is included
+        on the historical dates it actually traded and naturally dropped once
+        it has no price. This removes the hard survivorship exclusion of
+        delisted names (e.g. LEH.US). It remains approximate — without true
+        delisting dates we cannot model the final trading day or include names
+        that never ingested prices. Populate listing/delisting dates upstream
+        for exact PIT membership.
         """
 
         sector_expr = "COALESCE(NULLIF(ic.sector, ''), 'UNKNOWN')"
@@ -454,7 +515,7 @@ class BasicUniverseModel:
             {joins}
             WHERE i.market_id = ANY(%s)
               AND i.asset_class = 'EQUITY'
-              AND i.status = 'ACTIVE'
+              AND i.status IN ('ACTIVE', 'DELISTED')
               AND i.instrument_id NOT LIKE 'SYNTH_%%'
         """
 
@@ -473,6 +534,16 @@ class BasicUniverseModel:
                 rows = cursor.fetchall()
             finally:
                 cursor.close()
+
+        if not _SURVIVORSHIP_WARNED[0]:
+            _SURVIVORSHIP_WARNED[0] = True
+            logger.warning(
+                "Universe enumeration includes DELISTED equities; point-in-time membership "
+                "relies on the close-price-on-as_of_date prefilter because the instruments "
+                "table has no listing/delisting date columns. Historical universes remain "
+                "approximate (final trading day not modelled; names without ingested prices "
+                "are still missing) until listing/delisting dates are populated upstream."
+            )
 
         return [
             (str(inst_id), str(issuer_id), str(sector), str(market_id), str(sector_source))
@@ -509,14 +580,18 @@ class BasicUniverseModel:
         df_sorted = df.sort_values(["trade_date"]).reset_index(drop=True)
         df_window = df_sorted.tail(self.window_days)
 
+        # Realised vol runs on ADJUSTED closes (split discontinuities read
+        # as fake returns); the price-level filter keeps the RAW close
+        # because it screens on the actual trade price.
         closes = df_window["close"].astype(float).to_numpy()
+        adj_closes = adjusted_close_series(df_window)
         volumes = df_window["volume"].astype(float).to_numpy()
 
         if closes.shape[0] < min_required:
             return {}
 
-        log_rets = np.zeros_like(closes, dtype=float)
-        log_rets[1:] = np.log(closes[1:] / closes[:-1])
+        log_rets = np.zeros_like(adj_closes, dtype=float)
+        log_rets[1:] = np.log(adj_closes[1:] / adj_closes[:-1])
 
         sigma = float(np.std(log_rets[1:], ddof=1)) if log_rets.shape[0] > 1 else 0.0
         avg_volume = float(volumes.mean()) if volumes.size > 0 else 0.0
@@ -539,13 +614,19 @@ class BasicUniverseModel:
         if not self.use_assessment_scores or not self.assessment_strategy_id:
             return {}
 
+        # ``instrument_scores`` has no uniqueness beyond ``score_id`` (each run,
+        # and each model, may emit a fresh row for the same
+        # strategy/market/instrument/date/horizon). Deduplicate to the most
+        # recently written row per instrument so the loaded score is
+        # deterministic instead of arbitrary across duplicate runs.
         sql = """
-            SELECT instrument_id, score
+            SELECT DISTINCT ON (instrument_id) instrument_id, score
             FROM instrument_scores
             WHERE strategy_id = %s
               AND market_id = ANY(%s)
               AND as_of_date = %s
               AND horizon_days = %s
+            ORDER BY instrument_id, created_at DESC
         """
 
         with self.db_manager.get_runtime_connection() as conn:
@@ -611,6 +692,23 @@ class BasicUniverseModel:
 
         instruments = self._enumerate_instruments(as_of_date)
 
+        # EU-retail PRIIPs purchase eligibility (live-parity on paper): an
+        # instrument the live account cannot BUY must never enter a book.
+        # Loaded ONCE per build; ``load_ineligible_instrument_ids`` already
+        # degrades to a static known-US-ETF snapshot on DB errors, and the
+        # extra guard here catches anything else so an infrastructure
+        # failure is loud and can never silently re-admit SPY.US et al.
+        try:
+            retail_ineligible_ids: set[str] = load_ineligible_instrument_ids(self.db_manager)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "BasicUniverseModel.build_universe: retail-eligibility load FAILED on %s — "
+                "using the static known-US-ETF fallback so PRIIPs-blocked instruments stay "
+                "excluded (fail-open only for instruments unknown to the snapshot).",
+                as_of_date,
+            )
+            retail_ineligible_ids = static_fallback_ineligible_ids()
+
         # Pre-filter candidates by whether they have a close price on as_of_date.
         # This avoids spending compute on stale/delisted instruments (still marked
         # ACTIVE in the runtime instruments table) and provides a dedicated
@@ -660,6 +758,12 @@ class BasicUniverseModel:
         # (instrument_id, issuer_id, sector, score, reasons).
         candidates: list[tuple[str, str, str, float, dict[str, float | str | bool]]] = []
 
+        # Pending candidates collected in the per-instrument loop. The final
+        # blended score requires cross-sectional statistics (mean/std of the
+        # STAB+liquidity base and of the alpha) that are only known once the
+        # whole cross-section is built, so we defer the blend to a second pass.
+        pending: list[dict] = []
+
         for instrument_id, issuer_id, sector, market_id, sector_source in instruments:
             reasons: dict[str, float | str | bool] = {
                 "sector": sector,
@@ -685,6 +789,25 @@ class BasicUniverseModel:
 
             if issuer_id in self.issuer_exclusion_list:
                 reasons["hard_excluded_issuer"] = True
+                hard_fail_members.append(
+                    UniverseMember(
+                        as_of_date=as_of_date,
+                        universe_id=universe_id,
+                        entity_type="INSTRUMENT",
+                        entity_id=instrument_id,
+                        included=False,
+                        score=0.0,
+                        reasons=reasons,
+                        tier="EXCLUDED",
+                    )
+                )
+                continue
+
+            # EU-retail PRIIPs gate: US-domiciled packaged products (ETFs
+            # etc.) cannot be BOUGHT on the live account, so they never
+            # enter the universe (paper must mirror live).
+            if instrument_id in retail_ineligible_ids:
+                reasons["retail_ineligible_priips"] = True
                 hard_fail_members.append(
                     UniverseMember(
                         as_of_date=as_of_date,
@@ -923,29 +1046,146 @@ class BasicUniverseModel:
                 )
                 continue
 
-            # Simple ranking score: favour lower soft-target scores and
-            # higher liquidity, and optionally reward positive Assessment
-            # scores. This is a heuristic but fully deterministic.
+            # Ranking base: favour lower soft-target (STAB) scores and higher
+            # liquidity. This is the fragility/liquidity quality screen.
             base_score = max(0.0, 100.0 - stab_state.soft_target_score) + min(
                 50.0, avg_volume / 1_000_000.0
             )
-            assessment_component = 0.0
-            if self.use_assessment_scores and ass_score is not None:
-                # Only positive Assessment scores contribute to the
-                # universe ranking; negative scores are handled via
-                # downstream long/short logic.
-                assessment_component = max(0.0, ass_score) * self.assessment_score_weight
+            reasons["base_score_raw"] = float(base_score)
 
-            score_base = base_score + assessment_component
+            # Alpha: the Assessment expected-return signal. We keep the SIGN
+            # (do NOT clip negative alpha here — clipping discarded half the
+            # signal and turned the universe into a pure fragility/liquidity
+            # screen). Both base and alpha are standardized cross-sectionally in
+            # the post-loop pass so neither swamps the other.
+            alpha_raw: float | None = None
+            if self.use_assessment_scores and ass_score is not None:
+                alpha_raw = float(ass_score)
+                reasons["alpha_raw"] = alpha_raw
+
+            # Defer the blend + risk modifiers until the whole cross-section is
+            # known (we need its mean/std to standardize base and alpha).
+            pending.append(
+                {
+                    "instrument_id": instrument_id,
+                    "issuer_id": issuer_id,
+                    "sector": sector,
+                    "base_score": float(base_score),
+                    "alpha_raw": alpha_raw,
+                    "lambda_score_f": lambda_score_f,
+                    "lambda_w_selection": float(lambda_w_selection),
+                    "lambda_w_portfolio": float(lambda_w_portfolio),
+                    "reasons": reasons,
+                }
+            )
+
+        # ------------------------------------------------------------------
+        # Cross-sectional standardization + blend (post-loop, second pass)
+        # ------------------------------------------------------------------
+        # Put the STAB/liquidity base and the Assessment alpha on a COMMON
+        # z-scale so alpha actually tilts the ranking instead of being swamped
+        # by the 0-150 base. We z-score each across the as-of cross-section,
+        # then blend: score = z(base) + assessment_score_weight_z * z(alpha),
+        # where the alpha weight is expressed in "base std-devs per alpha
+        # std-dev" so it is scale-free. Negative alpha keeps its sign and
+        # genuinely pushes a name down the ranking.
+        def _zmap(values: dict[str, float]) -> dict[str, float]:
+            if not values:
+                return {}
+            arr = np.array(list(values.values()), dtype=float)
+            mu = float(np.mean(arr))
+            sigma = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+            if sigma <= 1e-12:
+                return {k: 0.0 for k in values}
+            return {k: (v - mu) / sigma for k, v in values.items()}
+
+        base_vals = {p["instrument_id"]: p["base_score"] for p in pending}
+        alpha_vals = {
+            p["instrument_id"]: p["alpha_raw"]
+            for p in pending
+            if p["alpha_raw"] is not None
+        }
+        base_z = _zmap(base_vals)
+        alpha_z = _zmap(alpha_vals)
+
+        # Convert the legacy 0-150-scale assessment weight into a z-scale tilt.
+        # The old code multiplied raw alpha by assessment_score_weight (default
+        # 50) against a base spanning ~150; on the standardized scale a tilt of
+        # ~1 std of alpha per std of base is comparable, so we normalise the
+        # configured weight by 50 (its default) to preserve operator intent
+        # while keeping both components on the same z-scale.
+        alpha_weight_z = (
+            float(self.assessment_score_weight) / 50.0
+            if self.use_assessment_scores
+            else 0.0
+        )
+
+        # Optional regime-conditional, IC-weighted combiner (default OFF). When
+        # injected, it replaces the additive z-blend below with a learned/
+        # configured weighting of the standardized components. Resolved once per
+        # cross-section (weights are cross-section-wide).
+        combined_blend: dict[str, float] | None = None
+        combiner_regime: str | None = None
+        if self.signal_combiner is not None:
+            regime_label = None
+            if self.regime_label_provider is not None:
+                get_label = getattr(self.regime_label_provider, "get_label", None)
+                if get_label is not None:
+                    try:
+                        regime_label = get_label(as_of_date)
+                    except Exception:  # pragma: no cover - defensive
+                        logger.exception(
+                            "BasicUniverseModel: regime_label_provider failed on %s",
+                            as_of_date,
+                        )
+                        regime_label = None
+            combiner_regime = getattr(regime_label, "value", regime_label)
+            combined_blend = self.signal_combiner.combine_cross_section(
+                {"base_z": base_z, "momentum_z": alpha_z, "alpha_z": alpha_z},
+                regime_label=regime_label,
+            )
+
+        for p in pending:
+            instrument_id = p["instrument_id"]
+            reasons = p["reasons"]
+            lambda_score_f = p["lambda_score_f"]
+
+            bz = base_z.get(instrument_id, 0.0)
+            az = alpha_z.get(instrument_id, 0.0)
+            reasons["base_score_z"] = float(bz)
+            if instrument_id in alpha_z:
+                reasons["alpha_z"] = float(az)
+                reasons["alpha_contrib_z"] = float(alpha_weight_z * az)
+
+            if combined_blend is not None:
+                blended_z = float(combined_blend.get(instrument_id, 0.0))
+                reasons["combiner_blend_z"] = blended_z
+                if combiner_regime is not None:
+                    reasons["combiner_regime"] = str(combiner_regime)
+            else:
+                blended_z = bz + alpha_weight_z * az
+            reasons["score_base_z"] = float(blended_z)
+
+            # The downstream risk modifiers are MULTIPLICATIVE haircuts
+            # (score * (1 - alpha*risk)) designed for a positive score: a
+            # haircut should always *reduce* a name's rank. A z-scored blend is
+            # signed, so we shift it into a positive range by a fixed offset
+            # (well above any realistic |z|) before the haircuts. The offset is
+            # constant across the cross-section, so it preserves the relative
+            # ordering from the standardized blend while restoring correct
+            # haircut semantics.
+            score_base = _Z_SCORE_OFFSET + blended_z
             reasons["score_base"] = float(score_base)
 
             score_selection = score_base
             score_portfolio = score_base
             if lambda_score_f is not None:
-                score_selection = score_base + float(lambda_w_selection) * float(lambda_score_f)
-                score_portfolio = score_base + float(lambda_w_portfolio) * float(lambda_score_f)
-                reasons["lambda_score_contrib_selection"] = float(lambda_w_selection) * float(lambda_score_f)
-                reasons["lambda_score_contrib_portfolio"] = float(lambda_w_portfolio) * float(lambda_score_f)
+                lw_sel = p["lambda_w_selection"]
+                lw_port = p["lambda_w_portfolio"]
+                score_selection = score_base + lw_sel * float(lambda_score_f)
+                score_portfolio = score_base + lw_port * float(lambda_score_f)
+                reasons["lambda_score_contrib_selection"] = lw_sel * float(lambda_score_f)
+                reasons["lambda_score_contrib_portfolio"] = lw_port * float(lambda_score_f)
 
             reasons["score_selection_pre_risk"] = float(score_selection)
             reasons["score_portfolio_pre_risk"] = float(score_portfolio)
@@ -977,7 +1217,9 @@ class BasicUniverseModel:
             reasons["score_selection"] = float(score_selection)
             reasons["score_portfolio"] = float(score_portfolio)
 
-            candidates.append((instrument_id, issuer_id, sector, score_selection, score_portfolio, reasons))
+            candidates.append(
+                (p["instrument_id"], p["issuer_id"], p["sector"], score_selection, score_portfolio, reasons)
+            )
 
         # ------------------------------------------------------------------
         # Capacity constraints and tiering

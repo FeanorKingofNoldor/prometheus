@@ -21,22 +21,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ============================================================================
 # CRITICAL 1: Date rollover race condition
 # ============================================================================
 
 class TestDateRolloverRaceCondition:
-    """Tests for the catch-up guard that prevents re-entry."""
+    """Catch-up re-entry / idempotency safety under the lane scheduler.
 
-    def _make_daemon(self, morning_catchup_hour: int = 8, as_of_date=None):
+    The old ``_catchup_in_progress`` flag is gone BY DESIGN: catch-up no
+    longer loops inline. ``_maybe_morning_catchup`` only ATTACHES a
+    CatchupState to the market's lane, once per (market, last_trading_day)
+    keyed ``catchup_{market}_{date}`` in ``_catchup_done``; the lane then
+    serves the catch-up DAG through the normal dispatcher. These tests
+    preserve the original safety intents against the new mechanism.
+    """
+
+    def _make_daemon(self, morning_catchup_hour: int = 8, as_of_date=None, markets=None):
         """Build a minimal MarketAwareDaemon mock for catch-up testing."""
         from prometheus.orchestration.market_aware_daemon import MarketAwareDaemon
 
         config = MagicMock()
         config.morning_catchup_hour = morning_catchup_hour
         config.as_of_date = as_of_date
-        config.markets = ["US_EQ"]
+        config.markets = markets if markets is not None else ["US_EQ"]
         config.poll_interval_seconds = 1
         config.options_mode = "paper"
 
@@ -44,34 +51,53 @@ class TestDateRolloverRaceCondition:
         daemon = MarketAwareDaemon(config, db)
         return daemon
 
+    @patch("prometheus.orchestration.market_aware_daemon.build_market_dag")
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    def test_catchup_guard_prevents_reentry(self, mock_now_local):
-        """If _catchup_in_progress is True, _maybe_morning_catchup returns immediately."""
+    def test_catchup_guard_prevents_reentry(self, mock_now_local, mock_build):
+        """Re-entry safety (successor of the _catchup_in_progress flag):
+        a second call in the same window must not attach a second
+        CatchupState or build a second catch-up DAG."""
         daemon = self._make_daemon()
-        daemon._catchup_in_progress = True
+        yesterday = date(2026, 4, 10)
+        mock_now_local.return_value = datetime(2026, 4, 11, 8, 2)
 
-        # Should return without doing anything
-        mock_now_local.return_value = datetime(2026, 4, 12, 8, 0)
-        daemon._maybe_morning_catchup(date(2026, 4, 11))
+        mock_cal = MagicMock()
+        mock_cal.trading_days_between.return_value = [yesterday]
+        daemon._calendars["US_EQ"] = mock_cal
 
-        # The function returned early — now_local should NOT have been called
-        mock_now_local.assert_not_called()
+        mock_dag = MagicMock()
+        mock_dag.jobs = {}
+        mock_build.return_value = mock_dag
+
+        # load_latest_run is imported locally; patch at source.
+        with patch("prometheus.pipeline.state.load_latest_run", return_value=None):
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
+            first = daemon.lanes["US_EQ"].catchup
+            assert first is not None
+
+            # Second call: lane already has a catch-up (and the key is in
+            # _catchup_done) — must be a no-op.
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
+
+        assert daemon.lanes["US_EQ"].catchup is first
+        assert mock_build.call_count == 1
+        assert f"catchup_US_EQ_{yesterday}" in daemon._catchup_done
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    def test_catchup_skips_when_already_on_today(self, mock_now_local):
-        """If as_of_date == date.today(), catch-up is not needed."""
-        daemon = self._make_daemon()
+    def test_catchup_noop_for_pseudo_markets(self, mock_now_local):
+        """IRIS/INTEL have no engine runs — catch-up must never attach to
+        them. (Replaces the obsolete as_of_date==today early-return test:
+        the new scheduler keys catch-up off each REAL market's last trading
+        day rather than comparing dates globally.)"""
+        daemon = self._make_daemon(markets=["IRIS", "INTEL"])
+        mock_now_local.return_value = datetime(2026, 4, 12, 8, 2)
 
-        today = date.today()
-        mock_now_local.return_value = datetime(
-            today.year, today.month, today.day, 8, 0,
-        )
+        daemon._maybe_morning_catchup(date(2026, 4, 12))
 
-        daemon._maybe_morning_catchup(today)
-
-        # Should have called now_local (passed the re-entry guard) but
-        # returned early because as_of_date == date.today()
-        mock_now_local.assert_called_once()
+        assert daemon.lanes["IRIS"].catchup is None
+        assert daemon.lanes["INTEL"].catchup is None
+        # No calendar was even consulted for pseudo-markets.
+        assert not daemon._calendars
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
     def test_catchup_skips_outside_hour(self, mock_now_local):
@@ -81,8 +107,8 @@ class TestDateRolloverRaceCondition:
         mock_now_local.return_value = datetime(2026, 4, 12, 10, 0)  # hour=10, not 8
         daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-        # Function should have exited after checking the hour
-        assert not hasattr(daemon, '_catchup_in_progress') or not daemon._catchup_in_progress
+        # Function exited after checking the hour — nothing attached.
+        assert daemon.lanes["US_EQ"].catchup is None
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
     def test_catchup_skips_past_minute_5(self, mock_now_local):
@@ -92,18 +118,17 @@ class TestDateRolloverRaceCondition:
         mock_now_local.return_value = datetime(2026, 4, 12, 8, 10)  # minute=10 > 5
         daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-        # Should return without starting catch-up
-        assert not hasattr(daemon, '_catchup_in_progress') or not daemon._catchup_in_progress
+        # Should return without attaching a catch-up.
+        assert daemon.lanes["US_EQ"].catchup is None
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
     def test_normal_catchup_pipeline_already_ran(self, mock_now_local):
-        """When pipeline already completed, catch-up exits early and caches the result."""
+        """When the pipeline already completed, no CatchupState attaches and
+        the (market, date) key is cached in _catchup_done."""
         daemon = self._make_daemon(morning_catchup_hour=8)
 
-        yesterday = date.today() - timedelta(days=1)
-        mock_now_local.return_value = datetime(
-            yesterday.year, yesterday.month, yesterday.day + 1, 8, 2,
-        )
+        yesterday = date(2026, 4, 10)
+        mock_now_local.return_value = datetime(2026, 4, 11, 8, 2)
 
         # Mock the trading calendar to return yesterday as a trading day
         mock_cal = MagicMock()
@@ -118,64 +143,64 @@ class TestDateRolloverRaceCondition:
             mock_run.phase = RunPhase.COMPLETED
             mock_load.return_value = mock_run
 
-            daemon._maybe_morning_catchup(yesterday)
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-        # When pipeline already ran, the function exits early after adding to
-        # _catchup_done and never enters the catch-up loop (so
-        # _catchup_in_progress is never set).
-        assert hasattr(daemon, '_catchup_done')
-        catchup_key = f"catchup_{yesterday}"
-        assert catchup_key in daemon._catchup_done
+        # Key format is now per-market: catchup_{market}_{last_trading_day}
+        assert f"catchup_US_EQ_{yesterday}" in daemon._catchup_done
+        assert daemon.lanes["US_EQ"].catchup is None
 
-    @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    @patch("prometheus.orchestration.market_aware_daemon.build_market_dag")
-    def test_catchup_flag_cleared_after_run(self, mock_build, mock_now_local):
-        """After a real catch-up run, _catchup_in_progress is reset to False."""
+    def test_catchup_cleared_after_completion(self):
+        """Successor of test_catchup_flag_cleared_after_run: once the
+        catch-up DAG has no runnable work left, _resolve_lane_work fires
+        _on_catchup_complete and clears lane.catchup so the live DAG
+        resumes (same safety goal as clearing _catchup_in_progress)."""
+        import time as _time
+
+        from prometheus.orchestration import market_aware_daemon as mad
+
         daemon = self._make_daemon(morning_catchup_hour=8)
+        lane = daemon.lanes["US_EQ"]
 
-        yesterday = date.today() - timedelta(days=1)
-        mock_now_local.return_value = datetime(
-            yesterday.year, yesterday.month, yesterday.day + 1, 8, 2,
+        mock_dag = MagicMock()
+        mock_dag.jobs = {"j": MagicMock()}
+        mock_dag.get_runnable_jobs.return_value = []  # everything done
+        lane.catchup = mad.CatchupState(
+            dag=mock_dag,
+            dag_id="US_EQ_2026-04-10",
+            catchup_date=date(2026, 4, 10),
+            deadline_monotonic=_time.monotonic() + 300,
         )
+        daemon._get_completed_jobs = MagicMock(return_value={"j"})
+
+        with patch.object(daemon, "_on_catchup_complete") as mock_done:
+            daemon._resolve_lane_work(lane, datetime.now(timezone.utc))
+
+        mock_done.assert_called_once_with(lane)
+        assert lane.catchup is None
+
+    @patch("prometheus.orchestration.market_aware_daemon.build_market_dag")
+    @patch("prometheus.orchestration.market_aware_daemon.now_local")
+    def test_catchup_idempotent(self, mock_now_local, mock_build):
+        """Second call for the same (market, last_trading_day) is a no-op
+        (cached in _catchup_done)."""
+        daemon = self._make_daemon(morning_catchup_hour=8)
+        yesterday = date(2026, 4, 10)
+        mock_now_local.return_value = datetime(2026, 4, 11, 8, 2)
 
         mock_cal = MagicMock()
         mock_cal.trading_days_between.return_value = [yesterday]
         daemon._calendars["US_EQ"] = mock_cal
 
-        # load_latest_run returns None → pipeline did not run → catch-up needed
-        with patch("prometheus.pipeline.state.load_latest_run", return_value=None):
-            # build_market_dag returns a DAG with no jobs (so loop finishes immediately)
-            mock_dag = MagicMock()
-            mock_dag.jobs = []
-            mock_build.return_value = mock_dag
+        # Pre-populate the done set (new per-market key format)
+        daemon._catchup_done = {f"catchup_US_EQ_{yesterday}"}
 
-            # Mock _get_completed_jobs and _get_running_job_ids
-            daemon._get_completed_jobs = MagicMock(return_value=set())
-            daemon._get_running_job_ids = MagicMock(return_value=set())
-            # get_runnable_jobs returns empty → loop exits
-            mock_dag.get_runnable_jobs.return_value = []
+        with patch("prometheus.pipeline.state.load_latest_run") as mock_load:
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-            daemon._maybe_morning_catchup(yesterday)
-
-        # _catchup_in_progress should be cleared after the try/finally block
-        assert not daemon._catchup_in_progress
-        assert hasattr(daemon, '_catchup_done')
-
-    @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    def test_catchup_idempotent(self, mock_now_local):
-        """Second call with same as_of_date is a no-op (cached in _catchup_done)."""
-        daemon = self._make_daemon(morning_catchup_hour=8)
-        yesterday = date(2026, 4, 11)
-        mock_now_local.return_value = datetime(2026, 4, 12, 8, 2)
-
-        # Pre-populate the done set
-        daemon._catchup_done = {f"catchup_{yesterday}"}
-
-        # Mock calendar — shouldn't be needed since we exit early
-        daemon._maybe_morning_catchup(yesterday)
-
-        # Should have returned early and NOT set _catchup_in_progress
-        assert not hasattr(daemon, '_catchup_in_progress') or not daemon._catchup_in_progress
+        # Returned early: no run lookup, no DAG built, nothing attached.
+        mock_load.assert_not_called()
+        mock_build.assert_not_called()
+        assert daemon.lanes["US_EQ"].catchup is None
 
 
 # ============================================================================
@@ -332,6 +357,7 @@ class TestIrisChatTimeout:
 
         # Reload iris_service to pick up the stubs
         import importlib
+
         import prometheus.monitoring.iris_service as iris_mod
         importlib.reload(iris_mod)
 
@@ -339,7 +365,8 @@ class TestIrisChatTimeout:
         def patched_iris_chat(question, history=None):
             # We can't easily monkey-patch the local variable, so we
             # test the ThreadPoolExecutor timeout directly.
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
+            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import TimeoutError as FTE
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(mock_agent.run, [], temperature=0.4, max_tokens=2048)
                 try:
@@ -370,6 +397,7 @@ class TestIrisChatTimeout:
         sys.modules["apatheon.llm.model_routing"].get_model = MagicMock(return_value="test")
 
         import importlib
+
         import prometheus.monitoring.iris_service as iris_mod
         importlib.reload(iris_mod)
 
@@ -570,88 +598,15 @@ class TestConfigRangeValidation:
             config = load_allocator_config()
             assert config.sector_kill_threshold == pytest.approx(0.30)
 
-    def test_crisis_alpha_config_clamps_out_of_range(self):
-        """Out-of-range values in crisis alpha config are clamped."""
-        from prometheus.sector.crisis_alpha import load_crisis_alpha_config
-
-        with patch.dict("os.environ", {
-            "PROMETHEUS_CRISIS_SHI_THRESHOLD": "2.0",
-        }):
-            config = load_crisis_alpha_config()
-            assert config.shi_threshold == 1.0
-
 
 # ============================================================================
-# MEDIUM 3: Crisis alpha flash signal off-by-one
+# MEDIUM 3: Crisis alpha flash signal — REMOVED 2026-06-11
+#
+# prometheus/sector/crisis_alpha.py was dead code (never imported by the live
+# pipeline) and was deleted in the signal-layer cleanup, along with these
+# tests. The live "crisis_alpha" OPTIONS strategy is a separate, still-wired
+# thing in prometheus/execution/options_strategy.py.
 # ============================================================================
-
-class TestCrisisAlphaFlashSignal:
-    """Tests for the flash signal requiring both drop AND absolute floor."""
-
-    def test_flash_requires_below_threshold(self):
-        """Flash should NOT fire when sectors drop sharply but stay healthy."""
-        from prometheus.sector.crisis_alpha import (
-            CrisisAlphaConfig,
-            CrisisSignal,
-            evaluate_crisis_signal,
-        )
-
-        config = CrisisAlphaConfig(
-            flash_sector_count=5,
-            flash_drop_threshold=0.10,
-            flash_min_sick=3,
-            shi_threshold=0.25,
-        )
-
-        # 6 sectors drop from 0.90 to 0.78 — large drop but still healthy
-        prev = {f"S{i}": 0.90 for i in range(8)}
-        curr = {f"S{i}": 0.78 for i in range(8)}
-
-        result = evaluate_crisis_signal(curr, date(2026, 4, 12), prev, config=config)
-
-        # flash_drops should be 0 because none are below shi_threshold
-        assert result.signal != CrisisSignal.FULL_CRISIS
-        assert result.signal == CrisisSignal.NONE  # 0 sick sectors
-
-    def test_flash_fires_when_below_threshold_and_large_drop(self):
-        """Flash should fire when sectors drop sharply AND end up below threshold."""
-        from prometheus.sector.crisis_alpha import (
-            CrisisAlphaConfig,
-            CrisisSignal,
-            evaluate_crisis_signal,
-        )
-
-        config = CrisisAlphaConfig(
-            flash_sector_count=5,
-            flash_drop_threshold=0.10,
-            flash_min_sick=3,
-            shi_threshold=0.25,
-        )
-
-        # 6 sectors drop from 0.35 to 0.20 — both large drop AND below threshold
-        prev = {f"S{i}": 0.35 for i in range(6)}
-        curr = {f"S{i}": 0.20 for i in range(6)}
-
-        result = evaluate_crisis_signal(curr, date(2026, 4, 12), prev, config=config)
-
-        assert result.signal == CrisisSignal.FULL_CRISIS
-        assert result.sick_count == 6
-
-    def test_flash_no_previous_scores(self):
-        """Without previous scores, flash cannot fire."""
-        from prometheus.sector.crisis_alpha import (
-            CrisisAlphaConfig,
-            CrisisSignal,
-            evaluate_crisis_signal,
-        )
-
-        config = CrisisAlphaConfig()
-        curr = {f"S{i}": 0.10 for i in range(8)}
-
-        result = evaluate_crisis_signal(curr, date(2026, 4, 12), None, config=config)
-
-        # No flash possible without prev_sector_scores, but sustained/watch may fire
-        assert result.signal != CrisisSignal.FULL_CRISIS
 
 
 # ============================================================================
@@ -659,68 +614,85 @@ class TestCrisisAlphaFlashSignal:
 # ============================================================================
 
 class TestMidnightJobClearing:
-    """Test that jobs are finalized BEFORE running_jobs is cleared on date rollover."""
+    """Date-rollover safety under the lane scheduler.
 
-    def test_date_rollover_finalizes_running_jobs(self):
-        """On date rollover, running jobs should be marked FAILED before clearing.
+    The old behavior (finalize running jobs, then clear running_jobs, at
+    the moment of rollover) CHANGED BY DESIGN: rollover now only sets
+    ``lane.pending_rollover`` and never touches in-flight handles — the
+    running job's status writes keep going against its old dag_id, and
+    ``_apply_pending_rollover`` swaps the DAG (finalizing the market's
+    stale engine_runs) only once the lane is idle. Same safety goal —
+    no execution row is stranded RUNNING and no run left un-finalized —
+    achieved by deferral instead of in-place finalization.
+    """
 
-        This test directly exercises the finalization loop added to the date
-        rollover block, verifying the correct order: finalize THEN clear.
-        """
+    def test_date_rollover_defers_swap_for_busy_lane(self):
+        """A busy lane keeps its old DAG at rollover; the swap (and
+        stale-run finalization) happens only after the in-flight job
+        completes and the lane is idle."""
+        import threading
+
+        from prometheus.orchestration import market_aware_daemon as mad
         from prometheus.orchestration.market_aware_daemon import (
             MarketAwareDaemon,
-            JobStatus,
+            MarketAwareDaemonConfig,
         )
 
-        config = MagicMock()
-        config.as_of_date = None
-        config.markets = ["US_EQ"]
-        config.poll_interval_seconds = 60
-        config.options_mode = "paper"
-        config.morning_catchup_hour = 8
+        config = MarketAwareDaemonConfig(markets=["US_EQ"])
+        daemon = MarketAwareDaemon(config, MagicMock())
 
-        db = MagicMock()
-        daemon = MarketAwareDaemon(config, db)
+        old_date = date(2026, 4, 11)
+        new_date = date(2026, 4, 12)
+        old_dag = MagicMock()
+        old_dag.as_of_date = old_date
+        daemon.active_dags["US_EQ"] = (old_dag, f"US_EQ_{old_date.isoformat()}")
 
-        # Simulate a running job
+        lane = daemon.lanes["US_EQ"]
+
+        # Simulate an in-flight job on the lane.
         mock_job = MagicMock()
         mock_job.job_id = "test_job"
-        mock_job.timeout_seconds = 3600
-        daemon.running_jobs["exec-001"] = (mock_job, datetime.now(timezone.utc))
+        handle = mad.JobHandle(
+            job=mock_job,
+            execution_id="exec-001",
+            dag_id=f"US_EQ_{old_date.isoformat()}",
+            market_id="US_EQ",
+            as_of_date=old_date,
+            thread=threading.Thread(target=lambda: None, daemon=True),
+            started_at=datetime.now(timezone.utc),
+            deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            done=threading.Event(),
+            result=[],
+            attempt_number=1,
+            max_retries=3,
+        )
+        lane.handle = handle
 
-        # Track call order to verify finalize-before-clear
-        call_order = []
+        # run()'s rollover block only marks the lane.
+        lane.pending_rollover = new_date
 
-        def track_update(*args, **kwargs):
-            call_order.append("finalize")
+        with patch("prometheus.orchestration.market_aware_daemon.update_job_execution_status") as mock_update, \
+             patch.object(daemon, "_finalize_stale_runs_for_market") as mock_fin, \
+             patch.object(daemon, "_initialize_dag") as mock_init:
+            # Busy lane: the deferred rollover must NOT touch the running
+            # handle, must NOT finalize, must NOT swap the DAG.
+            daemon._apply_pending_rollover(lane)
+            mock_update.assert_not_called()
+            mock_fin.assert_not_called()
+            mock_init.assert_not_called()
+            assert lane.handle is handle
+            assert lane.pending_rollover == new_date
+            assert daemon.active_dags["US_EQ"][0] is old_dag
 
-        def track_clear():
-            call_order.append("clear")
-            daemon.running_jobs.__class__.clear(daemon.running_jobs)
+            # Job completes → lane freed (the normal poll path does this).
+            lane.handle = None
 
-        # Exercise the exact code path from the date rollover block.
-        # We simulate what the fixed code does:
-        with patch("prometheus.orchestration.market_aware_daemon.update_job_execution_status",
-                    side_effect=track_update) as mock_update:
-            # Finalize loop (from the fixed code)
-            for exec_id, (rj, _) in list(daemon.running_jobs.items()):
-                try:
-                    mock_update(
-                        daemon.db_manager,
-                        exec_id,
-                        JobStatus.FAILED,
-                        error_message="date rollover while job was running",
-                    )
-                except Exception:
-                    pass
-
-            call_order.append("clear")
-            daemon.running_jobs.clear()
-
-        # Verify finalization happened before clearing
-        assert call_order == ["finalize", "clear"]
-        assert len(daemon.running_jobs) == 0
-        mock_update.assert_called_once()
+            # Now the swap goes through: finalize stale runs for the OLD
+            # date, then re-initialize the DAG for the new date.
+            daemon._apply_pending_rollover(lane)
+            mock_fin.assert_called_once_with("US_EQ", old_date)
+            mock_init.assert_called_once_with("US_EQ", new_date)
+            assert lane.pending_rollover is None
 
 
 # ============================================================================
@@ -740,15 +712,6 @@ class TestConfigLoadingVisibility:
         # Config should still be valid (defaults)
         assert config.sector_kill_threshold == pytest.approx(0.25)
 
-    def test_crisis_alpha_explicit_missing_path_warns(self, capsys):
-        """Passing an explicit nonexistent path should print a warning to stderr."""
-        from prometheus.sector.crisis_alpha import load_crisis_alpha_config
-
-        config = load_crisis_alpha_config(path="/nonexistent/crisis.yaml")
-        captured = capsys.readouterr()
-        assert "not found" in captured.err.lower()
-        assert config.shi_threshold == pytest.approx(0.25)
-
     def test_allocator_default_missing_path_no_warning(self, capsys):
         """When no explicit path is given and default doesn't exist, no warning."""
         from prometheus.sector.allocator import load_allocator_config
@@ -767,12 +730,17 @@ class TestConfigLoadingVisibility:
 # ============================================================================
 
 class TestCatchupBudgetCheck:
-    """Test that budget is checked BEFORE submitting the next job."""
+    """A non-positive catch-up budget must prevent any catch-up work.
+
+    New-semantics equivalent of the old "budget checked BEFORE submitting
+    the next job" test: catch-up no longer loops inline, so budget<=0 now
+    means no CatchupState is ever attached to any lane.
+    """
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
     @patch("prometheus.orchestration.market_aware_daemon.build_market_dag")
-    def test_zero_budget_skips_catchup_loop(self, mock_build, mock_now_local):
-        """A zero-second budget should skip the loop entirely."""
+    def test_zero_budget_attaches_no_catchup(self, mock_build, mock_now_local):
+        """A zero-second budget returns before the per-market loop."""
         from prometheus.orchestration.market_aware_daemon import MarketAwareDaemon
 
         config = MagicMock()
@@ -785,26 +753,22 @@ class TestCatchupBudgetCheck:
         db = MagicMock()
         daemon = MarketAwareDaemon(config, db)
 
-        yesterday = date.today() - timedelta(days=1)
-        mock_now_local.return_value = datetime(
-            yesterday.year, yesterday.month, yesterday.day + 1, 8, 2,
-        )
+        yesterday = date(2026, 4, 10)
+        mock_now_local.return_value = datetime(2026, 4, 11, 8, 2)
 
         mock_cal = MagicMock()
         mock_cal.trading_days_between.return_value = [yesterday]
         daemon._calendars["US_EQ"] = mock_cal
 
         # load_latest_run is imported locally; patch at source
-        with patch("prometheus.pipeline.state.load_latest_run", return_value=None):
-            mock_dag = MagicMock()
-            mock_dag.jobs = []
-            mock_build.return_value = mock_dag
-
+        with patch("prometheus.pipeline.state.load_latest_run", return_value=None) as mock_load:
             with patch.dict("os.environ", {"PROMETHEUS_CATCHUP_BUDGET_SECONDS": "0"}):
-                daemon._maybe_morning_catchup(yesterday)
+                daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-        # _process_market should NOT have been called (zero budget skips the loop)
-        # The catch-up should still be marked as done
-        assert hasattr(daemon, '_catchup_done')
-        # Flag should be cleared after the try/finally
-        assert not daemon._catchup_in_progress
+        # Zero budget → no lane got a CatchupState, no DAG was built, and
+        # the (market, date) key was NOT consumed, so a later restart with a
+        # sane budget can still catch up.
+        assert daemon.lanes["US_EQ"].catchup is None
+        mock_build.assert_not_called()
+        mock_load.assert_not_called()
+        assert f"catchup_US_EQ_{yesterday}" not in daemon._catchup_done

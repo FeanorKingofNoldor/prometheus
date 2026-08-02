@@ -9,4 +9,7 @@ prometheus_web/node_modules/
 prometheus_web/dist/
 prometheus_web/.vite/
 *.log
+*.log.*
+logs/
 data/health_reports/
+data/archive/

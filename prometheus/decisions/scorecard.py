@@ -31,7 +31,14 @@ from apatheon.core.database import DatabaseManager
 from apatheon.core.logging import get_logger
 from apatheon.data.reader import DataReader
 
+from prometheus.decisions.run_boundary import current_run_start
+
 logger = get_logger(__name__)
+
+# Minimum predictions below which the scorecard's aggregate hit-rate /
+# rank-correlation are flagged as small-N noise rather than published as a
+# confident edge.
+DEFAULT_MIN_N = 20
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,8 @@ class ScorecardReport:
     top_misses: List[ScorecardRow]
     top_hits: List[ScorecardRow]
     date_range: Tuple[date, date]
+    insufficient_sample: bool = False
+    min_n: int = DEFAULT_MIN_N
 
 
 @dataclass
@@ -81,6 +90,7 @@ class PredictionScorecard:
     """Builds prediction accuracy reports from assessment decisions and price data."""
 
     db_manager: DatabaseManager
+    min_n: int = DEFAULT_MIN_N
 
     def __post_init__(self) -> None:
         self._data_reader = DataReader(db_manager=self.db_manager)
@@ -111,6 +121,13 @@ class PredictionScorecard:
             end_date = date.today() - timedelta(days=horizon_days)
         else:
             end_date = min(end_date, date.today() - timedelta(days=horizon_days))
+
+        # Never score decisions from before the current paper run — a reset
+        # discontinuity would let stale pre-reset predictions pollute the
+        # scorecard's hit rate.
+        run_start = current_run_start(self.db_manager)
+        if run_start is not None:
+            start_date = run_start if start_date is None else max(start_date, run_start)
 
         # Load ASSESSMENT decisions with instrument_scores
         sql = """
@@ -143,6 +160,7 @@ class PredictionScorecard:
                 spearman_rho=0.0, avg_predicted_score=0.0, avg_realized_return=0.0,
                 sector_breakdown=[], top_misses=[], top_hits=[],
                 date_range=(end_date, end_date),
+                insufficient_sample=True, min_n=self.min_n,
             )
 
         # Load sector mapping for instruments
@@ -200,6 +218,7 @@ class PredictionScorecard:
                 spearman_rho=0.0, avg_predicted_score=0.0, avg_realized_return=0.0,
                 sector_breakdown=[], top_misses=[], top_hits=[],
                 date_range=(min_date, max_date),
+                insufficient_sample=True, min_n=self.min_n,
             )
 
         # Compute aggregate metrics
@@ -262,6 +281,8 @@ class PredictionScorecard:
             top_misses=misses,
             top_hits=top_hits,
             date_range=(min_date, max_date),
+            insufficient_sample=total < self.min_n,
+            min_n=self.min_n,
         )
 
     def _load_sector_map(self) -> Dict[str, str]:
@@ -336,20 +357,15 @@ class PredictionScorecard:
 
     @staticmethod
     def _spearman(x: List[float], y: List[float]) -> float:
-        """Compute Spearman rank correlation without scipy dependency."""
-        n = len(x)
-        if n < 3:
-            return 0.0
+        """Spearman rank-IC. Delegates to the single, tie-aware implementation
+        in the signal research harness so there is one IC definition in the repo.
 
-        def _rank(vals: List[float]) -> List[float]:
-            indexed = sorted(enumerate(vals), key=lambda t: t[1])
-            ranks = [0.0] * n
-            for rank_idx, (orig_idx, _) in enumerate(indexed):
-                ranks[orig_idx] = float(rank_idx + 1)
-            return ranks
+        Returns 0.0 (not NaN) for degenerate inputs to preserve this scorecard's
+        historical contract (the monitoring API serializes the value directly).
+        """
+        import numpy as np
 
-        rx = _rank(x)
-        ry = _rank(y)
+        from prometheus.research.signal_harness import _spearman as _harness_spearman
 
-        d_sq = sum((a - b) ** 2 for a, b in zip(rx, ry))
-        return 1.0 - (6.0 * d_sq) / (n * (n * n - 1))
+        rho = _harness_spearman(np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+        return 0.0 if not np.isfinite(rho) else float(rho)

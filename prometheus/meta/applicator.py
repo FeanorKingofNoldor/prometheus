@@ -21,14 +21,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
-
-from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
 from apatheon.core.database import DatabaseManager
 from apatheon.core.ids import generate_uuid
 from apatheon.core.logging import get_logger
 from psycopg2.extras import Json
+
+from prometheus.orchestration.clock import now_utc
 
 logger = get_logger(__name__)
 

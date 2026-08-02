@@ -51,3 +51,113 @@ policies:
       RECOVERY:
         book_id: US_EQ_LONG_V12
         sleeve_id: US_EQ_LONG_V12_K20
+
+  # ── Regional markets (multi-market rollout) ──────────────────────────
+  # Same shape as US_EQ: the equity book stays fixed across all situations;
+  # risk reduction is handled by overlays/options, not book switching.
+  # Books/sleeves are defined in configs/meta/books.yaml.
+
+  UK_EQ:
+    default:
+      book_id: UK_EQ_LONG_V1
+      sleeve_id: UK_EQ_LONG_V1_K12
+    situations:
+      RISK_ON:
+        book_id: UK_EQ_LONG_V1
+        sleeve_id: UK_EQ_LONG_V1_K12
+      NEUTRAL:
+        book_id: UK_EQ_LONG_V1
+        sleeve_id: UK_EQ_LONG_V1_K12
+      RISK_OFF:
+        book_id: UK_EQ_LONG_V1
+        sleeve_id: UK_EQ_LONG_V1_K12
+      CRISIS:
+        book_id: UK_EQ_LONG_V1
+        sleeve_id: UK_EQ_LONG_V1_K12
+      RECOVERY:
+        book_id: UK_EQ_LONG_V1
+        sleeve_id: UK_EQ_LONG_V1_K12
+
+  EU_EQ:
+    default:
+      book_id: EU_EQ_LONG_V1
+      sleeve_id: EU_EQ_LONG_V1_K12
+    situations:
+      RISK_ON:
+        book_id: EU_EQ_LONG_V1
+        sleeve_id: EU_EQ_LONG_V1_K12
+      NEUTRAL:
+        book_id: EU_EQ_LONG_V1
+        sleeve_id: EU_EQ_LONG_V1_K12
+      RISK_OFF:
+        book_id: EU_EQ_LONG_V1
+        sleeve_id: EU_EQ_LONG_V1_K12
+      CRISIS:
+        book_id: EU_EQ_LONG_V1
+        sleeve_id: EU_EQ_LONG_V1_K12
+      RECOVERY:
+        book_id: EU_EQ_LONG_V1
+        sleeve_id: EU_EQ_LONG_V1_K12
+
+  HK_EQ:
+    default:
+      book_id: HK_EQ_LONG_V1
+      sleeve_id: HK_EQ_LONG_V1_K12
+    situations:
+      RISK_ON:
+        book_id: HK_EQ_LONG_V1
+        sleeve_id: HK_EQ_LONG_V1_K12
+      NEUTRAL:
+        book_id: HK_EQ_LONG_V1
+        sleeve_id: HK_EQ_LONG_V1_K12
+      RISK_OFF:
+        book_id: HK_EQ_LONG_V1
+        sleeve_id: HK_EQ_LONG_V1_K12
+      CRISIS:
+        book_id: HK_EQ_LONG_V1
+        sleeve_id: HK_EQ_LONG_V1_K12
+      RECOVERY:
+        book_id: HK_EQ_LONG_V1
+        sleeve_id: HK_EQ_LONG_V1_K12
+
+  KR_EQ:
+    default:
+      book_id: KR_EQ_LONG_V1
+      sleeve_id: KR_EQ_LONG_V1_K12
+    situations:
+      RISK_ON:
+        book_id: KR_EQ_LONG_V1
+        sleeve_id: KR_EQ_LONG_V1_K12
+      NEUTRAL:
+        book_id: KR_EQ_LONG_V1
+        sleeve_id: KR_EQ_LONG_V1_K12
+      RISK_OFF:
+        book_id: KR_EQ_LONG_V1
+        sleeve_id: KR_EQ_LONG_V1_K12
+      CRISIS:
+        book_id: KR_EQ_LONG_V1
+        sleeve_id: KR_EQ_LONG_V1_K12
+      RECOVERY:
+        book_id: KR_EQ_LONG_V1
+        sleeve_id: KR_EQ_LONG_V1_K12
+
+  AU_EQ:
+    default:
+      book_id: AU_EQ_LONG_V1
+      sleeve_id: AU_EQ_LONG_V1_K12
+    situations:
+      RISK_ON:
+        book_id: AU_EQ_LONG_V1
+        sleeve_id: AU_EQ_LONG_V1_K12
+      NEUTRAL:
+        book_id: AU_EQ_LONG_V1
+        sleeve_id: AU_EQ_LONG_V1_K12
+      RISK_OFF:
+        book_id: AU_EQ_LONG_V1
+        sleeve_id: AU_EQ_LONG_V1_K12
+      CRISIS:
+        book_id: AU_EQ_LONG_V1
+        sleeve_id: AU_EQ_LONG_V1_K12
+      RECOVERY:
+        book_id: AU_EQ_LONG_V1
+        sleeve_id: AU_EQ_LONG_V1_K12

@@ -357,7 +357,11 @@ async def _intel_weekly_scheduler() -> None:
             logger.info("[scheduler] Sunday %02d:%02d — launching weekly intel DAG", _WEEKLY_HOUR, _WEEKLY_MINUTE)
 
             def _run_weekly_dag() -> None:
-                from apatheon.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
+                from apatheon.intel.pipeline import (
+                    run_daily_sitrep,
+                    run_flash_check,
+                    run_situation_report,
+                )
 
                 from prometheus.monitoring.report_service import generate_log_report
 
@@ -365,7 +369,7 @@ async def _intel_weekly_scheduler() -> None:
                 logger.info("[scheduler] Flash check complete")
                 run_daily_sitrep()
                 logger.info("[scheduler] Daily SITREP complete")
-                run_weekly_assessment()
+                run_situation_report("weekly")
                 logger.info("[scheduler] Weekly assessment complete")
                 generate_log_report("log_weekly")
                 logger.info("[scheduler] Weekly log health report complete")

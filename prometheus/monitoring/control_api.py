@@ -14,8 +14,6 @@ import json
 import os
 import socket
 from datetime import date, datetime  # noqa: F401  (datetime kept for type hints)
-
-from prometheus.orchestration.clock import now_utc
 from typing import Any, Dict, List, Optional
 
 from apatheon.core.database import get_db_manager
@@ -25,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from prometheus.books.registry import AllocatorSleeveSpec, BookKind, load_book_registry
 from prometheus.monitoring.job_runner import JobRecord, create_job, get_job, submit_job
+from prometheus.orchestration.clock import now_utc
 
 logger = get_logger(__name__)
 
@@ -670,7 +669,11 @@ async def schedule_dag(request: DAGScheduleRequest = Body(...)) -> JobResponse:
         is_sunday = as_of.weekday() == 6
 
         def _run_intel_dag() -> Dict[str, Any]:
-            from apatheon.intel.pipeline import run_daily_sitrep, run_flash_check, run_weekly_assessment
+            from apatheon.intel.pipeline import (
+                run_daily_sitrep,
+                run_flash_check,
+                run_situation_report,
+            )
 
             from prometheus.monitoring.report_service import generate_log_report
 
@@ -685,7 +688,7 @@ async def schedule_dag(request: DAGScheduleRequest = Body(...)) -> JobResponse:
             results["jobs_run"].append("intel_daily_sitrep")
 
             if is_sunday:
-                run_weekly_assessment()
+                run_situation_report("weekly")
                 results["jobs_run"].append("intel_weekly_assessment")
 
             generate_log_report("log_daily")
