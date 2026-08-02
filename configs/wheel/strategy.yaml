@@ -1,0 +1,42 @@
+# Core+wheel strategy configuration (validated 2026-08-02/03 — see
+# prometheus/scripts/research/wheel_validation/README.md for the evidence).
+#
+# Allocation is a knob: 0.80/0.10/0.10 keeps near-full wheel compounding
+# (+0.14 Sharpe, -9pts DD vs pure wheel); 0.60/0.20/0.20 is the Sharpe
+# champion (1.00-1.12, DD -22%) at ~1pp CAGR cost. Both tested.
+
+allocation:
+  wheel: 0.80
+  ballast:
+    TLT.US: 0.10   # 20+y US Treasuries — growth-crash insurance (GFC corr -0.45)
+    GLD.US: 0.10   # physical gold — the 2022-style inflation-shock cover
+  rebalance: quarterly
+
+# PRIIPs: US ETFs are paper-only for the EU retail live account. At live
+# cutover the execution layer must substitute per this map (backtests used
+# the US originals; twins track the same underlyings).
+live_substitutions:
+  TLT.US: DTLA.LSE     # iShares $ Treasury Bond 20+yr UCITS
+  GLD.US: SGLN.LSE     # iShares Physical Gold ETC
+
+wheel:
+  underlying: SPY.US
+  # Live-account note: SPY shares are PRIIPs-blocked but SPY OPTIONS have
+  # OCC KIDs and are tradeable; assignment delivers shares which may be
+  # HELD and sold but not bought directly. Cash-settled XSP is the live
+  # fallback documented in the July research; paper uses SPY throughout.
+  target_dte_days: 30          # calendar days; nearest listed Friday >= this
+  put_otm: 0.02                # normal-regime CSP strike = spot * (1 - put_otm)
+  call_otm: 0.08               # covered-call strike = spot * (1 + call_otm)
+  vix_rich_threshold: 25.0     # VIX > rich: wider puts + profit-take management
+  put_otm_rich: 0.05
+  profit_take_fraction: 0.50   # rich-regime options only: buy back at 50% of credit
+  vix_dead_threshold: 13.0     # VIX < dead: skip the covered call (too cheap)
+  min_holding_notice: cash_secured_always   # documentation flag, not a knob
+
+execution:
+  order_style: limit_at_mid    # never market orders
+  limit_walk_bps: 25           # max concession from mid before giving up the day
+  max_contracts_per_day: 10    # sanity ceiling
+  assignments: accept          # assignment IS the mechanism; never defensive-close
+  stop_losses: none
