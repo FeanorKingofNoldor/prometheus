@@ -1,0 +1,769 @@
+{
+ "meta": {
+  "window": [
+   "1998-01-02",
+   "2026-07-31"
+  ],
+  "init_cash": 250000.0,
+  "commission_per_contract": 0.65,
+  "slippage_pct_of_premium": 0.05,
+  "target_dte_calendar": 30,
+  "rate": 0.0,
+  "notes": [
+   "r=0,q=0 in BS; CSP cash earns 0 (understates wheel in high-rate eras)",
+   "short option marked at intrinsic only (flat equity in OTM CSP phases -> wheel Sharpe overstated)",
+   "sigma = VIX/100*iv_factor (VIX = 30d SPX IV as SPY proxy)",
+   "dividends credited daily from adjusted/raw close drift while holding shares",
+   "pct_months_net_premium_income: months where (net premium credited - intrinsic paid at settlements) > 0",
+   "expiry = trading day nearest trade_date+30cd; European exercise at raw close"
+  ]
+ },
+ "benchmark": {
+  "FULL": {
+   "total_return": 11.479639959304977,
+   "cagr": 0.09235133955691444,
+   "sharpe": 0.55405608678139,
+   "max_dd": -0.5518908920130348
+  },
+  "1998-2009": {
+   "total_return": 0.3929208034092939,
+   "cagr": 0.028014745607754188,
+   "sharpe": 0.23551920769538434,
+   "max_dd": -0.5518908920130348
+  },
+  "2010-2019": {
+   "total_return": 2.4687525797755034,
+   "cagr": 0.13261932027114143,
+   "sharpe": 0.92205807413656,
+   "max_dd": -0.19348877118294472
+  },
+  "2020-2026": {
+   "total_return": 1.5162624191257907,
+   "cagr": 0.15063945194932882,
+   "sharpe": 0.7972242234831926,
+   "max_dd": -0.3371739022860678
+  }
+ },
+ "combos": [
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.03,
+   "iv_factor": 0.85,
+   "name": "put2_call3_iv0.85",
+   "max_premium_pct_of_spot": 0.06732870543211546,
+   "put_sales": 225,
+   "call_sales": 120,
+   "windows": {
+    "FULL": {
+     "total_return": 2.6555835634560285,
+     "cagr": 0.04640801580933718,
+     "sharpe": 0.38408960645267676,
+     "max_dd": -0.36946668406378924,
+     "total_premium_net": 1413157.2715794619,
+     "puts_assigned": 45,
+     "calls_assigned": 45,
+     "pct_days_holding_shares": 0.3494713411240957,
+     "pct_months_net_premium_income": 0.7900874635568513,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.24994655199396765,
+     "cagr": 0.018774281718038965,
+     "sharpe": 0.19410543403531258,
+     "max_dd": -0.36946668406378924,
+     "total_premium_net": 480925.61526404106,
+     "puts_assigned": 22,
+     "calls_assigned": 22,
+     "pct_days_holding_shares": 0.45048029148724744,
+     "pct_months_net_premium_income": 0.7569444444444444,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 1.1223266478541176,
+     "cagr": 0.07825513907981296,
+     "sharpe": 0.7474703656509696,
+     "max_dd": -0.16042660141977605,
+     "total_premium_net": 367578.4907837146,
+     "puts_assigned": 14,
+     "calls_assigned": 14,
+     "pct_days_holding_shares": 0.2992845786963434,
+     "pct_months_net_premium_income": 0.825,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.36392624748572744,
+     "cagr": 0.04832612243742562,
+     "sharpe": 0.4001744392822814,
+     "max_dd": -0.2660142459952256,
+     "total_premium_net": 564653.1655317062,
+     "puts_assigned": 9,
+     "calls_assigned": 9,
+     "pct_days_holding_shares": 0.2413793103448276,
+     "pct_months_net_premium_income": 0.7974683544303798,
+     "n_months": 79
+    }
+   },
+   "final_equity": 926417.845498269
+  },
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.03,
+   "iv_factor": 1.0,
+   "name": "put2_call3_iv1",
+   "max_premium_pct_of_spot": 0.08150945896971452,
+   "put_sales": 225,
+   "call_sales": 120,
+   "windows": {
+    "FULL": {
+     "total_return": 8.942224777675188,
+     "cagr": 0.08369638458581385,
+     "sharpe": 0.6164460480076185,
+     "max_dd": -0.31582394209248754,
+     "total_premium_net": 3526968.1762021044,
+     "puts_assigned": 45,
+     "calls_assigned": 45,
+     "pct_days_holding_shares": 0.3494713411240957,
+     "pct_months_net_premium_income": 0.7988338192419825,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.9958061953230943,
+     "cagr": 0.05930563198120353,
+     "sharpe": 0.41812871262595025,
+     "max_dd": -0.31582394209248754,
+     "total_premium_net": 796609.9190643862,
+     "puts_assigned": 22,
+     "calls_assigned": 22,
+     "pct_days_holding_shares": 0.45048029148724744,
+     "pct_months_net_premium_income": 0.7638888888888888,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 1.812497927904054,
+     "cagr": 0.10908445696055957,
+     "sharpe": 0.9963235293082444,
+     "max_dd": -0.1520044624070782,
+     "total_premium_net": 928904.1030443838,
+     "puts_assigned": 14,
+     "calls_assigned": 14,
+     "pct_days_holding_shares": 0.2992845786963434,
+     "pct_months_net_premium_income": 0.8416666666666667,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.7478419202750031,
+     "cagr": 0.08861688691011782,
+     "sharpe": 0.6473981549739483,
+     "max_dd": -0.25807737842757295,
+     "total_premium_net": 1801454.1540933347,
+     "puts_assigned": 9,
+     "calls_assigned": 9,
+     "pct_days_holding_shares": 0.2413793103448276,
+     "pct_months_net_premium_income": 0.7974683544303798,
+     "n_months": 79
+    }
+   },
+   "final_equity": 2528808.7329951166
+  },
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.05,
+   "iv_factor": 0.85,
+   "name": "put2_call5_iv0.85",
+   "max_premium_pct_of_spot": 0.059650316236323275,
+   "put_sales": 163,
+   "call_sales": 182,
+   "windows": {
+    "FULL": {
+     "total_return": 4.944658342561663,
+     "cagr": 0.06436627136706674,
+     "sharpe": 0.48061643712425206,
+     "max_dd": -0.3971446619611184,
+     "total_premium_net": 1372005.9952515007,
+     "puts_assigned": 32,
+     "calls_assigned": 32,
+     "pct_days_holding_shares": 0.5289371174179187,
+     "pct_months_net_premium_income": 0.8513119533527697,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.27872456087550557,
+     "cagr": 0.02070947451010352,
+     "sharpe": 0.20394314891226878,
+     "max_dd": -0.3971446619611184,
+     "total_premium_net": 372588.93849575333,
+     "puts_assigned": 15,
+     "calls_assigned": 15,
+     "pct_days_holding_shares": 0.5886054985094402,
+     "pct_months_net_premium_income": 0.8472222222222222,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 1.8167362090272468,
+     "cagr": 0.10925168275888275,
+     "sharpe": 0.9154667111476729,
+     "max_dd": -0.16694217979293824,
+     "total_premium_net": 253121.74281144526,
+     "puts_assigned": 9,
+     "calls_assigned": 8,
+     "pct_days_holding_shares": 0.6100953895071543,
+     "pct_months_net_premium_income": 0.8666666666666667,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.618586995322798,
+     "cagr": 0.07597304330075905,
+     "sharpe": 0.5575347727542576,
+     "max_dd": -0.28995553336330915,
+     "total_premium_net": 746295.3139443022,
+     "puts_assigned": 8,
+     "calls_assigned": 9,
+     "pct_days_holding_shares": 0.2964307320024198,
+     "pct_months_net_premium_income": 0.8354430379746836,
+     "n_months": 79
+    }
+   },
+   "final_equity": 1506527.6113487838
+  },
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.05,
+   "iv_factor": 1.0,
+   "name": "put2_call5_iv1",
+   "max_premium_pct_of_spot": 0.07374407208614331,
+   "put_sales": 163,
+   "call_sales": 182,
+   "windows": {
+    "FULL": {
+     "total_return": 13.231139793058254,
+     "cagr": 0.09738347654534163,
+     "sharpe": 0.6766001245843621,
+     "max_dd": -0.350524589472344,
+     "total_premium_net": 3380963.9954537996,
+     "puts_assigned": 32,
+     "calls_assigned": 32,
+     "pct_days_holding_shares": 0.5289371174179187,
+     "pct_months_net_premium_income": 0.8571428571428571,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.939417230528943,
+     "cagr": 0.056777475571531566,
+     "sharpe": 0.39810170588082555,
+     "max_dd": -0.350524589472344,
+     "total_premium_net": 619276.1530330083,
+     "puts_assigned": 15,
+     "calls_assigned": 15,
+     "pct_days_holding_shares": 0.5886054985094402,
+     "pct_months_net_premium_income": 0.8541666666666666,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 2.4959325853318095,
+     "cagr": 0.13350478103029229,
+     "sharpe": 1.090182198037431,
+     "max_dd": -0.1609281231627807,
+     "total_premium_net": 620580.7540726742,
+     "puts_assigned": 9,
+     "calls_assigned": 8,
+     "pct_days_holding_shares": 0.6100953895071543,
+     "pct_months_net_premium_income": 0.875,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 1.0527064434176494,
+     "cagr": 0.11555930893838484,
+     "sharpe": 0.7869779396116154,
+     "max_dd": -0.27493589105747207,
+     "total_premium_net": 2141107.088348117,
+     "puts_assigned": 8,
+     "calls_assigned": 9,
+     "pct_days_holding_shares": 0.2964307320024198,
+     "pct_months_net_premium_income": 0.8354430379746836,
+     "n_months": 79
+    }
+   },
+   "final_equity": 3619695.9326416617
+  },
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.08,
+   "iv_factor": 0.85,
+   "name": "put2_call8_iv0.85",
+   "max_premium_pct_of_spot": 0.04945373844075274,
+   "put_sales": 61,
+   "call_sales": 284,
+   "windows": {
+    "FULL": {
+     "total_return": 8.823018517148203,
+     "cagr": 0.08323901986094606,
+     "sharpe": 0.5822355222967595,
+     "max_dd": -0.4157390755165232,
+     "total_premium_net": 858856.8602448037,
+     "puts_assigned": 12,
+     "calls_assigned": 12,
+     "pct_days_holding_shares": 0.8251252086811353,
+     "pct_months_net_premium_income": 0.8571428571428571,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.3654809042923266,
+     "cagr": 0.026310918642861836,
+     "sharpe": 0.23517986322744452,
+     "max_dd": -0.4157390755165232,
+     "total_premium_net": 205867.10982866638,
+     "puts_assigned": 6,
+     "calls_assigned": 6,
+     "pct_days_holding_shares": 0.823782709506459,
+     "pct_months_net_premium_income": 0.8263888888888888,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 2.4445717438688153,
+     "cagr": 0.13182630158133923,
+     "sharpe": 1.0045397243357175,
+     "max_dd": -0.16987677535199863,
+     "total_premium_net": 88536.98934390448,
+     "puts_assigned": 3,
+     "calls_assigned": 2,
+     "pct_days_holding_shares": 0.9252782193958664,
+     "pct_months_net_premium_income": 0.8583333333333333,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 1.0499121801598474,
+     "cagr": 0.11532826150739672,
+     "sharpe": 0.7544131960340533,
+     "max_dd": -0.2694059911902582,
+     "total_premium_net": 564452.7610722329,
+     "puts_assigned": 3,
+     "calls_assigned": 4,
+     "pct_days_holding_shares": 0.6751361161524501,
+     "pct_months_net_premium_income": 0.9113924050632911,
+     "n_months": 79
+    }
+   },
+   "final_equity": 2489402.715866955
+  },
+  {
+   "put_otm": 0.02,
+   "call_otm": 0.08,
+   "iv_factor": 1.0,
+   "name": "put2_call8_iv1",
+   "max_premium_pct_of_spot": 0.06322729339149036,
+   "put_sales": 61,
+   "call_sales": 284,
+   "windows": {
+    "FULL": {
+     "total_return": 15.463507524799986,
+     "cagr": 0.10299371476629604,
+     "sharpe": 0.7036046148764858,
+     "max_dd": -0.37840038069646176,
+     "total_premium_net": 1745918.0789715487,
+     "puts_assigned": 12,
+     "calls_assigned": 12,
+     "pct_days_holding_shares": 0.8251252086811353,
+     "pct_months_net_premium_income": 0.9300291545189504,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.8149617709349726,
+     "cagr": 0.0509502026375348,
+     "sharpe": 0.37256040915465555,
+     "max_dd": -0.37840038069646176,
+     "total_premium_net": 335471.67014437256,
+     "puts_assigned": 6,
+     "calls_assigned": 6,
+     "pct_days_holding_shares": 0.823782709506459,
+     "pct_months_net_premium_income": 0.9305555555555556,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 2.6997720527378055,
+     "cagr": 0.139954675380501,
+     "sharpe": 1.07817708574609,
+     "max_dd": -0.16243975235723507,
+     "total_premium_net": 198483.19732961824,
+     "puts_assigned": 3,
+     "calls_assigned": 2,
+     "pct_days_holding_shares": 0.9252782193958664,
+     "pct_months_net_premium_income": 0.9333333333333333,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 1.400146855603745,
+     "cagr": 0.14240280242625936,
+     "sharpe": 0.9028959002045837,
+     "max_dd": -0.2535909717704541,
+     "total_premium_net": 1211963.211497558,
+     "puts_assigned": 3,
+     "calls_assigned": 4,
+     "pct_days_holding_shares": 0.6751361161524501,
+     "pct_months_net_premium_income": 0.9240506329113924,
+     "n_months": 79
+    }
+   },
+   "final_equity": 4187499.532089655
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.03,
+   "iv_factor": 0.85,
+   "name": "put5_call3_iv0.85",
+   "max_premium_pct_of_spot": 0.06732870543211546,
+   "put_sales": 293,
+   "call_sales": 52,
+   "windows": {
+    "FULL": {
+     "total_return": 0.7027427059400613,
+     "cagr": 0.01880066409319725,
+     "sharpe": 0.21421057741702731,
+     "max_dd": -0.32047631603644056,
+     "total_premium_net": 535175.715421438,
+     "puts_assigned": 27,
+     "calls_assigned": 27,
+     "pct_days_holding_shares": 0.15122426265998887,
+     "pct_months_net_premium_income": 0.8658892128279884,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.08995557779161545,
+     "cagr": 0.007207203106674109,
+     "sharpe": 0.12233101834862398,
+     "max_dd": -0.32047631603644056,
+     "total_premium_net": 280462.66580959316,
+     "puts_assigned": 14,
+     "calls_assigned": 14,
+     "pct_days_holding_shares": 0.1934415369327592,
+     "pct_months_net_premium_income": 0.8402777777777778,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 0.4133657032464997,
+     "cagr": 0.035247021187639005,
+     "sharpe": 0.49601901385001407,
+     "max_dd": -0.08021731210700722,
+     "total_premium_net": 105605.55025217177,
+     "puts_assigned": 6,
+     "calls_assigned": 6,
+     "pct_days_holding_shares": 0.09141494435612083,
+     "pct_months_net_premium_income": 0.9083333333333333,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.10148502442740703,
+     "cagr": 0.014806635579257987,
+     "sharpe": 0.18055718516346325,
+     "max_dd": -0.2500427937961426,
+     "total_premium_net": 149107.49935967306,
+     "puts_assigned": 7,
+     "calls_assigned": 7,
+     "pct_days_holding_shares": 0.16515426497277677,
+     "pct_months_net_premium_income": 0.8481012658227848,
+     "n_months": 79
+    }
+   },
+   "final_equity": 428055.03604913474
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.03,
+   "iv_factor": 1.0,
+   "name": "put5_call3_iv1",
+   "max_premium_pct_of_spot": 0.08150945896971452,
+   "put_sales": 293,
+   "call_sales": 52,
+   "windows": {
+    "FULL": {
+     "total_return": 2.635612615533868,
+     "cagr": 0.04620742780963316,
+     "sharpe": 0.4288548802407113,
+     "max_dd": -0.2881125168382429,
+     "total_premium_net": 1155111.7551557499,
+     "puts_assigned": 27,
+     "calls_assigned": 27,
+     "pct_days_holding_shares": 0.15122426265998887,
+     "pct_months_net_premium_income": 0.8862973760932945,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.595390849169801,
+     "cagr": 0.0397126047273233,
+     "sharpe": 0.33733264875491775,
+     "max_dd": -0.2881125168382429,
+     "total_premium_net": 473332.5657420748,
+     "puts_assigned": 14,
+     "calls_assigned": 14,
+     "pct_days_holding_shares": 0.1934415369327592,
+     "pct_months_net_premium_income": 0.8541666666666666,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 0.6907493687152468,
+     "cagr": 0.05398895097758727,
+     "sharpe": 0.7168192200770553,
+     "max_dd": -0.0815798675696765,
+     "total_premium_net": 262061.75556536907,
+     "puts_assigned": 6,
+     "calls_assigned": 6,
+     "pct_days_holding_shares": 0.09141494435612083,
+     "pct_months_net_premium_income": 0.9333333333333333,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.34033436590048227,
+     "cagr": 0.04554837555275926,
+     "sharpe": 0.4086420929784942,
+     "max_dd": -0.2384419739670689,
+     "total_premium_net": 419717.4338483061,
+     "puts_assigned": 7,
+     "calls_assigned": 7,
+     "pct_days_holding_shares": 0.16515426497277677,
+     "pct_months_net_premium_income": 0.8734177215189873,
+     "n_months": 79
+    }
+   },
+   "final_equity": 916463.8958992722
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.05,
+   "iv_factor": 0.85,
+   "name": "put5_call5_iv0.85",
+   "max_premium_pct_of_spot": 0.059650316236323275,
+   "put_sales": 277,
+   "call_sales": 68,
+   "windows": {
+    "FULL": {
+     "total_return": 0.9864474218705217,
+     "cagr": 0.024309999552717176,
+     "sharpe": 0.2522257718137924,
+     "max_dd": -0.38727856775877534,
+     "total_premium_net": 475094.8226777202,
+     "puts_assigned": 23,
+     "calls_assigned": 23,
+     "pct_days_holding_shares": 0.19685587089593767,
+     "pct_months_net_premium_income": 0.880466472303207,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.06967388131085328,
+     "cagr": 0.005631176330559207,
+     "sharpe": 0.11355686872272747,
+     "max_dd": -0.38727856775877534,
+     "total_premium_net": 240670.3913585131,
+     "puts_assigned": 11,
+     "calls_assigned": 11,
+     "pct_days_holding_shares": 0.23517721099701888,
+     "pct_months_net_premium_income": 0.8680555555555556,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 0.5440755587211064,
+     "cagr": 0.04445594954205756,
+     "sharpe": 0.5499925504485346,
+     "max_dd": -0.10855457863628037,
+     "total_premium_net": 92893.89247649942,
+     "puts_assigned": 5,
+     "calls_assigned": 5,
+     "pct_days_holding_shares": 0.17170111287758347,
+     "pct_months_net_premium_income": 0.9166666666666666,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.1986236564940036,
+     "cagr": 0.027932447137127614,
+     "sharpe": 0.2830899078165975,
+     "max_dd": -0.23827874577800068,
+     "total_premium_net": 141530.53884270773,
+     "puts_assigned": 7,
+     "calls_assigned": 7,
+     "pct_days_holding_shares": 0.16515426497277677,
+     "pct_months_net_premium_income": 0.8481012658227848,
+     "n_months": 79
+    }
+   },
+   "final_equity": 499375.98899244907
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.05,
+   "iv_factor": 1.0,
+   "name": "put5_call5_iv1",
+   "max_premium_pct_of_spot": 0.07374407208614331,
+   "put_sales": 277,
+   "call_sales": 68,
+   "windows": {
+    "FULL": {
+     "total_return": 3.0890940013788892,
+     "cagr": 0.05051996666638803,
+     "sharpe": 0.44761402120678323,
+     "max_dd": -0.35300303383151055,
+     "total_premium_net": 1060369.301458691,
+     "puts_assigned": 23,
+     "calls_assigned": 23,
+     "pct_days_holding_shares": 0.19685587089593767,
+     "pct_months_net_premium_income": 0.8892128279883382,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.5527806554132275,
+     "cagr": 0.037368635434830155,
+     "sharpe": 0.3156239891455109,
+     "max_dd": -0.35300303383151055,
+     "total_premium_net": 418497.09755472303,
+     "puts_assigned": 11,
+     "calls_assigned": 11,
+     "pct_days_holding_shares": 0.23517721099701888,
+     "pct_months_net_premium_income": 0.875,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 0.8320668990052076,
+     "cagr": 0.062494200078001105,
+     "sharpe": 0.7443771404546435,
+     "max_dd": -0.10410372904200649,
+     "total_premium_net": 238273.81449747365,
+     "puts_assigned": 5,
+     "calls_assigned": 5,
+     "pct_days_holding_shares": 0.17170111287758347,
+     "pct_months_net_premium_income": 0.925,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.4294149689504696,
+     "cagr": 0.055828781309385844,
+     "sharpe": 0.4765279390667022,
+     "max_dd": -0.2422299463461174,
+     "total_premium_net": 403598.3894064944,
+     "puts_assigned": 7,
+     "calls_assigned": 7,
+     "pct_days_holding_shares": 0.16515426497277677,
+     "pct_months_net_premium_income": 0.8607594936708861,
+     "n_months": 79
+    }
+   },
+   "final_equity": 1030777.3174705365
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.08,
+   "iv_factor": 0.85,
+   "name": "put5_call8_iv0.85",
+   "max_premium_pct_of_spot": 0.04945373844075274,
+   "put_sales": 98,
+   "call_sales": 247,
+   "windows": {
+    "FULL": {
+     "total_return": 6.850926838723136,
+     "cagr": 0.07477702470366632,
+     "sharpe": 0.5621159438872776,
+     "max_dd": -0.39821511849676106,
+     "total_premium_net": 505328.7672729352,
+     "puts_assigned": 11,
+     "calls_assigned": 11,
+     "pct_days_holding_shares": 0.7168892598775737,
+     "pct_months_net_premium_income": 0.8629737609329446,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.3898262730929305,
+     "cagr": 0.02782414370452546,
+     "sharpe": 0.24855152994286228,
+     "max_dd": -0.39821511849676106,
+     "total_premium_net": 164026.63282506706,
+     "puts_assigned": 5,
+     "calls_assigned": 5,
+     "pct_days_holding_shares": 0.7124875786684333,
+     "pct_months_net_premium_income": 0.8333333333333334,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 2.042445293270479,
+     "cagr": 0.11784576511491651,
+     "sharpe": 0.9986408846923315,
+     "max_dd": -0.1684100459338319,
+     "total_premium_net": 69747.74070929151,
+     "puts_assigned": 3,
+     "calls_assigned": 2,
+     "pct_days_holding_shares": 0.7917329093799682,
+     "pct_months_net_premium_income": 0.8666666666666667,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 0.8352082280692243,
+     "cagr": 0.09672110338056306,
+     "sharpe": 0.6788441547083999,
+     "max_dd": -0.26741332209834023,
+     "total_premium_net": 271554.3937385766,
+     "puts_assigned": 3,
+     "calls_assigned": 4,
+     "pct_days_holding_shares": 0.6110102843315185,
+     "pct_months_net_premium_income": 0.9113924050632911,
+     "n_months": 79
+    }
+   },
+   "final_equity": 1973656.2425110454
+  },
+  {
+   "put_otm": 0.05,
+   "call_otm": 0.08,
+   "iv_factor": 1.0,
+   "name": "put5_call8_iv1",
+   "max_premium_pct_of_spot": 0.06322729339149036,
+   "put_sales": 98,
+   "call_sales": 247,
+   "windows": {
+    "FULL": {
+     "total_return": 12.347118171526823,
+     "cagr": 0.09492333233989947,
+     "sharpe": 0.6990798409242297,
+     "max_dd": -0.3590008779032319,
+     "total_premium_net": 1127348.570195742,
+     "puts_assigned": 11,
+     "calls_assigned": 11,
+     "pct_days_holding_shares": 0.7168892598775737,
+     "pct_months_net_premium_income": 0.9358600583090378,
+     "n_months": 343
+    },
+    "1998-2009": {
+     "total_return": 0.842477183921096,
+     "cagr": 0.05226939666876396,
+     "sharpe": 0.39880713628318826,
+     "max_dd": -0.3590008779032319,
+     "total_premium_net": 284251.0740564307,
+     "puts_assigned": 5,
+     "calls_assigned": 5,
+     "pct_days_holding_shares": 0.7124875786684333,
+     "pct_months_net_premium_income": 0.9375,
+     "n_months": 144
+    },
+    "2010-2019": {
+     "total_return": 2.370268896452015,
+     "cagr": 0.12935777332335885,
+     "sharpe": 1.0873367256332527,
+     "max_dd": -0.1631592562728692,
+     "total_premium_net": 171855.3165338723,
+     "puts_assigned": 3,
+     "calls_assigned": 2,
+     "pct_days_holding_shares": 0.7917329093799682,
+     "pct_months_net_premium_income": 0.9416666666666667,
+     "n_months": 120
+    },
+    "2020-2026": {
+     "total_return": 1.1203790871794577,
+     "cagr": 0.12107506775386367,
+     "sharpe": 0.8263696517400702,
+     "max_dd": -0.2545489885500961,
+     "total_premium_net": 671242.1796054388,
+     "puts_assigned": 3,
+     "calls_assigned": 4,
+     "pct_days_holding_shares": 0.6110102843315185,
+     "pct_months_net_premium_income": 0.9240506329113924,
+     "n_months": 79
+    }
+   },
+   "final_equity": 3364536.6577949408
+  }
+ ]
+}
