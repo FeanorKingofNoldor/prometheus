@@ -23,7 +23,7 @@ import yaml
 from apatheon.core.database import DatabaseManager
 from apatheon.core.ids import generate_uuid
 from apatheon.core.logging import get_logger
-from apatheon.core.markets import MARKETS_BY_REGION, infer_region_from_market_id
+from apatheon.core.markets import MARKETS_BY_REGION
 from apatheon.core.time import TradingCalendar, TradingCalendarConfig
 from apatheon.data.reader import DataReader
 from apatheon.fragility import (
@@ -56,8 +56,6 @@ from psycopg2.extras import Json
 from prometheus.assessment import AssessmentEngine
 from prometheus.assessment.model_basic import BasicAssessmentModel
 from prometheus.assessment.storage import InstrumentScoreStorage
-from prometheus.backtest import SleeveRunSummary, run_backtest_campaign
-from prometheus.backtest.catalog import build_core_long_sleeves
 from prometheus.books import (
     AllocatorSleeveSpec,
     BookKind,
@@ -67,7 +65,7 @@ from prometheus.books import (
     load_book_registry,
 )
 from prometheus.decisions import DecisionTracker
-from prometheus.meta import EngineDecision, MetaOrchestrator, MetaStorage
+from prometheus.meta import EngineDecision, MetaStorage
 from prometheus.meta.market_situation import MarketSituationService
 from prometheus.meta.policy import load_meta_policy_artifact
 from prometheus.opportunity.lambda_provider import CsvLambdaClusterScoreProvider
@@ -80,9 +78,6 @@ from prometheus.portfolio import (
     TargetPortfolio,
 )
 from prometheus.risk import apply_risk_constraints
-from prometheus.scripts.backfill.backfill_backtest_stab_scenario_metrics import (
-    summarise_backtest_stab_scenario_metrics,
-)
 from prometheus.scripts.backfill.backfill_portfolio_stab_scenario_metrics import (
     backfill_portfolio_stab_scenario_metrics_for_range,
 )
@@ -2747,6 +2742,32 @@ def run_execution_for_run(
     )
 
     # ------------------------------------------------------------------
+    # 0. Execution halt (core+wheel transition, 2026-08).
+    #
+    # With the halt flag set the ENTIRE broker path is skipped: no
+    # connection, no sizing, no orders.  Everything upstream (signals,
+    # universes, books, target_portfolios) keeps running daily so the
+    # assessment scorecard's passive calibration continues; the pipeline
+    # phase still advances so downstream jobs and finalize are unaffected.
+    # Used while the legacy V12 book is retired and the account is
+    # manually liquidated — without it the daemon would faithfully
+    # rebuild the old book the next post-close.
+    # ------------------------------------------------------------------
+    from prometheus.env_utils import env_flag
+
+    if env_flag("PROMETHEUS_EXECUTION_HALT"):
+        logger.warning(
+            "run_execution_for_run: PROMETHEUS_EXECUTION_HALT is set — "
+            "skipping broker connection and order submission for %s %s "
+            "(targets computed, nothing traded)",
+            portfolio_id,
+            run.as_of_date,
+        )
+        if run.phase == RunPhase.BOOKS_DONE:
+            run = update_phase(db_manager, run.run_id, RunPhase.EXECUTION_DONE)
+        return run
+
+    # ------------------------------------------------------------------
     # 1. Load target weights from target_portfolios
     # ------------------------------------------------------------------
 
@@ -4061,296 +4082,6 @@ def _load_latest_prices_historical(
             cursor.close()
 
     return {str(row[0]): float(row[1]) for row in rows}
-
-
-def run_meta_for_strategy(
-    db_manager: DatabaseManager,
-    strategy_id: str,
-    as_of_date: date,
-    top_k: int = 3,
-) -> str | None:
-    """Run Meta-Orchestrator for a strategy and record a decision.
-
-    This helper reads all backtest runs for ``strategy_id`` via
-    :class:`MetaOrchestrator`, selects the top-k sleeves based on
-    backtest metrics, and inserts a single row into ``engine_decisions``
-    capturing the selection.
-
-    Args:
-        db_manager: Database manager for the runtime database.
-        strategy_id: Logical strategy identifier whose sleeves should be
-            evaluated (e.g. "US_CORE_LONG_EQ").
-        as_of_date: Date on which the meta decision is being recorded.
-        top_k: Number of top sleeves to select.
-
-    Returns:
-        The generated ``decision_id`` if a decision was recorded, or
-        ``None`` if no sleeves were available for the strategy.
-    """
-
-    storage = MetaStorage(db_manager=db_manager)
-    orchestrator = MetaOrchestrator(storage=storage)
-
-    evaluations = orchestrator.select_top_sleeves(strategy_id, k=top_k)
-    if not evaluations:
-        logger.info(
-            "run_meta_for_strategy: no evaluated sleeves for strategy_id=%s; skipping decision",
-            strategy_id,
-        )
-        return None
-
-    decision_id = generate_uuid()
-
-    # Derive a market_id from the first selected sleeve; if unavailable,
-    # leave as None.
-    first_cfg = evaluations[0].sleeve_config
-    market_id = getattr(first_cfg, "market_id", None)
-
-    input_refs = {
-        "strategy_id": strategy_id,
-        "top_k": top_k,
-        "candidate_runs": [
-            {"run_id": ev.run_id, "sleeve_id": ev.sleeve_config.sleeve_id}
-            for ev in evaluations
-        ],
-    }
-
-    output_refs = {
-        "selected_sleeves": [
-            {
-                "run_id": ev.run_id,
-                "sleeve_id": ev.sleeve_config.sleeve_id,
-                "metrics": ev.metrics,
-            }
-            for ev in evaluations
-        ],
-    }
-
-    decision = EngineDecision(
-        decision_id=decision_id,
-        engine_name="META_ORCHESTRATOR",
-        run_id=None,
-        strategy_id=strategy_id,
-        market_id=market_id,
-        as_of_date=as_of_date,
-        config_id=None,
-        input_refs=input_refs,
-        output_refs=output_refs,
-        metadata={"type": "sleeve_selection"},
-    )
-
-    storage.save_engine_decision(decision)
-
-    logger.info(
-        "run_meta_for_strategy: recorded decision_id=%s for strategy_id=%s top_k=%d",
-        decision_id,
-        strategy_id,
-        top_k,
-    )
-
-    return decision_id
-
-
-def run_backtest_campaign_and_meta_for_strategy(
-    db_manager: DatabaseManager,
-    strategy_id: str,
-    market_id: str,
-    start_date: date,
-    end_date: date,
-    top_k: int = 3,
-    initial_cash: float = 1_000_000.0,
-    *,
-    apply_risk: bool = True,
-    assessment_backend: str = "basic",
-    assessment_use_joint_context: bool = False,
-    assessment_context_model_id: str = "joint-assessment-context-v1",
-    assessment_model_id: str | None = None,
-    stability_risk_alpha: float | None = None,
-    stability_risk_horizon_steps: int | None = None,
-    regime_risk_alpha: float | None = None,
-    lambda_predictions_csv: str | None = None,
-    lambda_experiment_id: str | None = None,
-    lambda_score_weight: float | None = None,
-    scenario_risk_set_id: str | None = None,
-    stab_scenario_set_id: str | None = None,
-    stab_joint_model_id: str = "joint-stab-fragility-v1",
-) -> tuple[list[SleeveRunSummary], str | None]:
-    """Run a sleeve backtest campaign and Meta-Orchestrator for a strategy.
-
-    This helper is a convenience for performing a full offline
-    config-space sweep for a single logical strategy:
-
-    1. Construct a small grid of core long-only sleeves for the given
-       ``strategy_id`` and ``market_id``.
-    2. Run a backtest campaign over ``[start_date, end_date]`` using the
-       basic STAB/Assessment/Universe/Portfolio sleeve pipeline.
-    3. Invoke :func:`run_meta_for_strategy` to record a Meta-Orchestrator
-       decision selecting the top-k sleeves by backtest metrics.
-
-    Returns the list of :class:`SleeveRunSummary` objects produced by the
-    campaign together with the ``decision_id`` recorded by the
-    Meta-Orchestrator (or ``None`` if no decision was written).
-    """
-
-    if end_date < start_date:
-        raise ValueError("end_date must be >= start_date")
-
-    # If the caller did not provide explicit lambda/scenario/STAB
-    # configuration, default to the same settings used by the daily
-    # UNIVERSES/BOOKS pipeline for the inferred region (when available).
-    region = infer_region_from_market_id(market_id)
-
-    risk_cfg_defaults: DailyPortfolioRiskConfig | None = None
-
-
-    if region is not None:
-        # Lambda defaults from daily universe config.
-        if lambda_predictions_csv is None or lambda_score_weight is None:
-            lambda_cfg = _load_daily_universe_lambda_config(region)
-            if lambda_predictions_csv is None and lambda_cfg.predictions_csv is not None:
-                lambda_predictions_csv = lambda_cfg.predictions_csv
-            if lambda_experiment_id is None and lambda_cfg.experiment_id is not None:
-                lambda_experiment_id = lambda_cfg.experiment_id
-            if (
-                lambda_score_weight is None
-                and lambda_cfg.score_weight is not None
-                and lambda_cfg.score_weight != 0.0
-            ):
-                lambda_score_weight = float(lambda_cfg.score_weight)
-
-        # Scenario and STAB-scenario defaults from daily portfolio config.
-        risk_cfg = _load_daily_portfolio_risk_config(region)
-        risk_cfg_defaults = risk_cfg
-        if scenario_risk_set_id is None:
-            scenario_risk_set_id = risk_cfg.scenario_risk_set_id
-        if stab_scenario_set_id is None:
-            stab_scenario_set_id = risk_cfg.stab_scenario_set_id
-        # If the caller did not override the default STAB joint model,
-        # align it with the daily config as well.
-        if stab_joint_model_id == "joint-stab-fragility-v1" and risk_cfg.stab_joint_model_id:
-            stab_joint_model_id = risk_cfg.stab_joint_model_id
-
-
-    calendar = TradingCalendar(TradingCalendarConfig(market=str(market_id)))
-    sleeve_configs = build_core_long_sleeves(strategy_id=strategy_id, market_id=market_id)
-    if not sleeve_configs:
-        logger.info(
-            "run_backtest_campaign_and_meta_for_strategy: no sleeve configs for strategy_id=%s market_id=%s",
-            strategy_id,
-            market_id,
-        )
-        return [], None
-
-    # Apply assessment configuration to each sleeve in the campaign.
-    for cfg in sleeve_configs:
-        cfg.assessment_backend = assessment_backend
-        cfg.assessment_use_joint_context = assessment_use_joint_context
-        cfg.assessment_context_model_id = assessment_context_model_id
-        if assessment_model_id is not None:
-            cfg.assessment_model_id = assessment_model_id
-        # Optional STAB/regime/scenario configuration for the sleeve
-        if stability_risk_alpha is not None:
-            cfg.stability_risk_alpha = stability_risk_alpha
-        if stability_risk_horizon_steps is not None:
-            cfg.stability_risk_horizon_steps = stability_risk_horizon_steps
-        if regime_risk_alpha is not None:
-            cfg.regime_risk_alpha = regime_risk_alpha
-        if scenario_risk_set_id is not None:
-            cfg.scenario_risk_set_id = scenario_risk_set_id
-        if lambda_score_weight is not None:
-            cfg.lambda_score_weight = lambda_score_weight
-
-        # Meta budget defaults from daily config (if available).
-        if risk_cfg_defaults is not None:
-            cfg.meta_budget_enabled = bool(risk_cfg_defaults.meta_budget_enabled)
-            cfg.meta_budget_alpha = float(risk_cfg_defaults.meta_budget_alpha)
-            cfg.meta_budget_min = float(risk_cfg_defaults.meta_budget_min)
-            cfg.meta_budget_horizon_steps = int(risk_cfg_defaults.meta_budget_horizon_steps)
-            cfg.meta_budget_region = risk_cfg_defaults.meta_budget_region
-            cfg.hazard_profile = risk_cfg_defaults.hazard_profile
-
-    lambda_provider = None
-    if lambda_predictions_csv is not None:
-        preds_path = Path(lambda_predictions_csv)
-        try:
-            lambda_provider = CsvLambdaClusterScoreProvider(
-                csv_path=preds_path,
-                experiment_id=lambda_experiment_id,
-                score_column="lambda_hat",
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            # For backtest campaigns, failure to initialise a lambda
-            # provider (e.g. missing experiment_id rows) should not abort
-            # the entire campaign; we log a concise warning and proceed
-            # without lambda integration.
-            logger.warning(
-                "run_backtest_campaign_and_meta_for_strategy: disabling lambda integration from %s "
-                "due to error: %s",
-                preds_path,
-                exc,
-            )
-            lambda_provider = None
-
-    summaries = run_backtest_campaign(
-        db_manager=db_manager,
-        calendar=calendar,
-        market_id=market_id,
-        start_date=start_date,
-        end_date=end_date,
-        sleeve_configs=sleeve_configs,
-        initial_cash=initial_cash,
-        apply_risk=apply_risk,
-        lambda_provider=lambda_provider,
-    )
-
-    # Optionally enrich portfolio_risk_reports and backtest_runs with
-    # STAB-scenario diagnostics when a scenario set is provided. We only
-    # attempt this when a real DatabaseManager instance is in use so that
-    # pure wiring tests can pass in lightweight stand-ins.
-    if (
-        stab_scenario_set_id is not None
-        and summaries
-        and isinstance(db_manager, DatabaseManager)
-    ):
-        # Backfill portfolio-level STAB-scenario metrics for each
-        # portfolio used in the campaign over the campaign window.
-        portfolio_ids = sorted({cfg.portfolio_id for cfg in sleeve_configs})
-        for portfolio_id in portfolio_ids:
-            backfill_portfolio_stab_scenario_metrics_for_range(
-                db_manager=db_manager,
-                portfolio_id=portfolio_id,
-                scenario_set_id=stab_scenario_set_id,
-                stab_model_id=stab_joint_model_id,
-                start=start_date,
-                end=end_date,
-                limit=None,
-            )
-
-        # Summarise those STAB-scenario metrics into backtest_runs.metrics_json
-        # for each run we just created.
-        for summary in summaries:
-            summarise_backtest_stab_scenario_metrics(
-                db_manager=db_manager,
-                strategy_id=None,
-                run_id=summary.run_id,
-            )
-
-    decision_id = run_meta_for_strategy(
-        db_manager=db_manager,
-        strategy_id=strategy_id,
-        as_of_date=end_date,
-        top_k=top_k,
-    )
-
-    logger.info(
-        "run_backtest_campaign_and_meta_for_strategy: strategy_id=%s market_id=%s runs=%d decision_id=%s",
-        strategy_id,
-        market_id,
-        len(summaries),
-        decision_id,
-    )
-
-    return summaries, decision_id
 
 
 def advance_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRun:

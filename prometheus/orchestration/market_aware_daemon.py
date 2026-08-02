@@ -984,8 +984,12 @@ def _run_health_check(
                 order_count = cur.fetchone()[0]
                 # Zero orders is only an anomaly on a day that produced targets
                 # (a rebalance with targets but no orders means execution
-                # silently dropped the book).
-                if order_count == 0 and target_count > 0:
+                # silently dropped the book) — and only when execution is
+                # actually enabled: under PROMETHEUS_EXECUTION_HALT zero
+                # orders is the intended daily outcome.
+                from prometheus.env_utils import env_flag
+
+                if order_count == 0 and target_count > 0 and not env_flag("PROMETHEUS_EXECUTION_HALT"):
                     critical.append(
                         "NO ORDERS: targets were produced but execution generated zero orders"
                     )

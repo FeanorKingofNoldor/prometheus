@@ -82,6 +82,10 @@ class _FakeRun:
 
 def _check(answers, monkeypatch, tmp_path):
     monkeypatch.setenv("PROMETHEUS_HEALTH_REPORT_DIR", str(tmp_path))
+    # The repo .env may carry PROMETHEUS_EXECUTION_HALT (loaded into the
+    # process by apatheon's import-time load_dotenv when the real package
+    # is importable) — pin it off so the zero-orders check is under test.
+    monkeypatch.delenv("PROMETHEUS_EXECUTION_HALT", raising=False)
     base = {"prices": 660, "nonpos_prices": 0, "targets": 50, "orders": 30, "shi": 11}
     base.update(answers)
     return _run_health_check(

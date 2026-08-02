@@ -15,7 +15,6 @@ import types
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-
 # ---------------------------------------------------------------------------
 # Stub logger
 # ---------------------------------------------------------------------------
@@ -337,3 +336,16 @@ def _clear_order_dedup_state():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_execution_halt_flag(monkeypatch):
+    """Strip the operational PROMETHEUS_EXECUTION_HALT override from tests.
+
+    The repo .env may carry the flag (core+wheel transition), and apatheon's
+    import-time load_dotenv injects it into any process that imports the
+    real package — which would silently short-circuit every execution-path
+    test.  Tests that exercise the halt behaviour set the variable
+    explicitly via monkeypatch.
+    """
+    monkeypatch.delenv("PROMETHEUS_EXECUTION_HALT", raising=False)

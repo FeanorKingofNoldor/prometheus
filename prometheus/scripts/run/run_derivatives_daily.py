@@ -970,6 +970,24 @@ def run_derivatives_daily(
 
         summary["steps_completed"].append("init_services")
 
+        # ── Execution halt (core+wheel transition, 2026-08) ───────────
+        # Position sync + storage reconcile above still ran, so
+        # options_positions keeps tracking the (manually liquidated)
+        # account.  Everything from here down — signal loading, strategy
+        # evaluation, futures rolls, submission, shadow pass — is skipped:
+        # the legacy strategies are retired and must not re-enter.
+        from prometheus.env_utils import env_flag as _env_flag
+
+        if _env_flag("PROMETHEUS_EXECUTION_HALT"):
+            logger.warning(
+                "run_derivatives_daily: PROMETHEUS_EXECUTION_HALT is set — "
+                "position sync done, skipping strategy evaluation and "
+                "order submission"
+            )
+            summary["halted"] = True
+            summary["steps_completed"].append("halted")
+            return summary
+
         # ── Step 4: Load signals ──────────────────────────────────────
         signals = _load_signals(ib, account_state, positions=positions)
         summary["nav"] = signals["nav"]
