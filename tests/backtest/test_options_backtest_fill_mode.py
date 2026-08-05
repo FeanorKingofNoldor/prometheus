@@ -20,7 +20,6 @@ from prometheus.backtest.options_backtest import (
 )
 from prometheus.execution.options_strategy import OptionTradeDirective, TradeAction
 
-
 # ── Synthetic fixture ────────────────────────────────────────────────
 
 # Three consecutive weekdays. The underlying price JUMPS between the

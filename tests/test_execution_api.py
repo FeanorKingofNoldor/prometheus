@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Dict, List
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from prometheus.execution.api import ExecutionSummary, apply_execution_plan
 from prometheus.execution.broker_interface import (
     BrokerInterface,
     Fill,
@@ -21,8 +22,6 @@ from prometheus.execution.broker_interface import (
     OrderType,
     Position,
 )
-from prometheus.execution.api import ExecutionSummary, apply_execution_plan
-
 
 # ---------------------------------------------------------------------------
 # Helpers

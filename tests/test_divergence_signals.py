@@ -7,7 +7,7 @@ the DatabaseManager as an injected dependency).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -16,12 +16,10 @@ import pytest
 from prometheus.signals.divergence import (
     DECISION_MIN_SEVERITY,
     DivergenceSignal,
-    DivergenceStorage,
     _meets_decision_threshold,
     _to_signal,
     run_divergence_scan,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Fakes

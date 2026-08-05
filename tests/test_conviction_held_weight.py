@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Dict, List
 
-from prometheus.portfolio.model_conviction import ConvictionPortfolioModel
 from prometheus.portfolio.conviction import ConvictionConfig
+from prometheus.portfolio.model_conviction import ConvictionPortfolioModel
 from prometheus.portfolio.types import TargetPortfolio
 
 

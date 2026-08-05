@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from prometheus.signals.beneficiary import (
-    BeneficiaryRow,
     TOP_K,
+    BeneficiaryRow,
     run_beneficiary_scan,
 )
 

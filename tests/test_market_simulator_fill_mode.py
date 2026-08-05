@@ -16,7 +16,6 @@ from prometheus.execution.broker_interface import Order, OrderSide, OrderType
 from prometheus.execution.market_simulator import FillConfig, MarketSimulator
 from prometheus.execution.time_machine import TimeMachine
 
-
 _PRICE_COLUMNS = [
     "instrument_id",
     "trade_date",

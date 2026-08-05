@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Shared mock infrastructure
@@ -171,6 +169,7 @@ class TestSecurityBoundary:
         # The TestClient triggers startup automatically.
         # We verify the warning is in the source code at minimum.
         import inspect
+
         import prometheus.monitoring.app as app_mod
 
         source = inspect.getsource(app_mod.startup_event)
@@ -198,6 +197,7 @@ class TestHealthReportPath:
     def test_no_hardcoded_path_in_daemon(self):
         """The daemon must not contain the literal hardcoded path."""
         import inspect
+
         from prometheus.orchestration import market_aware_daemon
 
         source = inspect.getsource(market_aware_daemon)
@@ -292,6 +292,7 @@ class TestCorsOrigins:
         """Setting PROMETHEUS_CORS_ORIGINS should override defaults."""
         # We verify the code path by checking the variable is used
         import inspect
+
         import prometheus.monitoring.app as app_mod
 
         source = inspect.getsource(app_mod)

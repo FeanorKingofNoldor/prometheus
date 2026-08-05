@@ -7,8 +7,8 @@ from datetime import date
 import pytest
 
 from prometheus.risk.dynamic_constraints import (
-    _interpolate_geo_dampener,
     _compound_dampener,
+    _interpolate_geo_dampener,
     compute_dampener,
     get_dynamic_strategy_risk_config,
 )

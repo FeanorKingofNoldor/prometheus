@@ -12,15 +12,13 @@ module stubs if apatheon is not installed. Run separately:
 
 from __future__ import annotations
 
-import math
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 # ---------------------------------------------------------------------------
 # Mock DB infrastructure
@@ -127,8 +125,8 @@ def client_and_db():
 
     # Force-import modules so patch targets resolve
     import prometheus.monitoring.api  # noqa: F401
-    import prometheus.monitoring.meta_api  # noqa: F401
     import prometheus.monitoring.control_api  # noqa: F401
+    import prometheus.monitoring.meta_api  # noqa: F401
 
     patches = [
         patch("prometheus.monitoring.api.get_db_manager", _get_db),
@@ -166,14 +164,13 @@ class TestStatusOverview:
         client, set_db = client_and_db
 
         today = date.today()
-        year_start = today.replace(month=1, day=1)
 
         set_db(runtime_dispatch={
             "MAX(as_of_date) FROM portfolio_risk_reports": (today,),
             "AVG(net_exposure)": (0.65, 0.80, 1.05),
             "MAX(as_of_date) FROM stability_vectors": (today,),
             "AVG(overall_score)": (25.0,),
-            "regime_label, confidence": (f"STABLE_EXPANSION", 0.90),
+            "regime_label, confidence": ("STABLE_EXPANSION", 0.90),
             "latest_per_day": [
                 (today, 100_000.0),
             ],

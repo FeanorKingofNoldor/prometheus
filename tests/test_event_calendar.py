@@ -22,7 +22,6 @@ from prometheus.calendar.event_calendar import (
     wasde_dates_for_year,
 )
 
-
 # ── Rule-based generators ───────────────────────────────────────────
 
 

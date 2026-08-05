@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from prometheus.derivatives.selection import _build_contracts
 from prometheus.execution.futures_option_specs import (
     FOP_SPECS,
     FuturesOptionSpec,
@@ -19,8 +20,6 @@ from prometheus.execution.futures_option_specs import (
     is_commodity_fop_symbol,
 )
 from prometheus.execution.instrument_mapper import InstrumentMapper
-from prometheus.derivatives.selection import _build_contracts
-
 
 # Match the _FOP_RE in run_derivatives_daily.py — keep these in sync.
 _FOP_RE = re.compile(r'^([A-Z0-9]+)_(\d{6}|\d{8})_([\d.]+)([CP])\.FOP$')
@@ -192,13 +191,13 @@ def test_submit_directives_uses_fop_suffix_for_commodity():
     """End-to-end check: a directive on CL routes through the FOP
     instrument_id format, while a directive on SPY uses the equity
     format. Captures the dispatch we added to _submit_directives."""
-    from prometheus.execution.options_strategy import (
-        OptionTradeDirective,
-        OptionsStrategyManager,
-        TradeAction,
-    )
     from prometheus.execution.broker_interface import BrokerInterface
     from prometheus.execution.instrument_mapper import InstrumentMapper
+    from prometheus.execution.options_strategy import (
+        OptionsStrategyManager,
+        OptionTradeDirective,
+        TradeAction,
+    )
 
     captured: list[str] = []
 

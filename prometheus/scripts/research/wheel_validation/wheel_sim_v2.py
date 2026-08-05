@@ -30,7 +30,6 @@ averaged over the window; surfaces LADDER3's lot-rounding drag.
 """
 
 import json
-import math
 import os
 import sys
 from bisect import bisect_left
@@ -40,8 +39,18 @@ SCRATCH = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRATCH)
 
 from wheel_sim_managed import (  # noqa: E402
-    COMMISSION, INIT_CASH, PT_FRAC, SLIPPAGE, PUT_OTM, CALL_OTM,
-    bs_call, bs_put, bs_value, era_indices, load_data, slice_metrics,
+    CALL_OTM,
+    COMMISSION,
+    INIT_CASH,
+    PT_FRAC,
+    PUT_OTM,
+    SLIPPAGE,
+    bs_call,
+    bs_put,
+    bs_value,
+    era_indices,
+    load_data,
+    slice_metrics,
 )
 
 VIX_RICH = 25.0        # write puts wider + PT50-managed above this
@@ -222,7 +231,7 @@ def main():
     dates, close, adj, vix = load_data()
     n = len(dates)
     print(f"# SPY rows {n}  {dates[0]} .. {dates[-1]}   VIX range {min(vix):.2f}..{max(vix):.2f}")
-    print(f"# wheel v2: BASELINE / VIXCOND / DTE45 / LADDER3 / VIXCOND45  x  iv_factor (0.85, 1.0)")
+    print("# wheel v2: BASELINE / VIXCOND / DTE45 / LADDER3 / VIXCOND45  x  iv_factor (0.85, 1.0)")
     print(f"# VIXCOND: VIX>{VIX_RICH:g} -> put_otm {RICH_PUT_OTM:g}+PT50; VIX<{VIX_LEAN:g} -> skip call")
 
     windows = era_indices(dates)

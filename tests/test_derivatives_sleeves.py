@@ -143,6 +143,7 @@ def test_dataclasses_are_frozen():
 def _intel(divergence_rows):
     """Build a minimal IntelSignalsSnapshot for trigger tests."""
     from datetime import date
+
     from prometheus.derivatives.intel_signals import IntelSignalsSnapshot
     return IntelSignalsSnapshot(as_of_date=date(2026, 6, 5), divergence=divergence_rows)
 

@@ -6,7 +6,7 @@ the inner broker, and the zero-means-disabled semantics.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List
 from unittest.mock import MagicMock, patch
 
@@ -22,7 +22,6 @@ from prometheus.execution.broker_interface import (
     Position,
 )
 from prometheus.execution.risk_broker import RiskCheckingBroker, RiskLimitExceeded
-
 
 # ---------------------------------------------------------------------------
 # Helpers

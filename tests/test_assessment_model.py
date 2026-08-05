@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from prometheus.assessment.model_basic import BasicAssessmentModel
-
 
 # ---------------------------------------------------------------------------
 # Helpers

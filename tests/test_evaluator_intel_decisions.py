@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any
-
 import pytest
 
 from prometheus.decisions.evaluator import OutcomeEvaluator

@@ -11,13 +11,11 @@ that does require external state (PostgreSQL, IB Gateway) is mocked.
 
 from __future__ import annotations
 
-import logging.handlers
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Log rotation (P0 #79)
@@ -26,8 +24,8 @@ import pytest
 
 def test_setup_logging_uses_rotating_handler(tmp_path, monkeypatch):
     """`setup_logging` must attach a RotatingFileHandler, not FileHandler."""
-    import logging
     import importlib
+    import logging
 
     import apatheon.core.logging as apatheon_logging
 
@@ -131,11 +129,11 @@ def test_execution_risk_config_supports_drawdown_and_sector():
 def test_drawdown_breaker_blocks_when_below_threshold():
     """When equity is far enough below peak, the breaker raises."""
     from apatheon.core.config import ExecutionRiskConfig
+
     from prometheus.execution.broker_interface import (
         Order,
         OrderSide,
         OrderType,
-        Position,
     )
     from prometheus.execution.risk_broker import RiskCheckingBroker, RiskLimitExceeded
 
@@ -173,6 +171,7 @@ def test_drawdown_breaker_blocks_when_below_threshold():
 def test_drawdown_breaker_allows_when_within_threshold():
     """Equity within tolerance must NOT trip the breaker."""
     from apatheon.core.config import ExecutionRiskConfig
+
     from prometheus.execution.broker_interface import (
         Order,
         OrderSide,

@@ -15,9 +15,7 @@ from prometheus.pipeline.state import (
     _validate_transition,
     get_or_create_run,
     load_run,
-    update_phase,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from prometheus.execution.options_strategy import TradeAction
 from prometheus.execution.position_lifecycle import (
-    PositionLifecycleManager,
     STRATEGY_TRAILING_STOPS,
+    PositionLifecycleManager,
 )
 
 

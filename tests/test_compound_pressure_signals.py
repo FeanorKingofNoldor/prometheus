@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from prometheus.signals.compound_pressure import (
-    CompoundPressureAlert,
     DECISION_MIN_SEVERITY,
+    CompoundPressureAlert,
     _meets_threshold,
     run_compound_pressure_scan,
 )

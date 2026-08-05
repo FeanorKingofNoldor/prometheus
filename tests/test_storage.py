@@ -7,9 +7,7 @@ and update_order_statuses with mocked database connections.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from prometheus.execution.broker_interface import (
     Fill,
@@ -27,7 +25,6 @@ from prometheus.execution.storage import (
     record_positions_snapshot,
     update_order_statuses,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

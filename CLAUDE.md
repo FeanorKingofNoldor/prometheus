@@ -119,6 +119,40 @@ The full template list lives in `prometheus/derivatives/sleeves.py`; the
 adapter that runs the harness against synthetic data is in
 `prometheus/derivatives/backtest.py`.
 
+### Core+Wheel Strategy (`prometheus/wheel/`) — the ADOPTED strategy (2026-08)
+The validated replacement for the legacy equity+options books (evidence:
+`prometheus/scripts/research/wheel_validation/README.md`). VIXCOND SPY wheel
+80% + TLT 10% + GLD 10% quarterly ballast; CSP 2% OTM (5% + PT50 when
+VIX>25), CC 8% OTM (skipped when VIX<13), 30d hold-to-expiry, assignments
+accepted, cash-secured always, no stops. Config: `configs/wheel/strategy.yaml`.
+
+Three layers: `engine.py` (pure per-block rules — every rule pinned in
+`tests/test_wheel_engine.py`), `planner.py` (pure account-level sizing/
+aggregation/IV-event guard/ballast/breaker — `tests/test_wheel_planner.py`),
+`runner.py` (I/O shell: IBKR connect, state reconstruction from broker truth
++ `options_position_events` SUBMIT metadata, limit-at-mid with a
+mid→touch→give-up walk, persistence). Runs as the **`run_wheel`** daemon job
+(US_EQ DAG, POST_CLOSE, dependency-free, client_id 16, IBKR-exclusive):
+dispatch at ~16:01 ET uses final SPY/VIX closes and the 16:00–16:15 ET SPY
+options quote window. Orders land in `orders` with deterministic orderRefs
+(→ EOD fill-reconcile captures wheel fills); option provenance
+(credit/managed flag) in `options_position_events` under portfolio
+`US_WHEEL`; daily plan in `engine_decisions` (engine_name=WHEEL).
+
+**Gating**: submission requires `PROMETHEUS_WHEEL_ENABLED=1` AND
+`PROMETHEUS_EXECUTION_HALT` unset. Until then every run is a shadow (full
+plan + decision log, zero orders). **Cutover procedure**: validate shadow
+decisions for ~2 weeks → set `PROMETHEUS_WHEEL_ENABLED=1` in `.env` → drop
+`PROMETHEUS_EXECUTION_HALT`. The legacy equity execution + `run_options`
+job stay retired (halt short-circuits them; V12 keeps scoring passively for
+the scorecard). 40% drawdown breaker is alert-only (notifications inbox) —
+CSP re-entry is exempt by user decision. Manual runs:
+`python -m prometheus.scripts.run.run_wheel_daily [--submit|--no-submit]`.
+Paper trades TLT/GLD directly; live must use the UCITS twins in
+`live_substitutions` (PRIIPs). Market data: paper account has no live
+equity/OPRA API entitlement — quotes fall back to delayed (type 3), then DB
+close.
+
 ### Meta-Orchestrator (`prometheus/meta/`)
 Generates decision proposals, logs them to `engine_decisions`, and tracks realized outcomes vs. decision-time expectations at multiple time horizons (1d, 5d, etc.).
 Approved+applied config proposals now actually take effect: `run_books_for_run`

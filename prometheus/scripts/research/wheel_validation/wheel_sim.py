@@ -326,7 +326,6 @@ def main():
     for label, a, b in windows:
         results["benchmark"][label] = slice_metrics(dates, bench_eq, a, b)
 
-    lines = []
     hdr = (f"{'combo':<26} {'window':<9} {'totret':>9} {'cagr':>7} {'sharpe':>7} "
            f"{'maxDD':>7} {'prem$':>12} {'putsA':>5} {'callsA':>6} {'%hold':>6} {'%mo+':>6}")
 

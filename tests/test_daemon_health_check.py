@@ -9,8 +9,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date
 
-import pytest
-
 from prometheus.orchestration.market_aware_daemon import _run_health_check
 
 

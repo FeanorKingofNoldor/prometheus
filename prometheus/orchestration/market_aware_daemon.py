@@ -459,6 +459,32 @@ def execute_job(
                 return False, "; ".join(str(e) for e in summary["errors"])[:500]
             return True, None
 
+        if job.job_type == "run_wheel":
+            # Core+wheel daily runner (2026-08 spec).  Self-contained:
+            # broker truth + wheel config only, no EngineRun / phase
+            # machine.  Shadow (plan + decision log, no orders) until
+            # PROMETHEUS_WHEEL_ENABLED is set and the halt flag is not.
+            if options_mode == "dry_run":
+                return True, None
+            from prometheus.wheel.runner import run_wheel_daily
+
+            wheel_summary = run_wheel_daily(
+                port=4001 if options_mode == "live" else 4002,
+            )
+            logger.info(
+                "run_wheel[%s]: shadow=%s planned=%s submitted=%s filled=%s "
+                "warnings=%d",
+                job.market_id,
+                wheel_summary.get("shadow"),
+                wheel_summary.get("orders_planned"),
+                wheel_summary.get("orders_submitted", 0),
+                wheel_summary.get("orders_filled", 0),
+                len(wheel_summary.get("warnings", [])),
+            )
+            if wheel_summary.get("errors"):
+                return False, "; ".join(str(e) for e in wheel_summary["errors"])[:500]
+            return True, None
+
         # Get or create EngineRun
         run = _get_or_create_engine_run(db_manager, job.market_id, execution.as_of_date)
         if not run:
@@ -1591,9 +1617,9 @@ class MarketLane:
 
 # Job types that open an IBKR session. Client ids are fixed PER JOB TYPE
 # (run_execution=10, run_options=11, snapshot_positions=12,
-# reconcile_fills=13), so two markets running the same job type
-# concurrently would collide on the gateway. The dispatcher allows at
-# most one of these in flight globally.
+# reconcile_fills=13, fx_sweep=15, run_wheel=16), so two markets running
+# the same job type concurrently would collide on the gateway. The
+# dispatcher allows at most one of these in flight globally.
 IBKR_EXCLUSIVE_JOB_TYPES = frozenset(
     {
         "run_execution",
@@ -1602,6 +1628,7 @@ IBKR_EXCLUSIVE_JOB_TYPES = frozenset(
         "reconcile_fills",
         "reconcile_fills_eod",
         "fx_sweep",
+        "run_wheel",
     }
 )
 

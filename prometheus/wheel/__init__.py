@@ -25,3 +25,9 @@ __all__ = [
     "WheelParams",
     "decide_block",
 ]
+
+# config/planner/runner are imported directly (they pull yaml / DB / IB
+# dependencies that the pure engine deliberately avoids):
+#   from prometheus.wheel.config import load_wheel_config
+#   from prometheus.wheel.planner import build_plan
+#   from prometheus.wheel.runner import run_wheel_daily

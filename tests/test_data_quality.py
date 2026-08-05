@@ -18,7 +18,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-
 # ============================================================================
 # Helpers — extracted pure-logic functions from api.py
 # ============================================================================

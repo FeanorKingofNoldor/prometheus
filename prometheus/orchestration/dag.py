@@ -377,6 +377,29 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
             timeout_seconds=300,
         )
 
+        # ====================================================================
+        # Core+wheel strategy (2026-08 spec). Deliberately dependency-free:
+        # it reads broker truth + the wheel config, nothing from the phase
+        # machine. POST_CLOSE dispatch lands ~16:01 ET — SPY/VIX closes are
+        # final (the exact inputs the strategy was validated on) and SPY
+        # options quote until 16:15 ET, so limit-at-mid still fills live.
+        # CRITICAL priority so it takes the IBKR token ahead of the
+        # STANDARD-priority EOD reconcile and inside the options window.
+        # Shadow-mode (no submission) until PROMETHEUS_WHEEL_ENABLED is set.
+        # ====================================================================
+
+        jobs[job_id("run_wheel")] = JobMetadata(
+            job_id=job_id("run_wheel"),
+            job_type="run_wheel",
+            market_id=market_id,
+            required_state=MarketState.POST_CLOSE,
+            dependencies=(),
+            priority=JobPriority.CRITICAL,
+            max_retries=1,             # one quick retry for transient connects;
+            retry_delay_seconds=60,    # a late retry is outside the quote window
+            timeout_seconds=600,
+        )
+
     # ========================================================================
     # Phase 2: Feature Computation (depends on ingestion)
     # ========================================================================
