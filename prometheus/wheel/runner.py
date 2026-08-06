@@ -503,7 +503,15 @@ def _submit_plan(
                 if not ib.qualifyContracts(contract):
                     summary.setdefault("warnings", []).append(f"ballast: cannot qualify {iid}")
                     continue
-                price = round(po.limit_hint or 0.0, 2)
+                # Price off a live/delayed quote, not the (possibly stale)
+                # DB close in limit_hint. The order rests to the next open,
+                # so pad 0.5% in the fill direction; a bigger overnight gap
+                # leaves it unfilled and the bootstrap re-plans tomorrow.
+                bid, ask, last = _snapshot_quote(ib, contract)
+                base = last or ((bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0)
+                base = base or po.limit_hint or 0.0
+                pad = 1.005 if po.side == "BUY" else 0.995
+                price = round(base * pad, 2)
                 if price <= 0:
                     summary.setdefault("warnings", []).append(f"ballast: no price for {iid}")
                     continue
