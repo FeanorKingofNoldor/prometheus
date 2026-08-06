@@ -139,13 +139,16 @@ options quote window. Orders land in `orders` with deterministic orderRefs
 (credit/managed flag) in `options_position_events` under portfolio
 `US_WHEEL`; daily plan in `engine_decisions` (engine_name=WHEEL).
 
-**Gating**: submission requires `PROMETHEUS_WHEEL_ENABLED=1` AND
-`PROMETHEUS_EXECUTION_HALT` unset. Until then every run is a shadow (full
-plan + decision log, zero orders). **Cutover procedure**: validate shadow
-decisions for ~2 weeks → set `PROMETHEUS_WHEEL_ENABLED=1` in `.env` → drop
-`PROMETHEUS_EXECUTION_HALT`. The legacy equity execution + `run_options`
-job stay retired (halt short-circuits them; V12 keeps scoring passively for
-the scorecard). 40% drawdown breaker is alert-only (notifications inbox) —
+**Gating** (two INDEPENDENT flags, both in `.env`; daemon reads them at
+process start — restart after changing):
+- `PROMETHEUS_EXECUTION_HALT=1` — **permanent** legacy retirement switch:
+  short-circuits V12 equity execution and the old options pipeline (they
+  advance phases / sync positions but never trade; V12 keeps scoring
+  passively for the scorecard). Never remove without a deliberate decision
+  to revive the legacy books.
+- `PROMETHEUS_WHEEL_ENABLED=1` — the wheel's live switch (set 2026-08-06,
+  cutover approved by Max). Unset = shadow mode (full plan + decision log,
+  zero orders). Unsetting it is the wheel's emergency stop. 40% drawdown breaker is alert-only (notifications inbox) —
 CSP re-entry is exempt by user decision. Manual runs:
 `python -m prometheus.scripts.run.run_wheel_daily [--submit|--no-submit]`.
 Paper trades TLT/GLD directly; live must use the UCITS twins in

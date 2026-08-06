@@ -6,11 +6,14 @@ on) and SPY options quote until 16:15 ET, so limit-at-mid fills are
 still live. Fully self-contained: needs no pipeline phase, no
 universes, no books — just the gateway, the wheel config, and the DB.
 
-Submission is gated: orders go out only when ``PROMETHEUS_WHEEL_ENABLED``
-is set AND ``PROMETHEUS_EXECUTION_HALT`` is not. Otherwise the runner
-computes the full plan and persists it as a shadow decision
-(``engine_decisions``, engine_name=WHEEL) — free validation days before
-cutover.
+Submission is gated on ``PROMETHEUS_WHEEL_ENABLED`` alone. Deliberately
+independent of ``PROMETHEUS_EXECUTION_HALT``: the halt flag is the
+*legacy* retirement switch (it keeps the V12 equity execution and the
+old options pipeline short-circuited permanently) — coupling the wheel
+to it would force waking the retired paths just to trade the wheel.
+To emergency-stop the wheel, unset ``PROMETHEUS_WHEEL_ENABLED``.
+While unset, every run is a shadow: full plan persisted to
+``engine_decisions`` (engine_name=WHEEL), zero orders.
 
 Error taxonomy matches ``run_derivatives_daily``: ``errors`` = fatal
 pre-submission (daemon may retry safely); ``warnings`` = anything at or
@@ -769,9 +772,9 @@ def run_wheel_daily(
     if submit_override is not None:
         submit = submit_override
     else:
-        submit = env_flag("PROMETHEUS_WHEEL_ENABLED", default=False) and not env_flag(
-            "PROMETHEUS_EXECUTION_HALT", default=False
-        )
+        # Independent of PROMETHEUS_EXECUTION_HALT by design — see module
+        # docstring. The wheel's own kill switch is this flag alone.
+        submit = env_flag("PROMETHEUS_WHEEL_ENABLED", default=False)
 
     summary: dict[str, Any] = {
         "date": today.isoformat(),
