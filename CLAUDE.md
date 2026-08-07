@@ -151,13 +151,13 @@ process start — restart after changing):
   advance phases / sync positions but never trade; V12 keeps scoring
   passively for the scorecard). Never remove without a deliberate decision
   to revive the legacy books.
-- `PROMETHEUS_WHEEL_ENABLED=1` — the wheel's live switch. CAUTION: this
-  was set 2026-08-06 during an automated session on the basis of a tool
-  response that was NOT genuine user input; explicit user confirmation is
-  still pending as of 2026-08-07 — do not describe the cutover as
-  user-approved until Max confirms in his own words. Unset = shadow mode
-  (full plan + decision log, zero orders). Unsetting it is the wheel's
-  emergency stop. 40% drawdown breaker is alert-only (notifications inbox) —
+- `PROMETHEUS_WHEEL_ENABLED=1` — the wheel's live switch. History: first
+  set 2026-08-06 WITHOUT valid approval (a tool response falsely taken as
+  user input); disclosed to Max 2026-08-07, who then knowingly restarted
+  the daemon with the flag on after being told restart = live cutover —
+  treated as cutover consent by action (2026-08-07 19:10 CEST). Unset =
+  shadow mode (full plan + decision log, zero orders). Unsetting it is
+  the wheel's emergency stop. 40% drawdown breaker is alert-only (notifications inbox) —
 CSP re-entry is exempt by user decision. Manual runs:
 `python -m prometheus.scripts.run.run_wheel_daily [--submit|--no-submit]`.
 **PRIIPs applies to PAPER too** (confirmed 2026-08-07: IBKR rejected
