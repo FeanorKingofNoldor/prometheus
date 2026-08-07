@@ -341,9 +341,13 @@ def _existing_order_ids(db_manager: Any, order_ids: list[str], mode: str) -> set
         return set()
     with db_manager.get_runtime_connection() as conn:
         with conn.cursor() as cur:
+            # CANCELLED and REJECTED attempts never rested at the broker —
+            # a rerun may retry them (same deterministic ref; the orders
+            # row insert is ON CONFLICT DO NOTHING and status is updated
+            # by ref as the retry settles).
             cur.execute(
                 "SELECT order_id FROM orders WHERE order_id = ANY(%s) "
-                "AND UPPER(mode) = %s AND status <> 'CANCELLED'",
+                "AND UPPER(mode) = %s AND status NOT IN ('CANCELLED', 'REJECTED')",
                 (order_ids, mode),
             )
             return {str(r[0]) for r in cur.fetchall()}
@@ -506,7 +510,13 @@ def _submit_plan(
             if po.category == "ballast":
                 sub = cfg.ballast_substitute(po.instrument_id)
                 if sub is not None:
-                    contract = Stock(sub.symbol, sub.exchange, sub.currency)
+                    # SMART routing with a primaryExchange hint: the bare
+                    # ticker is ambiguous to SMART, but direct routing to
+                    # LSEETF trips the gateway's API precautionary block
+                    # (error 10311, instant cancel — bitten 2026-08-07).
+                    contract = Stock(
+                        sub.symbol, "SMART", sub.currency, primaryExchange=sub.exchange
+                    )
                 else:
                     contract = Stock(iid.split(".")[0], "SMART", "USD")
                 if not ib.qualifyContracts(contract):
