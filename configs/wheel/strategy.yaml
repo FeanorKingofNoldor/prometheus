@@ -12,12 +12,21 @@ allocation:
     GLD.US: 0.10   # physical gold — the 2022-style inflation-shock cover
   rebalance: quarterly
 
-# PRIIPs: US ETFs are paper-only for the EU retail live account. At live
-# cutover the execution layer must substitute per this map (backtests used
-# the US originals; twins track the same underlyings).
-live_substitutions:
-  TLT.US: DTLA.LSE     # iShares $ Treasury Bond 20+yr UCITS
-  GLD.US: SGLN.LSE     # iShares Physical Gold ETC
+# PRIIPs: US ETFs are blocked for this EU-retail account on PAPER TOO —
+# confirmed 2026-08-07 when IBKR rejected TLT/GLD buys ("No Trading
+# Permission, Customer Ineligible", missing KID). The runner therefore
+# substitutes UCITS twins in every mode (backtests used the US originals;
+# twins track the same underlyings). USD lines only — no FX leg. These
+# tickers do not resolve via SMART; exchange must be LSEETF.
+ballast_substitutions:
+  TLT.US:
+    instrument: DTLA.LSE   # iShares $ Treasury Bond 20+yr UCITS (USD Acc), conId 317612452
+    exchange: LSEETF
+    currency: USD
+  GLD.US:
+    instrument: IGLN.LSE   # iShares Physical Gold ETC (USD), conId 86656182
+    exchange: LSEETF
+    currency: USD
 
 wheel:
   underlying: SPY.US

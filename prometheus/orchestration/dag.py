@@ -20,15 +20,31 @@ Version: v1.0.0
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
+from datetime import time as dt_time
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 from apatheon.core.logging import get_logger
-from apatheon.core.market_state import MarketState
+from apatheon.core.market_state import DEFAULT_CONFIGS, MarketState
 
 from prometheus.pipeline.state import RunPhase
 
 logger = get_logger(__name__)
+
+
+def _within_dispatch_window(
+    market_id: str, window: tuple[str, str], now_utc: datetime
+) -> bool:
+    """True when the exchange-local wall clock is inside [start, end)."""
+    config = DEFAULT_CONFIGS.get(market_id)
+    if config is None:
+        return True
+    tz = ZoneInfo(config.session_times.exchange_tz)
+    now_local = now_utc.astimezone(tz).time()
+    start = dt_time.fromisoformat(window[0])
+    end = dt_time.fromisoformat(window[1])
+    return start <= now_local < end
 
 
 # ============================================================================
@@ -79,6 +95,14 @@ class JobMetadata:
         retry_delay_seconds: Delay between retries
         priority: Priority tier
         timeout_seconds: Maximum execution time before considering failed
+        dispatch_window_local: Optional ("HH:MM", "HH:MM") half-open
+            exchange-local wall-clock window. Gates NORMAL dispatch only —
+            the catch-up path passes no clock to ``get_runnable_jobs`` and
+            so ignores it (a missed window is made up next morning,
+            degraded). Needed because market STATES are data-driven (US
+            POST_CLOSE starts 17:30 ET for EODHD) while some jobs are
+            clock-driven (the wheel needs the 16:00-16:15 ET options
+            quote window).
     """
 
     job_id: str
@@ -92,6 +116,7 @@ class JobMetadata:
     retry_delay_seconds: int = 300  # 5 minutes
     priority: JobPriority = JobPriority.STANDARD
     timeout_seconds: int = 3600  # 1 hour default
+    dispatch_window_local: tuple[str, str] | None = None
 
 
 # ============================================================================
@@ -120,6 +145,7 @@ class DAG:
         completed_jobs: set[str],
         running_jobs: set[str],
         current_market_state: MarketState,
+        now_utc: datetime | None = None,
     ) -> list[JobMetadata]:
         """Get jobs that are ready to run.
 
@@ -127,11 +153,15 @@ class DAG:
         1. Not already completed or running
         2. All dependencies are completed
         3. Market is in required state (or no state requirement)
+        4. If the job declares a dispatch window AND a clock is given,
+           the exchange-local time is inside it (catch-up passes no
+           clock, deliberately bypassing windows)
 
         Args:
             completed_jobs: Set of job_ids that have completed successfully
             running_jobs: Set of job_ids currently executing
             current_market_state: Current state of the market
+            now_utc: Current time for dispatch-window checks; None skips them
 
         Returns:
             List of JobMetadata for jobs ready to run, sorted by priority
@@ -154,6 +184,15 @@ class DAG:
                 if current_market_state not in job.required_states:
                     continue
             elif job.required_state is not None and job.required_state != current_market_state:
+                continue
+
+            if (
+                job.dispatch_window_local is not None
+                and now_utc is not None
+                and not _within_dispatch_window(
+                    self.market_id, job.dispatch_window_local, now_utc
+                )
+            ):
                 continue
 
             runnable.append(job)
@@ -380,9 +419,13 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
         # ====================================================================
         # Core+wheel strategy (2026-08 spec). Deliberately dependency-free:
         # it reads broker truth + the wheel config, nothing from the phase
-        # machine. POST_CLOSE dispatch lands ~16:01 ET — SPY/VIX closes are
-        # final (the exact inputs the strategy was validated on) and SPY
-        # options quote until 16:15 ET, so limit-at-mid still fills live.
+        # machine. Dispatch is CLOCK-gated to 16:00-16:16 ET: US POST_CLOSE
+        # only starts 17:30 ET (EODHD delay) — after SPY options stop
+        # quoting at 16:15 — so the job instead rides the OVERNIGHT state
+        # that covers the close gap, fenced by dispatch_window_local.
+        # POST_CLOSE stays in required_states solely for the catch-up path
+        # (forced POST_CLOSE, no clock → window bypassed; options legs
+        # give up gracefully off-hours, ballast still works).
         # CRITICAL priority so it takes the IBKR token ahead of the
         # STANDARD-priority EOD reconcile and inside the options window.
         # Shadow-mode (no submission) until PROMETHEUS_WHEEL_ENABLED is set.
@@ -392,7 +435,8 @@ def build_market_dag(market_id: str, as_of_date: date) -> DAG:
             job_id=job_id("run_wheel"),
             job_type="run_wheel",
             market_id=market_id,
-            required_state=MarketState.POST_CLOSE,
+            required_states=(MarketState.OVERNIGHT, MarketState.POST_CLOSE),
+            dispatch_window_local=("16:00", "16:16"),
             dependencies=(),
             priority=JobPriority.CRITICAL,
             max_retries=1,             # one quick retry for transient connects;

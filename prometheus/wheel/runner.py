@@ -172,8 +172,6 @@ def _build_account_view(
     today: date,
 ) -> WheelAccountView:
     """Distill broker truth into the planner's input."""
-    from prometheus.execution.instrument_mapper import InstrumentMapper
-
     # Account values — brief pause so IBKR streams them post-connect.
     ib.sleep(2)
     account: dict[str, str] = {}
@@ -194,7 +192,10 @@ def _build_account_view(
     )
 
     symbol = cfg.underlying_symbol
-    ballast_ids = {leg.instrument_id for leg in cfg.ballast}
+    # Symbol → canonical leg id; covers the US originals AND their UCITS
+    # twins (the broker holds DTLA, the planner thinks in TLT.US). The
+    # generic mapper can't do this — it renders every stock as SYMBOL.US.
+    ballast_symbols = cfg.ballast_symbol_map
     shares = 0
     short_puts: list[OpenShortOptionView] = []
     short_calls: list[OpenShortOptionView] = []
@@ -205,10 +206,11 @@ def _build_account_view(
         sec_type = getattr(contract, "secType", "")
         qty = _f(p.position)
         if sec_type == "STK":
-            iid = InstrumentMapper.contract_to_instrument_id(contract)
-            if getattr(contract, "symbol", "") == symbol:
+            con_symbol = getattr(contract, "symbol", "")
+            if con_symbol == symbol:
                 shares += int(qty)
-            elif iid in ballast_ids:
+            elif con_symbol in ballast_symbols:
+                iid = ballast_symbols[con_symbol]
                 mv = portfolio_mv.get(getattr(contract, "conId", None) or -1, 0.0)
                 ballast_values[iid] = ballast_values.get(iid, 0.0) + (
                     mv or qty * _f(p.avgCost)
@@ -459,7 +461,6 @@ def _submit_plan(
 
     discovery = ContractDiscoveryService(ib)
     symbol = cfg.underlying_symbol
-    live = mode == "LIVE"
     concession_cap = spot * cfg.limit_walk_bps / 10_000.0
 
     working: list[_WorkingOrder] = []
@@ -469,7 +470,8 @@ def _submit_plan(
     resolved: list[tuple[PlannedOrder, str, str, str]] = []  # (po, ref, expiry, iid)
     for po in plan.orders:
         if po.category == "ballast":
-            iid = cfg.ballast_instrument(po.instrument_id, live=live)
+            sub = cfg.ballast_substitute(po.instrument_id)
+            iid = sub.instrument_id if sub else po.instrument_id
             side = OrderSide.BUY if po.side == "BUY" else OrderSide.SELL
             ref = deterministic_order_id(cfg.portfolio_id, iid, side, today)
             resolved.append((po, ref, "", iid))
@@ -502,7 +504,11 @@ def _submit_plan(
 
         try:
             if po.category == "ballast":
-                contract = Stock(iid.split(".")[0], "SMART", "USD")
+                sub = cfg.ballast_substitute(po.instrument_id)
+                if sub is not None:
+                    contract = Stock(sub.symbol, sub.exchange, sub.currency)
+                else:
+                    contract = Stock(iid.split(".")[0], "SMART", "USD")
                 if not ib.qualifyContracts(contract):
                     summary.setdefault("warnings", []).append(f"ballast: cannot qualify {iid}")
                     continue
@@ -512,13 +518,31 @@ def _submit_plan(
                 # leaves it unfilled and the bootstrap re-plans tomorrow.
                 bid, ask, last = _snapshot_quote(ib, contract)
                 base = last or ((bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0)
-                base = base or po.limit_hint or 0.0
+                quantity = po.quantity
+                if sub is not None:
+                    # The planner sized in shares of the US original
+                    # (limit_hint = its price). Re-size to the twin's own
+                    # quote so the DOLLAR notional is preserved — twin
+                    # prices differ wildly from the originals'.
+                    if base <= 0 or not po.limit_hint:
+                        summary.setdefault("warnings", []).append(
+                            f"ballast: no quote to size substitute {iid} — skipped"
+                        )
+                        continue
+                    quantity = int((po.quantity * po.limit_hint) // base)
+                    if quantity <= 0:
+                        summary.setdefault("warnings", []).append(
+                            f"ballast: notional too small for one {iid} unit"
+                        )
+                        continue
+                else:
+                    base = base or po.limit_hint or 0.0
                 pad = 1.005 if po.side == "BUY" else 0.995
                 price = round(base * pad, 2)
                 if price <= 0:
                     summary.setdefault("warnings", []).append(f"ballast: no price for {iid}")
                     continue
-                lo = LimitOrder(po.side, po.quantity, price, tif="DAY", orderRef=ref)
+                lo = LimitOrder(po.side, quantity, price, tif="DAY", orderRef=ref)
                 trade = ib.placeOrder(contract, lo)
                 w = _WorkingOrder(
                     planned=po, contract=contract, trade=trade, order_ref=ref,
@@ -571,7 +595,9 @@ def _submit_plan(
                     instrument_id=iid,
                     side=side,
                     order_type=OrderType.LIMIT,
-                    quantity=float(po.quantity),
+                    quantity=float(working[-1].trade.order.totalQuantity)
+                    if working
+                    else float(po.quantity),
                     limit_price=working[-1].mid if working else None,
                     metadata={
                         "category": po.category,
@@ -666,6 +692,11 @@ def _submit_plan(
         except Exception as exc:
             _record_warning(summary, f"cancel:{w.instrument_id}", exc)
 
+    # Give the broker a beat to report async rejections (they arrive as a
+    # silent Cancelled a few seconds after placement) before settling.
+    if any(w.planned.category == "ballast" for w in working):
+        ib.sleep(5)
+
     # Settle statuses into the orders table.
     fills = 0
     for w in working:
@@ -682,6 +713,19 @@ def _submit_plan(
                 _update_order_status(db_manager, w.order_ref, "CANCELLED")
             except Exception as exc:
                 _record_warning(summary, f"status:{w.order_ref}", exc)
+        elif w.is_dead:
+            # Ballast orders are never cancelled by us — a dead one was
+            # rejected by IBKR (permissions/price band; these arrive as a
+            # silent Cancelled). Surface it instead of reporting "working".
+            w.outcome = "rejected"
+            summary.setdefault("warnings", []).append(
+                f"ballast: {w.instrument_id} rejected by broker "
+                f"(status={w.status})"
+            )
+            try:
+                _update_order_status(db_manager, w.order_ref, "REJECTED")
+            except Exception as exc:
+                _record_warning(summary, f"status:{w.order_ref}", exc)
 
     summary["orders_filled"] = fills
     summary["order_outcomes"] = [
@@ -689,7 +733,7 @@ def _submit_plan(
             "category": w.planned.category,
             "instrument_id": w.instrument_id,
             "side": w.planned.side,
-            "quantity": w.planned.quantity,
+            "quantity": _f(getattr(w.trade.order, "totalQuantity", w.planned.quantity)),
             "limit": w.mid,
             "walked": w.walked and w.planned.category != "ballast",
             "outcome": w.outcome,

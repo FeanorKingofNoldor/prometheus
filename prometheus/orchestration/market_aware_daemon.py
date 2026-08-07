@@ -113,6 +113,9 @@ def create_job_execution(
         "retry_delay_seconds": int(job.retry_delay_seconds),
         "priority": int(job.priority.value),
         "timeout_seconds": int(job.timeout_seconds),
+        "dispatch_window_local": (
+            list(job.dispatch_window_local) if job.dispatch_window_local is not None else None
+        ),
     }
 
     sql = """
@@ -2154,7 +2157,9 @@ class MarketAwareDaemon:
 
         completed = self._get_completed_jobs(dag_id)
         running = self._get_running_job_ids()
-        runnable = dag.get_runnable_jobs(completed, running, current_state)
+        runnable = dag.get_runnable_jobs(
+            completed, running, current_state, now_utc=datetime.now(timezone.utc)
+        )
         if not runnable:
             return
 

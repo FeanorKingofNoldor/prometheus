@@ -2,7 +2,7 @@
 
 Single source of truth is ``configs/wheel/strategy.yaml`` — the validated
 2026-08 spec (allocation split, VIXCOND wheel parameters, execution
-style, PRIIPs live substitutions). This module parses it into frozen
+style, PRIIPs ballast substitutions). This module parses it into frozen
 dataclasses so the runner and tests share one config surface.
 """
 
@@ -28,6 +28,27 @@ class BallastLeg:
 
 
 @dataclass(frozen=True)
+class BallastSubstitute:
+    """UCITS twin that replaces a PRIIPs-blocked US ETF at the broker.
+
+    The account is EU-retail (IBKR Ireland) in BOTH paper and live —
+    confirmed 2026-08-07 when paper rejected TLT/GLD buys with "No
+    Trading Permission, Customer Ineligible" (missing KID). Substitution
+    therefore applies in every mode, and the exchange/currency must be
+    carried explicitly because SMART routing does not resolve these
+    tickers (they live on LSEETF).
+    """
+
+    instrument_id: str   # canonical Prometheus id, e.g. "DTLA.LSE"
+    exchange: str        # IB exchange, e.g. "LSEETF"
+    currency: str        # quote currency — only USD lines supported
+
+    @property
+    def symbol(self) -> str:
+        return self.instrument_id.split(".")[0]
+
+
+@dataclass(frozen=True)
 class WheelStrategyConfig:
     """Parsed configs/wheel/strategy.yaml."""
 
@@ -36,7 +57,7 @@ class WheelStrategyConfig:
     wheel_allocation: float                  # fraction of NAV for the wheel
     ballast: tuple[BallastLeg, ...]
     rebalance: str                           # "quarterly"
-    live_substitutions: Mapping[str, str] = field(default_factory=dict)
+    ballast_substitutions: Mapping[str, BallastSubstitute] = field(default_factory=dict)
     order_style: str = "limit_at_mid"
     limit_walk_bps: float = 25.0             # max concession from mid, bps of spot
     max_contracts_per_day: int = 10
@@ -47,16 +68,24 @@ class WheelStrategyConfig:
         """Bare IB symbol for the wheel underlying ("SPY")."""
         return self.underlying_instrument_id.split(".")[0]
 
-    def ballast_instrument(self, instrument_id: str, *, live: bool) -> str:
-        """Resolve a ballast leg to its tradeable instrument.
+    def ballast_substitute(self, instrument_id: str) -> BallastSubstitute | None:
+        """UCITS twin for a ballast leg, or None if it trades directly."""
+        return self.ballast_substitutions.get(instrument_id)
 
-        Live EU-retail accounts cannot buy US ETFs (PRIIPs); the YAML maps
-        each to a UCITS twin. Paper trades the US originals so fills match
-        the backtests.
+    @property
+    def ballast_symbol_map(self) -> dict[str, str]:
+        """IB symbol → canonical ballast leg id, covering originals AND twins.
+
+        Used to fold broker positions back onto the planner's canonical
+        legs (a DTLA position counts toward TLT.US's sleeve).
         """
-        if live and instrument_id in self.live_substitutions:
-            return self.live_substitutions[instrument_id]
-        return instrument_id
+        out: dict[str, str] = {}
+        for leg in self.ballast:
+            out[leg.instrument_id.split(".")[0]] = leg.instrument_id
+            sub = self.ballast_substitutions.get(leg.instrument_id)
+            if sub is not None:
+                out[sub.symbol] = leg.instrument_id
+        return out
 
 
 def load_wheel_config(path: Path | None = None) -> WheelStrategyConfig:
@@ -87,6 +116,21 @@ def load_wheel_config(path: Path | None = None) -> WheelStrategyConfig:
             f"wheel+ballast allocation must sum to 1.0, got {total:.4f}"
         )
 
+    substitutions: dict[str, BallastSubstitute] = {}
+    for iid, spec in (raw.get("ballast_substitutions", {}) or {}).items():
+        sub = BallastSubstitute(
+            instrument_id=str(spec["instrument"]),
+            exchange=str(spec["exchange"]),
+            currency=str(spec["currency"]).upper(),
+        )
+        if sub.currency != "USD":
+            raise ValueError(
+                f"ballast substitute {sub.instrument_id} is {sub.currency}-"
+                "denominated — only USD lines are supported (planner sizing "
+                "and account values are USD; pick the USD listing)"
+            )
+        substitutions[str(iid)] = sub
+
     execution = raw.get("execution", {})
     return WheelStrategyConfig(
         params=params,
@@ -94,11 +138,17 @@ def load_wheel_config(path: Path | None = None) -> WheelStrategyConfig:
         wheel_allocation=wheel_alloc,
         ballast=ballast,
         rebalance=str(allocation.get("rebalance", "quarterly")),
-        live_substitutions=dict(raw.get("live_substitutions", {}) or {}),
+        ballast_substitutions=substitutions,
         order_style=str(execution.get("order_style", "limit_at_mid")),
         limit_walk_bps=float(execution.get("limit_walk_bps", 25)),
         max_contracts_per_day=int(execution.get("max_contracts_per_day", 10)),
     )
 
 
-__all__ = ["BallastLeg", "WheelStrategyConfig", "load_wheel_config", "CONFIG_PATH"]
+__all__ = [
+    "BallastLeg",
+    "BallastSubstitute",
+    "WheelStrategyConfig",
+    "load_wheel_config",
+    "CONFIG_PATH",
+]

@@ -61,10 +61,24 @@ def test_config_loads_validated_spec():
     assert CFG.rebalance == "quarterly"
 
 
-def test_live_substitutions_only_apply_live():
-    assert CFG.ballast_instrument("TLT.US", live=False) == "TLT.US"
-    assert CFG.ballast_instrument("TLT.US", live=True) == "DTLA.LSE"
-    assert CFG.ballast_instrument("GLD.US", live=True) == "SGLN.LSE"
+def test_ballast_substitutions_apply_in_every_mode():
+    # PRIIPs blocks US ETFs on paper too (rejection observed 2026-08-07),
+    # so substitution is unconditional and carries explicit routing.
+    tlt = CFG.ballast_substitute("TLT.US")
+    gld = CFG.ballast_substitute("GLD.US")
+    assert tlt is not None and tlt.instrument_id == "DTLA.LSE"
+    assert tlt.exchange == "LSEETF" and tlt.currency == "USD"
+    assert gld is not None and gld.instrument_id == "IGLN.LSE"
+    assert gld.exchange == "LSEETF" and gld.currency == "USD"
+    assert CFG.ballast_substitute("SPY.US") is None
+
+
+def test_ballast_symbol_map_covers_originals_and_twins():
+    m = CFG.ballast_symbol_map
+    assert m["TLT"] == "TLT.US"
+    assert m["DTLA"] == "TLT.US"
+    assert m["GLD"] == "GLD.US"
+    assert m["IGLN"] == "GLD.US"
 
 
 # ── CSP sizing ───────────────────────────────────────────────────────
@@ -261,15 +275,54 @@ def test_plan_summary_is_json_shaped():
 # ── DAG + daemon wiring ──────────────────────────────────────────────
 
 
-def test_run_wheel_in_us_dag_post_close_no_deps():
+def test_run_wheel_in_us_dag_clock_gated_no_deps():
     from apatheon.core.market_state import MarketState
 
     from prometheus.orchestration.dag import build_market_dag
 
     dag = build_market_dag("US_EQ", D)
     job = dag.jobs[f"us_eq_run_wheel_{D.isoformat()}"]
-    assert job.required_state == MarketState.POST_CLOSE
+    # US POST_CLOSE starts 17:30 ET (EODHD delay) — after SPY options
+    # stop quoting at 16:15 — so the wheel rides OVERNIGHT (the close
+    # gap's state) fenced to the 16:00-16:16 ET options window.
+    # POST_CLOSE stays in the set only for forced catch-up runs.
+    assert job.required_states == (MarketState.OVERNIGHT, MarketState.POST_CLOSE)
+    assert job.dispatch_window_local == ("16:00", "16:16")
     assert job.dependencies == ()
+
+
+def test_run_wheel_dispatch_window_gating():
+    """Window blocks the 17:30+ POST_CLOSE poll but admits the 16:0x gap;
+    the clockless (catch-up) call bypasses the window entirely."""
+    from datetime import datetime, timezone
+
+    from apatheon.core.market_state import MarketState
+
+    from prometheus.orchestration.dag import build_market_dag
+
+    dag = build_market_dag("US_EQ", D)
+    wheel_id = f"us_eq_run_wheel_{D.isoformat()}"
+
+    def runnable_ids(state, now_utc):
+        return {
+            j.job_id
+            for j in dag.get_runnable_jobs(set(), set(), state, now_utc=now_utc)
+        }
+
+    # 16:01 ET (20:01 UTC in August) — inside the window, state OVERNIGHT.
+    in_window = datetime(2026, 8, 7, 20, 1, tzinfo=timezone.utc)
+    assert wheel_id in runnable_ids(MarketState.OVERNIGHT, in_window)
+
+    # 17:35 ET — POST_CLOSE has begun but the options market is closed.
+    post_close = datetime(2026, 8, 7, 21, 35, tzinfo=timezone.utc)
+    assert wheel_id not in runnable_ids(MarketState.POST_CLOSE, post_close)
+
+    # 03:05 ET OVERNIGHT — way off-window.
+    small_hours = datetime(2026, 8, 7, 7, 5, tzinfo=timezone.utc)
+    assert wheel_id not in runnable_ids(MarketState.OVERNIGHT, small_hours)
+
+    # Catch-up: forced POST_CLOSE with no clock — window bypassed.
+    assert wheel_id in runnable_ids(MarketState.POST_CLOSE, None)
 
 
 def test_run_wheel_absent_from_non_us_dags():

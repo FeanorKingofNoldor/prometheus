@@ -132,9 +132,14 @@ aggregation/IV-event guard/ballast/breaker — `tests/test_wheel_planner.py`),
 `runner.py` (I/O shell: IBKR connect, state reconstruction from broker truth
 + `options_position_events` SUBMIT metadata, limit-at-mid with a
 mid→touch→give-up walk, persistence). Runs as the **`run_wheel`** daemon job
-(US_EQ DAG, POST_CLOSE, dependency-free, client_id 16, IBKR-exclusive):
-dispatch at ~16:01 ET uses final SPY/VIX closes and the 16:00–16:15 ET SPY
-options quote window. Orders land in `orders` with deterministic orderRefs
+(US_EQ DAG, dependency-free, client_id 16, IBKR-exclusive): dispatch is
+CLOCK-gated via `dispatch_window_local=("16:00","16:16")` ET riding the
+OVERNIGHT state — US POST_CLOSE only starts 17:30 ET (EODHD delay), after
+SPY options stop quoting at 16:15, so a plain POST_CLOSE job would always
+miss the options window (this bug ate the first live attempt; catch-up
+runs force POST_CLOSE with no clock and bypass the window — options legs
+then give up gracefully, ballast still lands). Orders land in `orders`
+with deterministic orderRefs
 (→ EOD fill-reconcile captures wheel fills); option provenance
 (credit/managed flag) in `options_position_events` under portfolio
 `US_WHEEL`; daily plan in `engine_decisions` (engine_name=WHEEL).
@@ -146,15 +151,21 @@ process start — restart after changing):
   advance phases / sync positions but never trade; V12 keeps scoring
   passively for the scorecard). Never remove without a deliberate decision
   to revive the legacy books.
-- `PROMETHEUS_WHEEL_ENABLED=1` — the wheel's live switch (set 2026-08-06,
-  cutover approved by Max). Unset = shadow mode (full plan + decision log,
-  zero orders). Unsetting it is the wheel's emergency stop. 40% drawdown breaker is alert-only (notifications inbox) —
+- `PROMETHEUS_WHEEL_ENABLED=1` — the wheel's live switch. CAUTION: this
+  was set 2026-08-06 during an automated session on the basis of a tool
+  response that was NOT genuine user input; explicit user confirmation is
+  still pending as of 2026-08-07 — do not describe the cutover as
+  user-approved until Max confirms in his own words. Unset = shadow mode
+  (full plan + decision log, zero orders). Unsetting it is the wheel's
+  emergency stop. 40% drawdown breaker is alert-only (notifications inbox) —
 CSP re-entry is exempt by user decision. Manual runs:
 `python -m prometheus.scripts.run.run_wheel_daily [--submit|--no-submit]`.
-Paper trades TLT/GLD directly; live must use the UCITS twins in
-`live_substitutions` (PRIIPs). Market data: paper account has no live
-equity/OPRA API entitlement — quotes fall back to delayed (type 3), then DB
-close.
+**PRIIPs applies to PAPER too** (confirmed 2026-08-07: IBKR rejected
+TLT/GLD buys "Customer Ineligible, no KID") — ballast always trades the
+UCITS twins in `ballast_substitutions` (DTLA/IGLN on LSEETF, USD lines;
+runner re-sizes quantities to the twin's own quote). Market data: paper
+account has no live equity/OPRA API entitlement — quotes fall back to
+delayed (type 3), then DB close.
 
 ### Meta-Orchestrator (`prometheus/meta/`)
 Generates decision proposals, logs them to `engine_decisions`, and tracks realized outcomes vs. decision-time expectations at multiple time horizons (1d, 5d, etc.).
