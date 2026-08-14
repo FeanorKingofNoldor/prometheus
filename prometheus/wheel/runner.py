@@ -458,10 +458,15 @@ def _submit_plan(
         OrderType,
     )
     from prometheus.execution.contract_discovery import ContractDiscoveryService
+    from prometheus.execution.executed_actions import (
+        ExecutedActionContext,
+        record_executed_actions_for_fills,
+    )
+    from prometheus.execution.fill_reconciliation import _fill_from_ib
     from prometheus.execution.ib_compat import LimitOrder, Option, Stock
     from prometheus.execution.options_storage import record_order_submission
     from prometheus.execution.order_planner import deterministic_order_id
-    from prometheus.execution.storage import record_orders
+    from prometheus.execution.storage import record_fills, record_orders
 
     discovery = ContractDiscoveryService(ib)
     symbol = cfg.underlying_symbol
@@ -736,6 +741,38 @@ def _submit_plan(
                 _update_order_status(db_manager, w.order_ref, "REJECTED")
             except Exception as exc:
                 _record_warning(summary, f"status:{w.order_ref}", exc)
+
+    # Record executions straight from the trade objects. reqExecutions is
+    # cleared by the nightly IBC restart, so when the 23:30 EOD reconcile
+    # lane misses a session (box shut down) that evening's executions are
+    # unrecoverable next morning — the runner is the only component
+    # guaranteed to have seen them (bitten 2026-08-07: the first CSP fill
+    # never reached `fills`). Rows are keyed on IBKR execIds exactly like
+    # the reconcile (ON CONFLICT DO NOTHING + reconcile's novelty gate),
+    # so a later reconcile pass records nothing twice.
+    fill_rows = []
+    for w in working:
+        for ib_fill in list(getattr(w.trade, "fills", None) or []):
+            try:
+                row = _fill_from_ib(ib_fill)
+            except Exception as exc:
+                _record_warning(summary, f"fill_map:{w.order_ref}", exc)
+                continue
+            if row is not None:
+                row.metadata["source"] = "wheel_runner"
+                fill_rows.append(row)
+    if fill_rows:
+        try:
+            record_fills(db_manager, fills=fill_rows, mode=mode)
+            record_executed_actions_for_fills(
+                db_manager,
+                fills=fill_rows,
+                context=ExecutedActionContext(
+                    portfolio_id=cfg.portfolio_id, mode=mode,
+                ),
+            )
+        except Exception as exc:
+            _record_warning(summary, "record_fills", exc)
 
     summary["orders_filled"] = fills
     summary["order_outcomes"] = [
