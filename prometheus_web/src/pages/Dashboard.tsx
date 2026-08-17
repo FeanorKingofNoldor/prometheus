@@ -160,6 +160,12 @@ const positionCols: Column<PortfolioRow>[] = [
     render: (r) => fmtQty(Number(r.quantity)),
   },
   {
+    key: "avg_cost",
+    label: "Avg Cost",
+    align: "right",
+    render: (r) => (r.avg_cost != null ? `$${Number(r.avg_cost).toFixed(2)}` : "—"),
+  },
+  {
     key: "market_value",
     label: "Mkt Value",
     align: "right",
