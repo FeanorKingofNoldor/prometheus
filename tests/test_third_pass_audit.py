@@ -125,6 +125,52 @@ class TestCatchupTimezoneAwareness:
         assert catchup is not None
         assert catchup.catchup_date == date(2026, 4, 8)
 
+    def test_catchup_fires_when_booted_after_catchup_hour(self):
+        """A host powered on well past the catch-up hour must still catch
+        up: the old hour-equality gate silently skipped the missed run on
+        every late boot (US prices froze for days in production)."""
+        from prometheus.orchestration.market_aware_daemon import (
+            MarketAwareDaemon,
+            MarketAwareDaemonConfig,
+        )
+
+        db = MagicMock()
+        config = MarketAwareDaemonConfig(markets=["US_EQ"], morning_catchup_hour=9)
+        daemon = MarketAwareDaemon(config, db)
+
+        fake_now = datetime(2026, 8, 25, 11, 47, tzinfo=ZoneInfo("Europe/Berlin"))
+        as_of_date = date(2026, 8, 25)
+
+        mock_cal = MagicMock()
+        mock_cal.trading_days_between.return_value = [date(2026, 8, 22)]
+        daemon._calendars["US_EQ"] = mock_cal
+
+        with patch(
+            "prometheus.orchestration.market_aware_daemon.now_local",
+            return_value=fake_now,
+        ), patch(
+            "prometheus.pipeline.state.load_latest_run",
+            return_value=None,
+        ):
+            daemon._maybe_morning_catchup(as_of_date)
+
+        catchup = daemon.lanes["US_EQ"].catchup
+        assert catchup is not None
+        assert catchup.catchup_date == date(2026, 8, 22)
+
+        # Second pass same day: dedup keeps it one-shot.
+        daemon.lanes["US_EQ"].catchup = None
+        with patch(
+            "prometheus.orchestration.market_aware_daemon.now_local",
+            return_value=fake_now,
+        ), patch(
+            "prometheus.pipeline.state.load_latest_run",
+            return_value=None,
+        ) as mock_load_again:
+            daemon._maybe_morning_catchup(as_of_date)
+        mock_load_again.assert_not_called()
+        assert daemon.lanes["US_EQ"].catchup is None
+
 
 # ---------------------------------------------------------------------------
 # HIGH #2: IBKR order quantity validation

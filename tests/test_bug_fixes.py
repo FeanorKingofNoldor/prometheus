@@ -100,26 +100,31 @@ class TestDateRolloverRaceCondition:
         assert not daemon._calendars
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    def test_catchup_skips_outside_hour(self, mock_now_local):
-        """Catch-up only triggers at the configured hour."""
+    def test_catchup_skips_before_hour(self, mock_now_local):
+        """Catch-up waits until the configured hour — but fires at ANY
+        hour from then on (a late boot must not skip the missed run)."""
         daemon = self._make_daemon(morning_catchup_hour=8)
 
-        mock_now_local.return_value = datetime(2026, 4, 12, 10, 0)  # hour=10, not 8
+        mock_now_local.return_value = datetime(2026, 4, 12, 6, 0)  # before 8
         daemon._maybe_morning_catchup(date(2026, 4, 11))
 
-        # Function exited after checking the hour — nothing attached.
         assert daemon.lanes["US_EQ"].catchup is None
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
-    def test_catchup_skips_past_minute_5(self, mock_now_local):
-        """Catch-up only triggers in the first 5 minutes of the hour."""
+    def test_catchup_fires_past_minute_5(self, mock_now_local):
+        """No minute gate: the per-(market, date) dedup replaces it, so a
+        cycle at 08:10 still detects the missed run."""
         daemon = self._make_daemon(morning_catchup_hour=8)
 
-        mock_now_local.return_value = datetime(2026, 4, 12, 8, 10)  # minute=10 > 5
-        daemon._maybe_morning_catchup(date(2026, 4, 11))
+        mock_now_local.return_value = datetime(2026, 4, 12, 8, 10)
+        mock_cal = MagicMock()
+        mock_cal.trading_days_between.return_value = [date(2026, 4, 10)]
+        daemon._calendars["US_EQ"] = mock_cal
 
-        # Should return without attaching a catch-up.
-        assert daemon.lanes["US_EQ"].catchup is None
+        with patch("prometheus.pipeline.state.load_latest_run", return_value=None):
+            daemon._maybe_morning_catchup(date(2026, 4, 11))
+
+        assert daemon.lanes["US_EQ"].catchup is not None
 
     @patch("prometheus.orchestration.market_aware_daemon.now_local")
     def test_normal_catchup_pipeline_already_ran(self, mock_now_local):

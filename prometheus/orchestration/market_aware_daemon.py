@@ -1882,10 +1882,11 @@ class MarketAwareDaemon:
     def _maybe_reap_zombie_runs(self, as_of_date: date) -> None:
         """Daily sweep of stuck (zombie) engine_runs rows.
 
-        Fires only when we're in the morning catch-up hour, so it runs
-        once per day at a known low-traffic window.
+        Fires from the morning catch-up hour onward (once per day via
+        the dedup key) — hour-equality would never fire on a machine
+        booted after that hour.
         """
-        if now_local().hour != self.config.morning_catchup_hour:
+        if now_local().hour < self.config.morning_catchup_hour:
             return
         zombie_key = f"zombie_reap_{as_of_date}"
         if hasattr(self, "_zombie_reap_done") and zombie_key in self._zombie_reap_done:
@@ -1917,9 +1918,9 @@ class MarketAwareDaemon:
         EODHD serves ~1-2 years of forward holidays; without periodic
         refresh the market_holidays table goes stale and TradingCalendar
         silently degrades to weekends-only for non-US markets. Runs on
-        the 1st of the month during the catch-up hour window.
+        the 1st of the month, any time from the catch-up hour onward.
         """
-        if as_of_date.day != 1 or now_local().hour != self.config.morning_catchup_hour:
+        if as_of_date.day != 1 or now_local().hour < self.config.morning_catchup_hour:
             return
         key = f"holidays_{as_of_date.isoformat()[:7]}"
         if not hasattr(self, "_holiday_refresh_done"):
@@ -2562,13 +2563,14 @@ class MarketAwareDaemon:
         normal dispatcher while every other lane keeps running live work
         — a US catch-up no longer stalls Asia's live morning.
 
-        Detection only fires in the first minutes of the configured
-        local hour and once per (market, date).
+        Detection fires any time from the configured local hour onward —
+        NOT only in that exact hour: this host is regularly powered on
+        after 10:00, and an hour-equality gate meant a boot at 10:05
+        never caught up the missed overnight run (US prices froze for
+        days). The per-(market, date) dedup below keeps it one-shot.
         """
         now_local_dt = now_local()
-        if now_local_dt.hour != self.config.morning_catchup_hour:
-            return
-        if now_local_dt.minute > 5:
+        if now_local_dt.hour < self.config.morning_catchup_hour:
             return
 
         if not hasattr(self, "_catchup_done"):
