@@ -33,9 +33,9 @@ APATHEON_CONTRACT: dict[str, set[str]] = {
     "prices_daily": {"instrument_id", "trade_date", "close", "adjusted_close", "volume"},
     "returns_daily": {"instrument_id", "trade_date", "ret_1d", "ret_5d", "ret_21d"},
     "nation_scores": {
-        "nation", "as_of_date", "composite_risk", "economic_stability",
+        "nation", "as_of_date", "composite_stability", "economic_stability",
         "market_stability", "political_stability", "contagion_risk",
-        "currency_risk", "opportunity_score", "leadership_risk",
+        "currency_stability", "opportunity_score", "leadership_risk",
     },
     "nation_macro_indicators": {"nation", "series_id", "observation_date", "value"},
     "nation_industry_health": {"nation", "industry", "as_of_date", "health_score"},
