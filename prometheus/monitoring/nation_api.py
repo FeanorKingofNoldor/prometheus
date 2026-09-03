@@ -105,14 +105,14 @@ class NationScoresResponse(BaseModel):
     as_of_date: date
     economic_stability: float
     market_stability: float
-    currency_risk: float
+    currency_stability: float
     political_stability: float
     contagion_risk: float
     policy_direction: Dict[str, float] = Field(default_factory=dict)
     leadership_risk: float
     leadership_composite: float
     opportunity_score: float
-    composite_risk: float
+    composite_stability: float
     component_details: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -120,12 +120,12 @@ class NationScoreHistoryRow(BaseModel):
     as_of_date: date
     economic_stability: float
     market_stability: float
-    currency_risk: float
+    currency_stability: float
     political_stability: float
     contagion_risk: float
     leadership_composite: float
     opportunity_score: float
-    composite_risk: float
+    composite_stability: float
 
 
 class MacroIndicatorResponse(BaseModel):
@@ -171,12 +171,12 @@ class MapLeader(BaseModel):
 class MapNationSummary(BaseModel):
     nation: str
     as_of_date: Optional[date] = None
-    composite_risk: float = 0.0
+    composite_stability: float = 0.0
     economic_stability: float = 0.0
     market_stability: float = 0.0
     political_stability: float = 0.0
     contagion_risk: float = 0.0
-    currency_risk: float = 0.0
+    currency_stability: float = 0.0
     opportunity_score: float = 0.0
     leadership_risk: float = 0.0
     leader: Optional[MapLeader] = None
@@ -200,8 +200,8 @@ async def get_map_summary() -> List[MapNationSummary]:
                 """
                 SELECT DISTINCT ON (nation)
                        nation, as_of_date,
-                       composite_risk, economic_stability, market_stability,
-                       political_stability, contagion_risk, currency_risk,
+                       composite_stability, economic_stability, market_stability,
+                       political_stability, contagion_risk, currency_stability,
                        opportunity_score, leadership_risk
                 FROM nation_scores
                 ORDER BY nation, as_of_date DESC
@@ -250,12 +250,12 @@ async def get_map_summary() -> List[MapNationSummary]:
             MapNationSummary(
                 nation=nation,
                 as_of_date=r[1],
-                composite_risk=float(r[2]),
+                composite_stability=float(r[2]),
                 economic_stability=float(r[3]),
                 market_stability=float(r[4]),
                 political_stability=float(r[5]),
                 contagion_risk=float(r[6]),
-                currency_risk=float(r[7]),
+                currency_stability=float(r[7]),
                 opportunity_score=float(r[8]),
                 leadership_risk=float(r[9]),
                 leader=leaders_by_nation.get(nation),
@@ -557,11 +557,11 @@ async def list_nations() -> List[Dict[str, Any]]:
         try:
             cur.execute(
                 """
-                SELECT nation, MAX(as_of_date) AS latest,
-                       MAX(composite_risk) AS composite
+                SELECT DISTINCT ON (nation)
+                       nation, as_of_date AS latest,
+                       composite_stability AS composite
                 FROM nation_scores
-                GROUP BY nation
-                ORDER BY nation
+                ORDER BY nation, as_of_date DESC
                 """
             )
             rows = cur.fetchall()
@@ -572,7 +572,7 @@ async def list_nations() -> List[Dict[str, Any]]:
         {
             "nation": r[0],
             "latest_date": str(r[1]),
-            "composite_risk": float(r[2]),
+            "composite_stability": float(r[2]),
         }
         for r in rows
     ]
@@ -590,10 +590,10 @@ async def get_nation_scores(
             cur.execute(
                 """
                 SELECT nation, as_of_date,
-                       economic_stability, market_stability, currency_risk,
+                       economic_stability, market_stability, currency_stability,
                        political_stability, contagion_risk, policy_direction,
                        leadership_risk, leadership_composite,
-                       opportunity_score, composite_risk,
+                       opportunity_score, composite_stability,
                        component_details
                 FROM nation_scores
                 WHERE nation = %s
@@ -614,14 +614,14 @@ async def get_nation_scores(
         as_of_date=row[1],
         economic_stability=float(row[2]),
         market_stability=float(row[3]),
-        currency_risk=float(row[4]),
+        currency_stability=float(row[4]),
         political_stability=float(row[5]),
         contagion_risk=float(row[6]),
         policy_direction=row[7] or {},
         leadership_risk=float(row[8]),
         leadership_composite=float(row[9]),
         opportunity_score=float(row[10]),
-        composite_risk=float(row[11]),
+        composite_stability=float(row[11]),
         component_details=row[12] or {},
     )
 
@@ -641,9 +641,9 @@ async def get_nation_score_history(
             cur.execute(
                 """
                 SELECT as_of_date,
-                       economic_stability, market_stability, currency_risk,
+                       economic_stability, market_stability, currency_stability,
                        political_stability, contagion_risk,
-                       leadership_composite, opportunity_score, composite_risk
+                       leadership_composite, opportunity_score, composite_stability
                 FROM nation_scores
                 WHERE nation = %s AND as_of_date >= %s
                 ORDER BY as_of_date ASC
@@ -659,12 +659,12 @@ async def get_nation_score_history(
             as_of_date=r[0],
             economic_stability=float(r[1]),
             market_stability=float(r[2]),
-            currency_risk=float(r[3]),
+            currency_stability=float(r[3]),
             political_stability=float(r[4]),
             contagion_risk=float(r[5]),
             leadership_composite=float(r[6]),
             opportunity_score=float(r[7]),
-            composite_risk=float(r[8]),
+            composite_stability=float(r[8]),
         )
         for r in rows
     ]

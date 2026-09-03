@@ -126,7 +126,7 @@ def step_score(
     as_of: date | None = None,
     dry_run: bool = False,
 ) -> dict[str, float]:
-    """Re-score all nations.  Returns {nation: composite_risk}."""
+    """Re-score all nations.  Returns {nation: composite_stability}."""
 
     from apatheon.nation.engine import NationScoringEngine
     from apatheon.nation.model_basic import BasicNationScoringModel
@@ -159,11 +159,11 @@ def step_score(
             scores = engine.score_and_save(nation, score_date)
             elapsed = time.time() - t0
             print(
-                f"composite={scores.composite_risk:.3f} "
+                f"composite={scores.composite_stability:.3f} "
                 f"(econ={scores.economic_stability:.3f} mkt={scores.market_stability:.3f} "
                 f"pol={scores.political_stability:.3f}) [{elapsed:.1f}s]"
             )
-            results[nation] = scores.composite_risk
+            results[nation] = scores.composite_stability
         except Exception:
             logger.exception("Scoring failed for %s", nation)
             print("FAILED")

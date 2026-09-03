@@ -183,7 +183,7 @@ NATION_DELTAS: dict[str, dict[str, float]] = {
 COMPOSITE_WEIGHTS = {
     "economic_stability": 0.20,
     "market_stability": 0.20,
-    "currency_risk": 0.15,
+    "currency_stability": 0.15,
     "political_stability": 0.15,
     "contagion_risk_inv": 0.10,
     "leadership_composite": 0.10,
@@ -222,7 +222,7 @@ def _compute_scores(nation: str) -> dict:
     composite = (
         COMPOSITE_WEIGHTS["economic_stability"] * econ
         + COMPOSITE_WEIGHTS["market_stability"] * mkt
-        + COMPOSITE_WEIGHTS["currency_risk"] * curr
+        + COMPOSITE_WEIGHTS["currency_stability"] * curr
         + COMPOSITE_WEIGHTS["political_stability"] * pol
         + COMPOSITE_WEIGHTS["contagion_risk_inv"] * (1.0 - cont)
         + COMPOSITE_WEIGHTS["leadership_composite"] * lead_comp
@@ -247,14 +247,14 @@ def _compute_scores(nation: str) -> dict:
         "nation": nation,
         "economic_stability": round(econ, 4),
         "market_stability": round(mkt, 4),
-        "currency_risk": round(curr, 4),
+        "currency_stability": round(curr, 4),
         "political_stability": round(pol, 4),
         "contagion_risk": round(cont, 4),
         "policy_direction": policy_direction,
         "leadership_risk": round(lead_risk, 4),
         "leadership_composite": round(lead_comp, 4),
         "opportunity_score": round(opp, 4),
-        "composite_risk": round(composite, 4),
+        "composite_stability": round(composite, 4),
         "component_details": component_details,
     }
 
@@ -275,9 +275,9 @@ def _seed_scores(
     if dry_run:
         for r in rows:
             print(
-                f"  [dry] {r['nation']:4s}  composite={r['composite_risk']:.3f}  "
+                f"  [dry] {r['nation']:4s}  composite={r['composite_stability']:.3f}  "
                 f"econ={r['economic_stability']:.2f}  mkt={r['market_stability']:.2f}  "
-                f"curr={r['currency_risk']:.2f}  pol={r['political_stability']:.2f}  "
+                f"curr={r['currency_stability']:.2f}  pol={r['political_stability']:.2f}  "
                 f"cont={r['contagion_risk']:.2f}  lead={r['leadership_composite']:.2f}  "
                 f"opp={r['opportunity_score']:.2f}"
             )
@@ -286,10 +286,10 @@ def _seed_scores(
     sql = """
         INSERT INTO nation_scores (
             nation, as_of_date,
-            economic_stability, market_stability, currency_risk,
+            economic_stability, market_stability, currency_stability,
             political_stability, contagion_risk, policy_direction,
             leadership_risk, leadership_composite,
-            opportunity_score, composite_risk,
+            opportunity_score, composite_stability,
             component_details, metadata
         ) VALUES (
             %s, %s,
@@ -302,14 +302,14 @@ def _seed_scores(
         ON CONFLICT (nation, as_of_date) DO UPDATE SET
             economic_stability = EXCLUDED.economic_stability,
             market_stability = EXCLUDED.market_stability,
-            currency_risk = EXCLUDED.currency_risk,
+            currency_stability = EXCLUDED.currency_stability,
             political_stability = EXCLUDED.political_stability,
             contagion_risk = EXCLUDED.contagion_risk,
             policy_direction = EXCLUDED.policy_direction,
             leadership_risk = EXCLUDED.leadership_risk,
             leadership_composite = EXCLUDED.leadership_composite,
             opportunity_score = EXCLUDED.opportunity_score,
-            composite_risk = EXCLUDED.composite_risk,
+            composite_stability = EXCLUDED.composite_stability,
             component_details = EXCLUDED.component_details,
             metadata = EXCLUDED.metadata,
             updated_at = NOW()
@@ -325,11 +325,11 @@ def _seed_scores(
                     (
                         r["nation"], as_of,
                         r["economic_stability"], r["market_stability"],
-                        r["currency_risk"],
+                        r["currency_stability"],
                         r["political_stability"], r["contagion_risk"],
                         Json(r["policy_direction"]),
                         r["leadership_risk"], r["leadership_composite"],
-                        r["opportunity_score"], r["composite_risk"],
+                        r["opportunity_score"], r["composite_stability"],
                         Json(r["component_details"]),
                         Json({"source": "seed_expansion_90", "seed_date": str(as_of)}),
                     ),

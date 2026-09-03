@@ -413,10 +413,10 @@ class BasicUniverseModel:
 
     # Optional nation risk integration. When ``nation_score_provider`` is
     # provided and ``nation_risk_alpha`` is non-zero, the model will
-    # query the nation composite_risk score and apply a multiplicative
+    # query the nation composite_stability score and apply a multiplicative
     # modifier to candidate scores. The provider is expected to expose a
     # ``get_latest(nation, as_of_date=)`` method returning an object with
-    # ``composite_risk`` in [0, 1].
+    # ``composite_stability`` in [0, 1].
     #
     # NOT WIRED in the daily pipeline (2026-06-11): the daily UNIVERSES path
     # (run_universes_for_run in pipeline/tasks.py) does not pass a
@@ -1480,12 +1480,12 @@ class BasicUniverseModel:
     ) -> float:
         """Apply an optional nation risk modifier to a score.
 
-        Reads the composite_risk for the configured nation from a
-        NationScoreStorage-like provider. If composite_risk < 0.3,
+        Reads the composite_stability for the configured nation from a
+        NationScoreStorage-like provider. If composite_stability < 0.3,
         applies a 0.5× penalty. If < 0.15, zeros the score entirely.
 
         Otherwise applies:
-            score * max(0, 1 - alpha * (1 - composite_risk))
+            score * max(0, 1 - alpha * (1 - composite_stability))
         """
 
         if self.nation_score_provider is None or self.nation_risk_alpha == 0.0:
@@ -1510,7 +1510,7 @@ class BasicUniverseModel:
         if nation_scores is None:
             return score
 
-        composite = getattr(nation_scores, "composite_risk", None)
+        composite = getattr(nation_scores, "composite_stability", None)
         if composite is None:
             return score
 

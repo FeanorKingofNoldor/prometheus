@@ -86,7 +86,7 @@ class NationAlphaProvider:
         econ_alpha = _clamp((scores.economic_stability - 0.5) * 2.0)
 
         # Composite risk component: above 0.5 → positive.
-        composite_alpha = _clamp((scores.composite_risk - 0.5) * 2.0)
+        composite_alpha = _clamp((scores.composite_stability - 0.5) * 2.0)
 
         alpha = (
             policy_alpha * self.policy_weight

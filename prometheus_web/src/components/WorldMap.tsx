@@ -32,12 +32,12 @@ import type { MapLayer } from "./MapLayerToggle";
 
 export interface MapNation {
   nation: string;
-  composite_risk: number;
+  composite_stability: number;
   economic_stability: number;
   market_stability: number;
   political_stability: number;
   contagion_risk: number;
-  currency_risk: number;
+  currency_stability: number;
   opportunity_score: number;
   leadership_risk: number;
   leader?: { name: string; role: string; thumbnail_url?: string | null; profile_id?: string | null } | null;
@@ -298,7 +298,7 @@ export const WorldMap = memo(function WorldMap({
                 const iso3 = rawIso3 ? resolveISO3(rawIso3) : undefined;
                 const nationData = iso3 ? nationMap.get(iso3) : undefined;
                 const isTracked = iso3 ? trackedSet.has(iso3) : false;
-                const isScored = !!nationData && nationData.composite_risk >= 0;
+                const isScored = !!nationData && nationData.composite_stability >= 0;
                 const isSelected = iso3 === activeNation;
                 const isHov = iso3 === hoveredNation && iso3 !== activeNation;
                 const isDependency = activeData?.dependencies.some(
@@ -310,8 +310,8 @@ export const WorldMap = memo(function WorldMap({
                   fill = isSelected
                     ? COLORS.hover
                     : isHov
-                      ? riskColorWithAlpha(nationData.composite_risk, 0.95)
-                      : riskColorWithAlpha(nationData.composite_risk, isDependency ? 0.9 : 0.7);
+                      ? riskColorWithAlpha(nationData.composite_stability, 0.95)
+                      : riskColorWithAlpha(nationData.composite_stability, isDependency ? 0.9 : 0.7);
                 } else if (isTracked) {
                   fill = isSelected ? COLORS.hover : isHov ? "#2a2a45" : "#1e1e2a";
                 } else if (isDependency) {
@@ -325,7 +325,7 @@ export const WorldMap = memo(function WorldMap({
                     key={geo.rsmKey}
                     geography={geo}
                     fill={fill}
-                    stroke={isSelected ? COLORS.hover : isScored ? riskColor(nationData!.composite_risk) : isTracked ? "#3a3a4a" : COLORS.landStroke}
+                    stroke={isSelected ? COLORS.hover : isScored ? riskColor(nationData!.composite_stability) : isTracked ? "#3a3a4a" : COLORS.landStroke}
                     strokeWidth={isSelected ? 1.5 : isHov ? 1.0 : isTracked ? 0.5 : 0.25}
                     onMouseEnter={() => {
                       if (iso3) setHoveredNation(iso3);
@@ -380,8 +380,8 @@ export const WorldMap = memo(function WorldMap({
             if (!coords) return null;
             const isSel = n.nation === activeNation;
             const isHov = n.nation === hoveredNation && !isSel;
-            const isScored = n.composite_risk >= 0;
-            const color = isScored ? riskColor(n.composite_risk) : "#555";
+            const isScored = n.composite_stability >= 0;
+            const color = isScored ? riskColor(n.composite_stability) : "#555";
             const highlight = isSel || isHov;
 
             return (
@@ -526,7 +526,7 @@ export const WorldMap = memo(function WorldMap({
 function MapTooltip({ nation, x, y }: { nation: MapNation; x: number; y: number }) {
   const flag = NATION_FLAGS[nation.nation] ?? "";
   const name = NATION_NAMES[nation.nation] ?? nation.nation;
-  const color = riskColor(nation.composite_risk);
+  const color = riskColor(nation.composite_stability);
 
   // Position tooltip — offset right/below cursor, clamp to viewport.
   const style: React.CSSProperties = {
@@ -565,7 +565,7 @@ function MapTooltip({ nation, x, y }: { nation: MapNation; x: number; y: number 
           </div>
           <div className="text-right">
             <div className="text-lg font-bold" style={{ color }}>
-              {pct(nation.composite_risk)}
+              {pct(nation.composite_stability)}
             </div>
             <div className="text-[9px] text-muted">composite</div>
           </div>
@@ -576,7 +576,7 @@ function MapTooltip({ nation, x, y }: { nation: MapNation; x: number; y: number 
           <ScoreBar label="Economic" value={nation.economic_stability} />
           <ScoreBar label="Market" value={nation.market_stability} />
           <ScoreBar label="Political" value={nation.political_stability} />
-          <ScoreBar label="Currency" value={nation.currency_risk} />
+          <ScoreBar label="Currency" value={nation.currency_stability} />
           <ScoreBar label="Opportunity" value={nation.opportunity_score} />
         </div>
 

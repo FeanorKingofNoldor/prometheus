@@ -38,7 +38,7 @@ END_DATE = date(2026, 3, 6)
 SCORE_DIMS = [
     "economic_stability",
     "market_stability",
-    "currency_risk",
+    "currency_stability",
     "political_stability",
     "contagion_risk",
     "leadership_risk",
@@ -52,7 +52,7 @@ SCORE_DIMS = [
 OU_PARAMS: dict[str, dict[str, float]] = {
     "economic_stability":   {"theta": 0.02,  "sigma": 0.006},
     "market_stability":     {"theta": 0.04,  "sigma": 0.012},
-    "currency_risk":        {"theta": 0.015, "sigma": 0.004},
+    "currency_stability":        {"theta": 0.015, "sigma": 0.004},
     "political_stability":  {"theta": 0.008, "sigma": 0.003},
     "contagion_risk":       {"theta": 0.01,  "sigma": 0.005},
     "leadership_risk":      {"theta": 0.005, "sigma": 0.002},
@@ -66,7 +66,7 @@ CORR_PAIRS = [
     ("economic_stability", "opportunity_score", 0.5),
     ("market_stability", "opportunity_score", 0.4),
     ("political_stability", "leadership_composite", 0.3),
-    ("currency_risk", "economic_stability", 0.3),
+    ("currency_stability", "economic_stability", 0.3),
 ]
 
 # ── Tier baselines (includes original 10 + expansion 90) ────────────────
@@ -223,7 +223,7 @@ HISTORICAL_EVENTS: list[dict] = [
         "nations": ["RUS", "UKR"],
         "shocks": {"economic_stability": -0.20, "market_stability": -0.25,
                    "political_stability": -0.15, "opportunity_score": -0.20,
-                   "currency_risk": -0.15, "contagion_risk": -0.15},
+                   "currency_stability": -0.15, "contagion_risk": -0.15},
         "label": "Ukraine war (direct)",
     },
     {
@@ -252,7 +252,7 @@ HISTORICAL_EVENTS: list[dict] = [
     {
         "start": date(2022, 9, 23), "end": date(2022, 11, 15),
         "nations": ["GBR"],
-        "shocks": {"market_stability": -0.12, "currency_risk": -0.10,
+        "shocks": {"market_stability": -0.12, "currency_stability": -0.10,
                    "political_stability": -0.08, "leadership_risk": +0.10},
         "label": "UK gilt crisis",
     },
@@ -268,7 +268,7 @@ HISTORICAL_EVENTS: list[dict] = [
     {
         "start": date(2021, 10, 1), "end": date(2022, 6, 30),
         "nations": ["TUR"],
-        "shocks": {"currency_risk": -0.18, "economic_stability": -0.12,
+        "shocks": {"currency_stability": -0.18, "economic_stability": -0.12,
                    "market_stability": -0.10},
         "label": "Turkey lira crisis",
     },
@@ -276,7 +276,7 @@ HISTORICAL_EVENTS: list[dict] = [
     {
         "start": date(2022, 4, 1), "end": date(2022, 12, 31),
         "nations": ["LKA"],
-        "shocks": {"economic_stability": -0.20, "currency_risk": -0.25,
+        "shocks": {"economic_stability": -0.20, "currency_stability": -0.25,
                    "political_stability": -0.20, "market_stability": -0.15},
         "label": "Sri Lanka default",
     },
@@ -305,7 +305,7 @@ HISTORICAL_EVENTS: list[dict] = [
     {
         "start": date(2023, 8, 1), "end": date(2024, 3, 31),
         "nations": ["ARG"],
-        "shocks": {"economic_stability": -0.10, "currency_risk": -0.12,
+        "shocks": {"economic_stability": -0.10, "currency_stability": -0.12,
                    "political_stability": -0.08, "leadership_risk": +0.10},
         "label": "Argentina crisis / Milei",
     },
@@ -359,7 +359,7 @@ HISTORICAL_EVENTS: list[dict] = [
 COMPOSITE_WEIGHTS = {
     "economic_stability": 0.20,
     "market_stability": 0.20,
-    "currency_risk": 0.15,
+    "currency_stability": 0.15,
     "political_stability": 0.15,
     "contagion_risk_inv": 0.10,
     "leadership_composite": 0.10,
@@ -373,7 +373,7 @@ STRUCTURAL_DEFAULT = 0.50
 DIM_TO_KEY = {
     "economic_stability": "econ",
     "market_stability": "mkt",
-    "currency_risk": "curr",
+    "currency_stability": "curr",
     "political_stability": "pol",
     "contagion_risk": "cont",
     "leadership_risk": "lead_risk",
@@ -419,7 +419,7 @@ def _compute_composite(scores: dict[str, float]) -> float:
     composite = (
         COMPOSITE_WEIGHTS["economic_stability"] * scores["economic_stability"]
         + COMPOSITE_WEIGHTS["market_stability"] * scores["market_stability"]
-        + COMPOSITE_WEIGHTS["currency_risk"] * scores["currency_risk"]
+        + COMPOSITE_WEIGHTS["currency_stability"] * scores["currency_stability"]
         + COMPOSITE_WEIGHTS["political_stability"] * scores["political_stability"]
         + COMPOSITE_WEIGHTS["contagion_risk_inv"] * (1.0 - scores["contagion_risk"])
         + COMPOSITE_WEIGHTS["leadership_composite"] * scores["leadership_composite"]
@@ -484,7 +484,7 @@ def generate_nation_series(
             "as_of_date": d,
             "economic_stability": round(current["economic_stability"], 4),
             "market_stability": round(current["market_stability"], 4),
-            "currency_risk": round(current["currency_risk"], 4),
+            "currency_stability": round(current["currency_stability"], 4),
             "political_stability": round(current["political_stability"], 4),
             "contagion_risk": round(current["contagion_risk"], 4),
             "policy_direction": {"monetary": 0.0, "fiscal": 0.0,
@@ -492,7 +492,7 @@ def generate_nation_series(
             "leadership_risk": round(current["leadership_risk"], 4),
             "leadership_composite": round(current["leadership_composite"], 4),
             "opportunity_score": round(current["opportunity_score"], 4),
-            "composite_risk": round(composite, 4),
+            "composite_stability": round(composite, 4),
             "component_details": {"source": "backfill_5y"},
         })
 
@@ -504,10 +504,10 @@ def generate_nation_series(
 INSERT_SQL = """
     INSERT INTO nation_scores (
         nation, as_of_date,
-        economic_stability, market_stability, currency_risk,
+        economic_stability, market_stability, currency_stability,
         political_stability, contagion_risk, policy_direction,
         leadership_risk, leadership_composite,
-        opportunity_score, composite_risk,
+        opportunity_score, composite_stability,
         component_details, metadata, updated_at
     ) VALUES (
         %s, %s,
@@ -521,14 +521,14 @@ INSERT_SQL = """
     DO UPDATE SET
         economic_stability = EXCLUDED.economic_stability,
         market_stability = EXCLUDED.market_stability,
-        currency_risk = EXCLUDED.currency_risk,
+        currency_stability = EXCLUDED.currency_stability,
         political_stability = EXCLUDED.political_stability,
         contagion_risk = EXCLUDED.contagion_risk,
         policy_direction = EXCLUDED.policy_direction,
         leadership_risk = EXCLUDED.leadership_risk,
         leadership_composite = EXCLUDED.leadership_composite,
         opportunity_score = EXCLUDED.opportunity_score,
-        composite_risk = EXCLUDED.composite_risk,
+        composite_stability = EXCLUDED.composite_stability,
         component_details = EXCLUDED.component_details,
         metadata = EXCLUDED.metadata,
         updated_at = NOW()
@@ -551,11 +551,11 @@ def _insert_rows(rows: list[dict], batch_size: int = 500) -> int:
                         (
                             r["nation"], r["as_of_date"],
                             r["economic_stability"], r["market_stability"],
-                            r["currency_risk"],
+                            r["currency_stability"],
                             r["political_stability"], r["contagion_risk"],
                             Json(r["policy_direction"]),
                             r["leadership_risk"], r["leadership_composite"],
-                            r["opportunity_score"], r["composite_risk"],
+                            r["opportunity_score"], r["composite_stability"],
                             Json(r["component_details"]),
                             Json({"source": "backfill_5y"}),
                         ),
@@ -622,9 +622,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 nation_rows = [r for r in all_rows if r["nation"] == sn]
                 first = nation_rows[0]
                 last = nation_rows[-1]
-                print(f"\n  {sn} first: composite={first['composite_risk']:.3f} "
+                print(f"\n  {sn} first: composite={first['composite_stability']:.3f} "
                       f"econ={first['economic_stability']:.3f} mkt={first['market_stability']:.3f}")
-                print(f"  {sn} last:  composite={last['composite_risk']:.3f} "
+                print(f"  {sn} last:  composite={last['composite_stability']:.3f} "
                       f"econ={last['economic_stability']:.3f} mkt={last['market_stability']:.3f}")
         print(f"\n  → {len(all_rows):,} rows would be inserted (dry run)")
         return
