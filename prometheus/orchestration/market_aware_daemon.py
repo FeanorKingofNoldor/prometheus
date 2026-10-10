@@ -411,6 +411,14 @@ def execute_job(
     )
 
     try:
+        if job.job_type == "event_desk_tick":
+            if options_mode != "paper":
+                return False, "Event desk requires paper mode"
+            from prometheus.event_desk.runner import run_tick
+            summary = run_tick(db_manager)
+            logger.info("event_desk_tick: %s", summary)
+            return True, None
+
         # Intel and Iris jobs have no market_id — execute without an EngineRun.
         if job.market_id is None:
             if job.job_type.startswith("iris_"):
@@ -1632,6 +1640,7 @@ IBKR_EXCLUSIVE_JOB_TYPES = frozenset(
         "reconcile_fills_eod",
         "fx_sweep",
         "run_wheel",
+        "event_desk_tick",
     }
 )
 
@@ -2638,6 +2647,24 @@ class MarketAwareDaemon:
             self._catchup_done = set(sorted(self._catchup_done)[-60:])
 
 
+    def _dispatch_event_desk(self, now: datetime) -> None:
+        if not env_flag("PROMETHEUS_EVENT_DESK_ENABLED"):
+            return
+        lane = self.lanes.setdefault("EVENT", MarketLane(market_id="EVENT"))
+        if lane.handle is not None or self._ibkr_job_holder is not None:
+            return
+        if self._live_handle_count() >= getattr(self, "_max_concurrent_jobs", 4):
+            return
+        bucket = int(now.timestamp()) // 120
+        dag_id = f"EVENT_{bucket}"
+        job = JobMetadata(job_id="event_desk_tick", job_type="event_desk_tick",
+                          market_id="US_EQ", max_retries=1, timeout_seconds=240)
+        latest = get_latest_job_execution(self.db_manager, job.job_id, dag_id)
+        if latest is not None:
+            return
+        execution = create_job_execution(self.db_manager, job, dag_id, now.date())
+        self._start_job(lane, job, execution, dag_id, now.date(), now)
+
     def _run_cycle(self, as_of_date: date) -> None:
         """One scheduler cycle: poll lanes, then dispatch idle lanes.
 
@@ -2669,6 +2696,8 @@ class MarketAwareDaemon:
                 continue
             dag, dag_id, current_state, dispatch_date = work
             self._dispatch_next(lane, dag, dag_id, current_state, dispatch_date, now)
+
+        self._dispatch_event_desk(now)
 
     def run(self) -> None:
         """Run the orchestration daemon until shutdown is requested."""

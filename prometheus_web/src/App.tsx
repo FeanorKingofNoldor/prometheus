@@ -3,6 +3,7 @@ import { Layout } from "./layout/Layout";
 import { PortfolioProvider } from "./context/PortfolioContext";
 import { IrisProvider } from "./context/IrisContext";
 import Dashboard from "./pages/Dashboard";
+import EventDesk from "./pages/EventDesk";
 import Portfolio from "./pages/Portfolio";
 import Backtests from "./pages/Backtests";
 import Execution from "./pages/Execution";
@@ -25,7 +26,8 @@ export default function App() {
     <IrisProvider>
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<Dashboard />} />
+        <Route index element={<EventDesk />} />
+        <Route path="dashboard" element={<Dashboard />} />
         <Route path="portfolio" element={<Portfolio />} />
         <Route path="execution" element={<Execution />} />
         <Route path="backtests" element={<Backtests />} />

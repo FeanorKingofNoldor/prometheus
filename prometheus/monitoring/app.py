@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from prometheus.monitoring.api import router as status_router
+from prometheus.monitoring.event_desk_api import router as event_desk_router
 from prometheus.monitoring.backtests_api import router as backtests_router
 from prometheus.monitoring.control_api import router as control_router
 from prometheus.monitoring.intelligence_api import intelligence_router
@@ -113,6 +114,7 @@ app.include_router(logs_router)
 
 # Operations dashboard endpoints
 app.include_router(operations_router)
+app.include_router(event_desk_router)
 
 # NOTE: Info-layer routes (entities, intel, nation, geo) are served
 # by the Apatheon API on :8100.

@@ -18,7 +18,8 @@ import {
 } from "lucide-react";
 
 const links = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/", icon: Activity, label: "Event Desk" },
+  { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/portfolio", icon: Briefcase, label: "Portfolio" },
   { to: "/execution", icon: ArrowRightLeft, label: "Execution" },
   { to: "/monitor", icon: Activity, label: "Trade Monitor" },

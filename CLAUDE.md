@@ -119,7 +119,55 @@ The full template list lives in `prometheus/derivatives/sleeves.py`; the
 adapter that runs the harness against synthetic data is in
 `prometheus/derivatives/backtest.py`.
 
-### Core+Wheel Strategy (`prometheus/wheel/`) — the ADOPTED strategy (2026-08)
+### Event trading desk (`prometheus/event_desk/`) — active paper experiment (2026-10)
+
+The operator chose event-driven paper trading over the former core+wheel mandate.
+The home screen is the Event Desk; the original dashboard remains at `/dashboard`.
+`GET /api/event-desk` exposes source events, candidates, broker trade-fill results,
+and separate forward research outcomes. Strategy version `event-v1` is an experiment,
+not a calibrated claim of alpha.
+
+`PROMETHEUS_EVENT_DESK_ENABLED=1` schedules a tick every two minutes in its own
+daemon lane, using the shared IBKR exclusivity token and client 18. PostgreSQL
+transaction advisory locking also fences manual ticks. `PROMETHEUS_EVENT_PAPER_ENABLED=1`
+enables entries; turning it off retains observations and exits. The broker adapter
+requires port 4002 and a configured, connected DU paper account. There is no live route.
+The legacy execution halt stays set; the wheel entry switch is off. Existing unrelated
+broker positions are not liquidated or adopted by the event book.
+
+Input is fresh, timestamped structural claims joined to their source articles. Repeated
+subject/predicate/object claims share a seven-day event group. Identical quoted evidence
+does not count as independent confirmation. Explicit economic graph paths (at most two
+hops) map company, resource and infrastructure events to US stock listings; unsupported
+paths remain visible as unmapped. Evidence and graph paths are frozen on candidate creation
+and entry; current evidence can invalidate an open trade. The graph refreshes every 15 minutes.
+
+Continuation requires corroboration, at least 15 minutes of observation, a 0.2–2% move
+in the hypothesized direction and at least 0.1% excess over SPY. Reversal requires weak or
+contradicted evidence, a 1.5% observed reaction and a 0.3% pullback. These are versioned
+starting hypotheses, not optimized thresholds. Both strategies retain their own results.
+Quotes must have valid bid/ask, a <=40bp spread and recent receipt; delayed IBKR feeds are
+explicitly labelled and never substituted with EOD closes. Entries require recent USD
+history with >=$5m average daily turnover; shorts also require broker borrow availability.
+
+The paper book is $50k, with $25k gross, $5k per position, $10k per event group, eight
+positions maximum, and $100 initial stop risk per trade. Continuation uses 2%/4% stop/target
+and a 72h timeout; reversal uses 1.5%/3% and 24h. Exit checks run during the US regular
+session; these are software stops, so overnight gaps can exceed the planned loss. A $2.5k
+book drawdown blocks entries and exits existing event positions when quotes are available.
+Orders use persisted intents, deterministic refs and IOC limits. Ambiguous submissions
+block entries and require reconciliation; they are never blindly retried. Partial fills
+and broker positions determine owned exit quantities.
+
+Tables: `event_desk_events`, `_candidates`, `_marks`, `_outcomes`, `_runs` (migration 0109).
+Broker orders/fills use existing tables under `EVENT_PAPER`. P&L includes recorded execution
+commissions plus explicit commission/borrow reserves; dividends, corporate actions and
+financing cash postings are excluded, so this is trade-fill P&L, not account total return.
+Research horizons are 1/4/24/72 wall-clock hours; no late backfills across closed-market gaps.
+Research averages weight each event group equally and remain separate from broker results.
+Manual tick: `python -m prometheus.event_desk.runner` in the service environment.
+
+### Core+Wheel Strategy (`prometheus/wheel/`) — former mandate, retained for research
 The validated replacement for the legacy equity+options books (evidence:
 `prometheus/scripts/research/wheel_validation/README.md`). VIXCOND SPY wheel
 80% + TLT 10% + GLD 10% quarterly ballast; CSP 2% OTM (5% + PT50 when
