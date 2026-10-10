@@ -385,3 +385,16 @@ def test_live_gateway_cannot_be_used_by_paper_session(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="paper account"):
         PaperSession()
+
+
+def test_country_sanctions_cannot_become_specific_resource_trades():
+    graph = Mock()
+    assert exposures(graph, ("SOVEREIGN", "RUS"), -1) == {}
+    graph.get_edges_to.assert_not_called()
+
+
+def test_aggregator_urls_are_not_independent_corroboration():
+    a = {**claim(), "url": "https://news.google.com/rss/articles/opaque", "source_tier": 1}
+    b = {**claim(), "url": "https://t.me/channel/123", "quote": "Another version of the headline"}
+    assert not evidence_state([a, b])["confirmed"]
+    assert evidence_state([a, b])["sources"] == 0

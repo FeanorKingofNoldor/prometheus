@@ -82,6 +82,18 @@ class Store:
                 (event_id, signature, first_seen, min(r["published_at"] for r in group), now, Json(payload)),
                 True,
             )
+            for candidate in self.query(
+                "SELECT candidate_id,payload FROM event_desk_candidates WHERE event_id=%s AND state='WATCHING'",
+                (event_id,),
+            ):
+                prior = candidate["payload"]
+                current = paths.get(prior["company"])
+                if not current or current["sign"] != prior["sign"]:
+                    self.query(
+                        "UPDATE event_desk_candidates SET state='REJECTED',reason=%s,updated_at=%s WHERE candidate_id=%s",
+                        ("Economic mapping no longer supports the original direction", now, candidate["candidate_id"]),
+                        True,
+                    )
             for company, path in sorted(paths.items(), key=lambda x: -x[1]["strength"])[:10]:
                 tickers = [t for t in get_all_tickers(company) if t.endswith(".US")]
                 if not tickers:
@@ -109,7 +121,7 @@ class Store:
         return {"claims_read": len(claims), "events": len(grouped), "new_candidates": created}
 
     def candidates(self, active_only=True):
-        clause = "WHERE c.state NOT IN ('CLOSED','EXPIRED','NO_FILL')" if active_only else ""
+        clause = "WHERE c.state NOT IN ('CLOSED','EXPIRED','NO_FILL','REJECTED')" if active_only else ""
         return self.query(f"""SELECT c.*,e.payload AS event,e.first_seen,e.published_at
             FROM event_desk_candidates c JOIN event_desk_events e USING(event_id) {clause}
             ORDER BY CASE WHEN c.state IN ('OPEN','ENTRY_PENDING','EXIT_PENDING','REVIEW') THEN 0 ELSE 1 END,

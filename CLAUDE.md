@@ -137,7 +137,8 @@ broker positions are not liquidated or adopted by the event book.
 
 Input is fresh, timestamped structural claims joined to their source articles. Repeated
 subject/predicate/object claims share a seven-day event group. Identical quoted evidence
-does not count as independent confirmation. Explicit economic graph paths (at most two
+and unresolved aggregator/Telegram URLs do not count as independent confirmation.
+Broad sovereign events cannot imply a specific resource supply shock. Explicit economic graph paths (at most two
 hops) map company, resource and infrastructure events to US stock listings; unsupported
 paths remain visible as unmapped. Evidence and graph paths are frozen on candidate creation
 and entry; current evidence can invalidate an open trade. The graph refreshes every 15 minutes.

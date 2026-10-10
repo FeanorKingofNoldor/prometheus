@@ -289,8 +289,12 @@ def process(store, session, now, policy, allow_entries=True):
             ret = side * (px / p["entry_vwap"] - 1)
             age = (now - parsed(p["entered_at"])).total_seconds() / 3600
             ev = c["event"]["evidence_state"]
-            invalid = (c["strategy"] == "CONTINUATION" and ev["contradicted"]) or (
-                c["strategy"] == "REVERSAL" and ev["confirmed"]
+            current_path = c["event"].get("exposures", {}).get(p.get("company"))
+            mapping_invalid = "exposures" in c["event"] and (not current_path or current_path["sign"] != p["sign"])
+            invalid = (
+                mapping_invalid
+                or (c["strategy"] == "CONTINUATION" and ev["contradicted"])
+                or (c["strategy"] == "REVERSAL" and ev["confirmed"])
             )
             reason = (
                 "Book drawdown stop"

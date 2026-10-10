@@ -76,6 +76,8 @@ def stable_id(*parts):
 
 def source_identity(claim):
     host = urlparse(claim.get("url") or "").hostname
+    if not host or host.lower() in ("news.google.com", "t.me", "telegram.me", "news.yahoo.com"):
+        return ""
     return (host or claim.get("source") or "").lower().removeprefix("www.")
 
 
@@ -93,7 +95,9 @@ def evidence_state(claims):
         if quote and quote not in quotes and identity:
             quotes.add(quote)
             independent.add(identity)
-    confirmed = len(independent) >= 2 or any(c["source_tier"] == 1 and c["modality"] == "asserted" for c in positive)
+    confirmed = len(independent) >= 2 or any(
+        c["source_tier"] == 1 and c["modality"] == "asserted" and source_identity(c) for c in positive
+    )
     contradicted = any(c["polarity"] == "negated" or c["modality"] == "denied" for c in accepted)
     return {
         "confirmed": confirmed and not contradicted,
@@ -105,6 +109,8 @@ def evidence_state(claims):
 
 def exposures(graph, entity, condition_sign):
     """Walk explicit economic relationships at most two hops; retain the actual paths."""
+    if entity[0] not in ("COMPANY", "RESOURCE", "CHOKEPOINT", "PIPELINE", "FACILITY", "PORT"):
+        return {}
     found = {}
     frontier = [(entity, condition_sign, 1.0, [], {entity})]
     while frontier:
