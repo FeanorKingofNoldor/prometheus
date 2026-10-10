@@ -155,6 +155,20 @@ def test_to_signal_copies_upstream_fields() -> None:
     assert signal.computed_at.tzinfo is not None
 
 
+@pytest.mark.parametrize("direction", ["INSUFFICIENT_BEHAVIORAL_DATA", "INSUFFICIENT_NARRATIVE_DATA"])
+def test_missing_data_never_arms_a_signal(direction, patched_storage) -> None:
+    storage, meta = patched_storage
+    upstream = _make_result(severity="EXTREME")
+    upstream.direction = direction
+    result = run_divergence_scan(as_of_date=date(2026, 5, 5), db_manager=_FakeDB(),
+        chokepoint_results=[upstream], conflict_results=[])
+    assert result.rows_persisted == 1
+    assert result.decisions_logged == 0
+    signal = storage.upserts[0]
+    assert signal.severity == signal.trading_signal == "NONE"
+    assert signal.metadata["upstream_severity"] == "EXTREME"
+
+
 def test_significant_signal_logs_decision_and_persists(patched_storage) -> None:
     storage, meta = patched_storage
 

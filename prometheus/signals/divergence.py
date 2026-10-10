@@ -380,6 +380,15 @@ def _to_signal(
     if behavioral is not None:
         metadata["behavioral_coverage"] = str(getattr(behavioral, "coverage", "OK"))
 
+    direction = str(upstream.direction)
+    severity = str(upstream.severity)
+    trading_signal = str(upstream.trading_signal)
+    if direction.startswith("INSUFFICIENT_"):
+        metadata["upstream_severity"] = severity
+        metadata["upstream_trading_signal"] = trading_signal
+        severity = "NONE"
+        trading_signal = "NONE"
+
     return DivergenceSignal(
         signal_id=generate_uuid(),
         as_of_date=as_of_date,
@@ -389,9 +398,9 @@ def _to_signal(
         narrative_score=float(upstream.narrative_score),
         divergence=float(upstream.divergence),
         abs_divergence=float(upstream.abs_divergence),
-        direction=str(upstream.direction),
-        severity=str(upstream.severity),
-        trading_signal=str(upstream.trading_signal),
+        direction=direction,
+        severity=severity,
+        trading_signal=trading_signal,
         decision_id=decision_id,
         computed_at=computed_at,
         metadata=metadata,
