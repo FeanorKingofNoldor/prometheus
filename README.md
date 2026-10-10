@@ -174,3 +174,22 @@ FastAPI on port 8200. Docs at `http://localhost:8200/api/docs`.
 - **C++ Engine**: prom2_cpp (pybind11, C++20) for fast backtesting
 - **Broker**: Interactive Brokers via IB Gateway
 - **LLM**: Ollama (local, for Iris chat + EDGAR extraction)
+
+## Event workspace (October 2026)
+
+The dark frontend now centers on the active event experiment: overview, searchable
+opportunities, paper trades, broker snapshot, forward results, source evidence,
+service/job health, Iris and the current strategy limits. Candidate/source details
+open in keyboard-accessible side panels. Old portfolio URLs redirect to the broker
+snapshot; retired execution URLs redirect to the event book. Backend legacy tools
+remain available through their APIs, but are no longer presented as active strategies.
+
+The account view explicitly labels its stored snapshot date. Research observations
+and broker trade-fill P&L remain separate; unavailable requests never fill metrics
+with zero. Browser timestamps use the operator's timezone.
+
+Build with `npm --prefix prometheus_web run build`. With the built app served locally,
+run `python3 prometheus_web/tests/workspace_smoke.py --base http://localhost:4173`
+(requires Python Playwright and Chromium). Acceptance tests intercept every API call,
+including chat and mutations, so they cannot submit a real order. The suite covers
+filtering, pagination, evidence details, stale data, API failure/retry and mobile use.

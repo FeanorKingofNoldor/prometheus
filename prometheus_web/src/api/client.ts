@@ -62,6 +62,7 @@ export async function apiFetch<T>(
   logReq(method, path, options?.body ? JSON.parse(options.body as string) : undefined);
 
   const res = await fetch(`${BASE}${path}`, {
+    signal: options?.signal ?? AbortSignal.timeout(20000),
     headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
   });

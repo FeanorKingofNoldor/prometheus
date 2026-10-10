@@ -122,7 +122,9 @@ adapter that runs the harness against synthetic data is in
 ### Event trading desk (`prometheus/event_desk/`) — active paper experiment (2026-10)
 
 The operator chose event-driven paper trading over the former core+wheel mandate.
-The home screen is the Event Desk; the original dashboard remains at `/dashboard`.
+The home screen is the event workspace; `/dashboard` redirects to its overview.
+The workspace routes are `/opportunities`, `/trades`, `/account`, `/research`,
+`/events`, `/operations`, `/iris` and `/method`.
 `GET /api/event-desk` exposes source events, candidates, broker trade-fill results,
 and separate forward research outcomes. Strategy version `event-v1` is an experiment,
 not a calibrated claim of alpha.
