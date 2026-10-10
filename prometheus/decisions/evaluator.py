@@ -37,16 +37,11 @@ class OutcomeEvaluator:
         )
     """
 
-    # Last-resort notional when no NAV source is available. Kept as an
-    # explicit constant so the fallback chain in _resolve_portfolio_nav is
-    # auditable: portfolio_equity_history → positions_snapshots → this.
-    DEFAULT_NOTIONAL: ClassVar[float] = 1_000_000.0
     LIVE_PORTFOLIO_ID: ClassVar[str] = "IBKR_PAPER"
 
     db_manager: DatabaseManager
     calendar: TradingCalendar | None = None
     _price_cache: Dict[Tuple[str, date], float] = field(default_factory=dict, init=False, repr=False)
-    _nav_cache: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._storage = MetaStorage(db_manager=self.db_manager)
@@ -92,7 +87,7 @@ class OutcomeEvaluator:
             FROM engine_decisions d
             WHERE d.as_of_date <= %s
               AND d.engine_name IN (
-                  'PORTFOLIO', 'ASSESSMENT', 'OPTIONS', 'UNIVERSE',
+                  'PORTFOLIO', 'ASSESSMENT', 'OPTIONS', 'UNIVERSE', 'WHEEL',
                   -- Shadow derivatives pipeline: graded on the same
                   -- option-payoff logic as OPTIONS so cutover decisions
                   -- rest on scored (not just logged) shadow history.
@@ -183,9 +178,12 @@ class OutcomeEvaluator:
         """Check if outcome already exists for decision + horizon."""
         sql = """
             SELECT 1
-            FROM decision_outcomes
-            WHERE decision_id = %s
-              AND horizon_days = %s
+            FROM decision_outcomes o
+            JOIN engine_decisions d ON d.decision_id = o.decision_id
+            WHERE o.decision_id = %s
+              AND o.horizon_days = %s
+              AND (d.engine_name NOT IN ('PORTFOLIO', 'ASSESSMENT')
+                   OR o.metadata->>'accounting_version' = '2')
             LIMIT 1
         """
 
@@ -423,6 +421,45 @@ class OutcomeEvaluator:
             },
         )
 
+    def evaluate_wheel_observation(self, decision_id: str, decision_date: date,
+                                   horizon_days: int) -> DecisionOutcome | None:
+        """Record account observations without claiming individual-trade alpha.
+
+        NAV changes include overlapping positions and potentially cash flows.
+        Until contract lifecycle attribution exists, these must never become
+        graded returns or feed automatic strategy calibration.
+        """
+        if self._horizon_in_future(decision_id, decision_date, horizon_days):
+            return None
+        end = decision_date + timedelta(days=horizon_days)
+        with self.db_manager.get_runtime_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT metadata FROM engine_decisions WHERE decision_id = %s", (decision_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                decision_meta = row[0] or {}
+                if decision_meta.get("shadow"):
+                    return DecisionOutcome(decision_id, horizon_days, metadata={
+                        "evaluation_kind": "wheel_observation", "graded": False,
+                        "reason": "shadow_plan_not_executed"})
+                cur.execute(
+                    "SELECT as_of_date, equity FROM portfolio_equity_history "
+                    "WHERE portfolio_id = %s AND as_of_date BETWEEN %s AND %s ORDER BY as_of_date",
+                    (decision_meta.get("account_portfolio_id", self.LIVE_PORTFOLIO_ID), decision_date, end),
+                )
+                observations = [(str(day), float(nav)) for day, nav in cur.fetchall()]
+                cur.execute("SELECT COUNT(*) FROM account_resets WHERE reset_at::date > %s AND reset_at::date <= %s",
+                            (decision_date, end))
+                crosses_reset = cur.fetchone()[0] > 0
+        metadata = {"evaluation_kind": "wheel_observation", "graded": False,
+                    "reason": "contract_lifecycle_and_cash_flow_attribution_required",
+                    "account_nav_observations": observations, "crosses_account_reset": crosses_reset,
+                    "order_outcomes": decision_meta.get("order_outcomes", [])}
+        if len(observations) >= 2 and not crosses_reset and observations[0][1] > 0:
+            metadata["observed_nav_change"] = observations[-1][1] / observations[0][1] - 1
+        return DecisionOutcome(decision_id, horizon_days, metadata=metadata)
+
     def evaluate_portfolio_decision_outcome(
         self,
         *,
@@ -487,7 +524,11 @@ class OutcomeEvaluator:
         entry_date = trading_days[0]
         actual_exit_date = trading_days[-1]
 
-        # Get prices for all instruments at entry and exit
+        # Weights are fractions of account equity, including their sign.
+        # The uninvested remainder stays in cash at a zero modeled return.
+        target_weights = {key: float(value) for key, value in target_weights.items() if value != 0}
+        if not target_weights or not all(math.isfinite(w) for w in target_weights.values()):
+            return None
         instrument_ids = list(target_weights.keys())
 
         entry_prices = self._get_prices_for_instruments(instrument_ids, entry_date)
@@ -495,29 +536,28 @@ class OutcomeEvaluator:
 
         # Compute per-instrument returns
         instrument_returns: Dict[str, float] = {}
-        valid_weight_sum = 0.0
 
         for inst_id, weight in target_weights.items():
             entry_px = entry_prices.get(inst_id)
             exit_px = exit_prices.get(inst_id)
 
-            if entry_px is None or exit_px is None or entry_px <= 0:
-                continue
+            if entry_px is None or exit_px is None or entry_px <= 0 or exit_px <= 0:
+                logger.warning("Incomplete portfolio prices for decision_id=%s instrument=%s", decision_id, inst_id)
+                return None
 
             ret = (exit_px / entry_px) - 1.0
             instrument_returns[inst_id] = ret
-            valid_weight_sum += weight
 
-        if not instrument_returns or valid_weight_sum <= 0:
+        if not instrument_returns:
             logger.warning(
                 "Cannot evaluate outcome for decision_id=%s: no valid prices",
                 decision_id,
             )
             return None
 
-        # Compute portfolio return (weighted average)
+        # Account-weighted buy-and-hold return; cash remains in the denominator.
         realized_return = sum(
-            target_weights[inst_id] / valid_weight_sum * ret
+            target_weights[inst_id] * ret
             for inst_id, ret in instrument_returns.items()
         )
 
@@ -527,16 +567,17 @@ class OutcomeEvaluator:
             trading_days=trading_days,
         )
 
-        realized_vol = self._compute_volatility(daily_returns) if daily_returns else 0.0
+        if not daily_returns:
+            return None
+        realized_vol = self._compute_volatility(daily_returns)
 
         # Compute drawdown (max decline from peak over horizon)
         realized_drawdown = self._compute_drawdown(daily_returns) if daily_returns else 0.0
 
-        # Compute PnL against the actual account NAV (falls back through
-        # positions_snapshots and finally a $1M constant — see
-        # _resolve_portfolio_nav).
-        notional = self._resolve_portfolio_nav()
-        realized_pnl = realized_return * notional
+        # Hypothetical PnL uses historical account equity, never today's NAV.
+        # Unknown historical notional stays unknown.
+        notional = self._resolve_portfolio_nav(entry_date)
+        realized_pnl = realized_return * notional if notional is not None else None
 
         metadata: Dict[str, Any] = {
             "entry_date": entry_date.isoformat(),
@@ -544,6 +585,9 @@ class OutcomeEvaluator:
             "valid_instruments": len(instrument_returns),
             "total_instruments": len(target_weights),
             "notional_nav": notional,
+            "evaluation_kind": "target_portfolio",
+            "accounting_version": 2,
+            "cash_weight": 1.0 - sum(target_weights.values()),
         }
 
         # Optional: compare to benchmark
@@ -684,87 +728,22 @@ class OutcomeEvaluator:
             )
             return None
 
-    def _resolve_portfolio_nav(self) -> float:
-        """Resolve the account NAV used to convert returns into PnL dollars.
-
-        Fallback chain (first valid positive value wins):
-
-        1. Latest ``portfolio_equity_history.equity`` — canonical daily NAV
-           series (table may not exist yet; created by another workstream).
-        2. Sum of ``positions_snapshots.market_value`` at the latest PAPER
-           snapshot for ``LIVE_PORTFOLIO_ID``.
-        3. ``DEFAULT_NOTIONAL`` ($1M) with a WARNING — the legacy hardcoded
-           behaviour, now explicitly the last resort.
-
-        The result is cached for the lifetime of this evaluator instance so
-        batch evaluation issues at most one lookup.
-        """
-        cached = getattr(self, "_nav_cache", None)
-        if cached is not None:
-            return cached
-
-        nav: float | None = None
-
-        # 1. Canonical equity history (guarded: table may not exist yet).
-        try:
-            with self.db_manager.get_runtime_connection() as conn:
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        "SELECT equity FROM portfolio_equity_history "
-                        "ORDER BY as_of_date DESC LIMIT 1"
-                    )
-                    row = cur.fetchone()
-                finally:
-                    cur.close()
-            if row is not None and row[0] is not None and float(row[0]) > 0:
-                nav = float(row[0])
-        except Exception as exc:
-            logger.debug(
-                "[evaluator] portfolio_equity_history NAV lookup unavailable: %s", exc,
-            )
-
-        # 2. Latest live-paper positions snapshot.
-        if nav is None:
-            try:
-                with self.db_manager.get_runtime_connection() as conn:
-                    cur = conn.cursor()
-                    try:
-                        cur.execute(
-                            """
-                            SELECT COALESCE(SUM(market_value), 0)
-                            FROM positions_snapshots
-                            WHERE mode = 'PAPER'
-                              AND portfolio_id = %s
-                              AND timestamp = (
-                                  SELECT MAX(timestamp) FROM positions_snapshots
-                                  WHERE mode = 'PAPER' AND portfolio_id = %s
-                              )
-                            """,
-                            (self.LIVE_PORTFOLIO_ID, self.LIVE_PORTFOLIO_ID),
-                        )
-                        row = cur.fetchone()
-                    finally:
-                        cur.close()
-                if row is not None and row[0] is not None and float(row[0]) > 0:
-                    nav = float(row[0])
-            except Exception as exc:
-                logger.debug(
-                    "[evaluator] positions_snapshots NAV fallback failed: %s", exc,
+    def _resolve_portfolio_nav(self, as_of_date: date) -> float | None:
+        """Historical account equity; never invent cash or use a future NAV."""
+        with self.db_manager.get_runtime_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT equity FROM portfolio_equity_history "
+                    "WHERE portfolio_id = %s AND as_of_date <= %s "
+                    "ORDER BY as_of_date DESC LIMIT 1",
+                    (self.LIVE_PORTFOLIO_ID, as_of_date),
                 )
-
-        # 3. Legacy constant.
-        if nav is None:
-            logger.warning(
-                "[evaluator] no NAV source available "
-                "(portfolio_equity_history missing/empty, no PAPER snapshot for %s) "
-                "— falling back to $%.0f constant notional",
-                self.LIVE_PORTFOLIO_ID, self.DEFAULT_NOTIONAL,
-            )
-            nav = self.DEFAULT_NOTIONAL
-
-        self._nav_cache = nav
-        return nav
+                row = cur.fetchone()
+        if row and row[0] is not None:
+            nav = float(row[0])
+            if math.isfinite(nav) and nav > 0:
+                return nav
+        return None
 
     def _compute_daily_portfolio_returns(
         self,
@@ -775,35 +754,22 @@ class OutcomeEvaluator:
         if len(trading_days) < 2:
             return []
 
-        daily_returns: List[float] = []
-
-        for i in range(1, len(trading_days)):
-            prev_date = trading_days[i - 1]
-            curr_date = trading_days[i]
-
-            prev_prices = self._get_prices_for_instruments(
-                list(target_weights.keys()), prev_date
-            )
-            curr_prices = self._get_prices_for_instruments(
-                list(target_weights.keys()), curr_date
-            )
-
-            # Compute weighted return for this day
-            day_return = 0.0
-            valid_weight = 0.0
-
-            for inst_id, weight in target_weights.items():
-                prev_px = prev_prices.get(inst_id)
-                curr_px = curr_prices.get(inst_id)
-
-                if prev_px and curr_px and prev_px > 0:
-                    ret = (curr_px / prev_px) - 1.0
-                    day_return += weight * ret
-                    valid_weight += weight
-
-            if valid_weight > 0:
-                daily_returns.append(day_return / valid_weight)
-
+        weights = {key: weight for key, weight in target_weights.items() if weight != 0}
+        entry = self._get_prices_for_instruments(list(weights), trading_days[0])
+        if any(not entry.get(key) or entry[key] <= 0 for key in weights):
+            return []
+        cash = 1.0 - sum(weights.values())
+        previous_equity = 1.0
+        daily_returns = []
+        for day in trading_days[1:]:
+            prices = self._get_prices_for_instruments(list(weights), day)
+            if any(not prices.get(key) or prices[key] <= 0 for key in weights):
+                return []
+            equity = cash + sum(weights[key] * prices[key] / entry[key] for key in weights)
+            if not math.isfinite(equity) or previous_equity <= 0:
+                return []
+            daily_returns.append(equity / previous_equity - 1.0)
+            previous_equity = equity
         return daily_returns
 
     def _compute_volatility(self, returns: List[float]) -> float:
@@ -900,7 +866,7 @@ class OutcomeEvaluator:
         non_options_ids = [
             did for did, _, _, eng in pending
             if eng not in _OPTIONS_ENGINES and eng not in _INTEL_ENGINES
-            and eng != "UNIVERSE"
+            and eng not in {"UNIVERSE", "WHEEL"}
         ]
 
         weights_map = self._batch_load_decision_weights(list(set(non_options_ids)))
@@ -916,6 +882,7 @@ class OutcomeEvaluator:
         options_tasks: List[Tuple[str, date, int, List[Dict[str, Any]]]] = []
         intel_tasks: List[Tuple[str, date, int]] = []
         universe_tasks: List[Tuple[str, date, int, List[str]]] = []
+        wheel_tasks: List[Tuple[str, date, int]] = []
         unpriceable_outcomes: List[DecisionOutcome] = []
 
         for decision_id, decision_date, horizon_days, eng_name in pending:
@@ -923,7 +890,9 @@ class OutcomeEvaluator:
             global_min_date = min(global_min_date, decision_date)
             global_max_date = max(global_max_date, exit_date)
 
-            if eng_name in _OPTIONS_ENGINES:
+            if eng_name == "WHEEL":
+                wheel_tasks.append((decision_id, decision_date, horizon_days))
+            elif eng_name in _OPTIONS_ENGINES:
                 orders = orders_map.get(decision_id, [])
                 if not orders:
                     # No contract metadata (strikes/premia) recorded on the
@@ -972,7 +941,7 @@ class OutcomeEvaluator:
         evaluated_count = 0
         total_tasks = (
             len(tasks) + len(options_tasks) + len(intel_tasks) + len(universe_tasks)
-            + len(unpriceable_outcomes)
+            + len(unpriceable_outcomes) + len(wheel_tasks)
         )
 
         # Persist unpriceable options/shadow outcomes up front (no pricing
@@ -1033,6 +1002,9 @@ class OutcomeEvaluator:
             for t in universe_tasks:
                 all_futures[pool.submit(_eval_universe, t)] = t[0]
 
+            for t in wheel_tasks:
+                all_futures[pool.submit(self.evaluate_wheel_observation, *t)] = t[0]
+
             for future in as_completed(all_futures):
                 decision_id = all_futures[future]
                 try:
@@ -1055,7 +1027,7 @@ class OutcomeEvaluator:
         logger.info(
             "Evaluated %d/%d pending outcomes "
             "(%d portfolio/assessment, %d options, %d intel, %d universe, "
-            "%d unpriceable)",
+            "%d unpriceable, %d wheel observations)",
             evaluated_count,
             total_tasks,
             len(tasks),
@@ -1063,6 +1035,7 @@ class OutcomeEvaluator:
             len(intel_tasks),
             len(universe_tasks),
             len(unpriceable_outcomes),
+            len(wheel_tasks),
         )
 
         return evaluated_count
@@ -1161,7 +1134,7 @@ class OutcomeEvaluator:
             total = sum(abs(w) for w in dropped_weights.values())
             if total <= 0:
                 continue
-            norm_weights = {k: abs(v) / total for k, v in dropped_weights.items()}
+            norm_weights = dropped_weights  # Retain account weights and short signs.
 
             tasks.append((str(prev_id), prev_date, holding_days, norm_weights, str(next_id), dropped))
             all_instruments.update(norm_weights.keys())

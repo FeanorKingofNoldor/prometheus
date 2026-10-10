@@ -797,7 +797,7 @@ def run_signals_for_run(db_manager: DatabaseManager, run: EngineRun) -> EngineRu
     try:
         if not _is_home_region:
             raise _SkipGlobalSignal()
-        from apatheon.api.graph import get_graph
+        from apatheon.graph.bootstrap import get_or_bootstrap_graph as get_graph
         from apatheon.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
 
         t1_graph = get_graph()
@@ -2161,7 +2161,7 @@ def run_books_for_run(
     # ------------------------------------------------------------------
 
     try:
-        from apatheon.api.graph import get_graph
+        from apatheon.graph.bootstrap import get_or_bootstrap_graph as get_graph
         from apatheon.stability.tier1_monitor import compute_tier1_scores, evaluate_sops
 
         t1_graph = get_graph()

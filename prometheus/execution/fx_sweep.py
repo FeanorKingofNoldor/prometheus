@@ -210,10 +210,11 @@ def run_fx_sweep(
             client_id=15,
         )
         client = IbkrClientImpl(config=conn_config)
-        client.connect()
 
     try:
-        ib = client._ib
+        if owns_client:
+            client.connect()
+        ib = client.ib
         balances = _read_cash_balances(ib)
         if not balances:
             logger.info("run_fx_sweep: no non-base cash balances reported")

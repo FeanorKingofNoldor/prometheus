@@ -39,14 +39,13 @@ DEFAULT_MIN_N = 20
 # false lessons.
 MIN_VERDICT_N = 100
 
-# Belt-and-suspenders live-only guard. OPTIONS_SHADOW ("what the new pipeline
-# would have done") must NEVER count in live performance, and any row whose
-# input_refs.mode is explicitly 'shadow' is excluded even if mis-tagged. The
-# COALESCE keeps legacy rows (no mode key) in the live set. Applied to every
-# query that aggregates live PnL / hedge-effectiveness.
+# Target portfolios, modeled option payoffs and account-level NAV observations
+# are research/monitoring data. Only explicitly reconciled execution outcomes
+# belong in realized-strategy performance, including for historical rows.
 _LIVE_GUARD = (
     "ed.engine_name <> 'OPTIONS_SHADOW' "
-    "AND COALESCE(ed.input_refs->>'mode', 'live') <> 'shadow'"
+    "AND COALESCE(ed.input_refs->>'mode', '') <> 'shadow' "
+    "AND COALESCE(dout.metadata->>'evaluation_kind', '') = 'executed_fills'"
 )
 
 
@@ -58,8 +57,15 @@ def _rank(lst: List[float]) -> List[float]:
     n = len(lst)
     sorted_pairs = sorted(enumerate(lst), key=lambda t: t[1])
     ranks = [0.0] * n
-    for r, (i, _) in enumerate(sorted_pairs):
-        ranks[i] = float(r + 1)
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and sorted_pairs[end][1] == sorted_pairs[start][1]:
+            end += 1
+        average_rank = (start + 1 + end) / 2.0
+        for i, _ in sorted_pairs[start:end]:
+            ranks[i] = average_rank
+        start = end
     return ranks
 
 
@@ -68,16 +74,9 @@ def _spearman_rho(x: List[float], y: List[float]) -> float:
 
     Returns float('nan') if n < 3.
     """
-    n = len(x)
-    if n < 3:
+    if len(x) != len(y) or len(x) < 3:
         return float("nan")
-    rx = _rank(x)
-    ry = _rank(y)
-    d2 = sum((rx[i] - ry[i]) ** 2 for i in range(n))
-    denom = n * (n**2 - 1)
-    if denom == 0:
-        return float("nan")
-    return 1.0 - 6.0 * d2 / denom
+    return _pearson_r(_rank(x), _rank(y))
 
 
 # ── Pearson helper ────────────────────────────────────────────────────

@@ -368,7 +368,11 @@ def _default_client_factory(mode: str) -> Any:
         asyncio.set_event_loop(loop)
 
     client = IbkrClientImpl(config=conn_config)
-    client.connect()
+    try:
+        client.connect()
+    except Exception:
+        client.disconnect()
+        raise
     return client
 
 

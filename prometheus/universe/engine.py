@@ -907,8 +907,11 @@ class BasicUniverseModel:
                 instrument_id,
                 as_of_date=as_of_date,
             )
-            if stab_state is None:
-                reasons["no_stab_state"] = True
+            if stab_state is None or stab_state.as_of_date != as_of_date:
+                reasons["no_stab_state"] = stab_state is None
+                if stab_state is not None:
+                    reasons["stale_stab_state"] = True
+                    reasons["stab_as_of_date"] = stab_state.as_of_date.isoformat()
                 hard_fail_members.append(
                     UniverseMember(
                         as_of_date=as_of_date,

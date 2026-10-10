@@ -229,6 +229,7 @@ class _StubReader:
 class _StubStability:
     def get_latest_state(self, entity_type, entity_id, as_of_date=None):
         return SimpleNamespace(
+            as_of_date=as_of_date,
             soft_target_score=10.0,
             soft_target_class=SimpleNamespace(value="STABLE"),
             weak_profile=False,
@@ -295,3 +296,16 @@ def test_build_universe_professional_override_admits_etfs(monkeypatch) -> None:
     assert members["SPY.US"].included is True
     assert members["KRE.US"].included is True
     assert members["AAPL.US"].included is True
+
+
+def test_build_universe_excludes_stale_stability():
+    model = _universe_model(_db([], []))
+    original = model.stability_storage.get_latest_state
+    def stale(*args, **kwargs):
+        state = original(*args, **kwargs)
+        state.as_of_date = AS_OF - timedelta(days=30)
+        return state
+    model.stability_storage.get_latest_state = stale
+    members = _by_id(model.build_universe(AS_OF, "CORE_EQ"))
+    assert members["AAPL.US"].included is False
+    assert members["AAPL.US"].reasons["stale_stab_state"] is True

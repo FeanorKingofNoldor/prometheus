@@ -218,6 +218,7 @@ def _load_ibkr_module(monkeypatch):
             self.algoStrategy = ""
             self.algoParams = []
 
+    ib_compat_mod._ensure_event_loop = lambda: None
     ib_compat_mod.IB = _IB  # type: ignore[attr-defined]
     ib_compat_mod.Contract = _Contract  # type: ignore[attr-defined]
     ib_compat_mod.LimitOrder = _NoopOrder  # type: ignore[attr-defined]

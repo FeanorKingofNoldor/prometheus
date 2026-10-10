@@ -286,11 +286,11 @@ def _build_account_view(
         short_calls=tuple(short_calls),
         ballast_values=ballast_values,
         ballast_prices=ballast_prices,
-        peak_nav=_peak_nav(db_manager, nav),
+        peak_nav=_peak_nav(db_manager, nav, "IBKR_LIVE" if mode.upper() == "LIVE" else "IBKR_PAPER"),
     )
 
 
-def _peak_nav(db_manager: Any, nav: float) -> float:
+def _peak_nav(db_manager: Any, nav: float, portfolio_id: str = "IBKR_PAPER") -> float:
     """High-water mark since the last account reset (breaker basis)."""
     peak = 0.0
     with db_manager.get_runtime_connection() as conn:
@@ -302,16 +302,13 @@ def _peak_nav(db_manager: Any, nav: float) -> float:
             row = cur.fetchone()
             reset_at, starting = (row[0], _f(row[1])) if row else (None, 0.0)
             peak = starting
-            try:
-                if reset_at is not None:
-                    cur.execute(
-                        "SELECT COALESCE(MAX(nav), 0) FROM portfolio_equity_history "
-                        "WHERE as_of_date >= %s",
-                        (reset_at.date() if hasattr(reset_at, "date") else reset_at,),
-                    )
-                    peak = max(peak, _f(cur.fetchone()[0]))
-            except Exception:
-                conn.rollback()  # table/column optional — starting NAV suffices
+            sql = "SELECT COALESCE(MAX(equity), 0) FROM portfolio_equity_history WHERE portfolio_id = %s"
+            params = [portfolio_id]
+            if reset_at is not None:
+                sql += " AND as_of_date >= %s"
+                params.append(reset_at.date() if hasattr(reset_at, "date") else reset_at)
+            cur.execute(sql, tuple(params))
+            peak = max(peak, _f(cur.fetchone()[0]))
     return max(peak, nav)
 
 
@@ -808,6 +805,8 @@ def _persist_decision(
         config_id=None,
         metadata={
             "shadow": shadow,
+            "mode": summary.get("mode", "PAPER"),
+            "account_portfolio_id": "IBKR_LIVE" if summary.get("mode") == "LIVE" else "IBKR_PAPER",
             "plan": plan.summary(),
             "order_outcomes": summary.get("order_outcomes", []),
             "nav": summary.get("nav"),

@@ -15,6 +15,7 @@ fake options-storage DB (shared with test_options_storage) to pin:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import date
 from typing import Any, List
 
 import pytest
@@ -136,6 +137,12 @@ class _WingRejectingIB(_FakeIB):
 
 def _wire(monkeypatch: pytest.MonkeyPatch, fake_ib: _FakeIB,
           db: Any, *, shadow: bool = False) -> None:
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 10)
+    monkeypatch.setattr(rdd, "date", FixedDate)
+    monkeypatch.setattr("prometheus.execution.options_strategy.date", FixedDate)
     if shadow:
         monkeypatch.setenv("PROMETHEUS_DERIVATIVES_SHADOW", "1")
     else:

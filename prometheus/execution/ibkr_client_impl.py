@@ -69,6 +69,8 @@ class IbkrClientImpl(IbkrClient):
     ) -> None:
         super().__init__(config)
         self._conn_mgr = connection_manager
+        from prometheus.execution.ib_compat import _ensure_event_loop
+        _ensure_event_loop()
         self._ib = IB()  # only used when no connection_manager
         self._connected = False
 
@@ -87,6 +89,7 @@ class IbkrClientImpl(IbkrClient):
         # Health monitoring
         self._last_heartbeat: Optional[datetime] = None
         self._heartbeat_interval_sec = 60  # Check connection every 60 seconds
+        self._closing = False
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
         self._reconnect_delay_sec = 10
@@ -133,6 +136,9 @@ class IbkrClientImpl(IbkrClient):
         time, connection management (including failover) is delegated
         to the manager.
         """
+        from prometheus.execution.ib_compat import _ensure_event_loop
+        _ensure_event_loop()
+        self._closing = False
         if self._conn_mgr is not None:
             return self._connect_via_manager()
         return self._connect_direct()
@@ -201,7 +207,8 @@ class IbkrClientImpl(IbkrClient):
             raise
 
     def disconnect(self) -> None:
-        """Close the IBKR connection."""
+        """Close the IBKR connection without scheduling a reconnect."""
+        self._closing = True
         if self._conn_mgr is not None:
             self._conn_mgr.disconnect()
             self._connected = False
@@ -931,8 +938,10 @@ class IbkrClientImpl(IbkrClient):
 
     def _on_disconnected(self) -> None:
         """Handle disconnection event."""
-        logger.warning("IBKR connection lost")
         self._connected = False
+        if getattr(self, "_closing", False):
+            return
+        logger.warning("IBKR connection lost")
 
         # When using a connection manager, failover is handled by the
         # manager's monitor thread — do NOT attempt reconnection here.
@@ -1003,6 +1012,8 @@ class IbkrClientImpl(IbkrClient):
 
     def _attempt_reconnect(self) -> None:
         """Attempt to reconnect to IBKR."""
+        if getattr(self, "_closing", False):
+            return
         self._reconnect_attempts += 1
 
         logger.info(
@@ -1013,6 +1024,8 @@ class IbkrClientImpl(IbkrClient):
         )
 
         time.sleep(self._reconnect_delay_sec)
+        if getattr(self, "_closing", False):
+            return
 
         try:
             self.connect()
@@ -1055,17 +1068,12 @@ class IbkrClientImpl(IbkrClient):
     # ------------------------------------------------------------------
 
     def __del__(self) -> None:
-        """Cleanup on deletion."""
-        if self._conn_mgr is not None:
-            try:
+        """Best-effort cleanup, including partially initialized clients."""
+        self._closing = True
+        try:
+            if getattr(self, "_conn_mgr", None) is not None:
                 self._conn_mgr.shutdown()
-            except Exception:
-                pass
-            return
-
-        self._stop_heartbeat()
-        if self._ib.isConnected():
-            try:
-                self._ib.disconnect()
-            except Exception:
-                pass
+            else:
+                self.disconnect()
+        except Exception:
+            pass

@@ -93,7 +93,10 @@ class MetaStorage:
                 realized_pnl     = EXCLUDED.realized_pnl,
                 realized_drawdown = EXCLUDED.realized_drawdown,
                 realized_vol     = EXCLUDED.realized_vol,
-                metadata         = EXCLUDED.metadata,
+                metadata         = CASE WHEN decision_outcomes.metadata ? 'legacy_accounting'
+                    THEN EXCLUDED.metadata || jsonb_build_object(
+                        'legacy_accounting', decision_outcomes.metadata->'legacy_accounting')
+                    ELSE EXCLUDED.metadata END,
                 created_at       = NOW()
         """
 

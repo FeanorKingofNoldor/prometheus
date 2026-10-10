@@ -1,8 +1,7 @@
 """Tests for OutcomeEvaluator NAV resolution + OPTIONS_SHADOW evaluation.
 
 Covers:
-- The NAV fallback chain: portfolio_equity_history → positions_snapshots
-  → $1M constant.
+- Historical NAV is scoped to account and date; absent data stays unknown.
 - OPTIONS_SHADOW is included in the pending-decision scan and in the
   batch order loader.
 - Shadow decisions without contract metadata get an explicit
@@ -49,6 +48,9 @@ class _DispatchCursor:
 
     def close(self) -> None:
         pass
+
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
 
 
 class _DispatchConn:
@@ -98,53 +100,25 @@ def _bare_evaluator(db: Any) -> OutcomeEvaluator:
 # ── NAV fallback chain ───────────────────────────────────────────────
 
 
-def test_nav_uses_equity_history_first():
-    db = _DispatchDB(
-        equity_rows=[(253_411.55,)],
-        snapshot_rows=[(180_000.0,)],
-    )
+def test_nav_is_scoped_to_date_and_portfolio():
+    db = _DispatchDB(equity_rows=[(253_411.55,)])
     ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == 253_411.55
+    day = date(2026, 1, 2)
+    assert ev._resolve_portfolio_nav(day) == 253_411.55
+    sql, params = db.executed[-1]
+    assert "portfolio_id = %s AND as_of_date <= %s" in sql
+    assert params == ("IBKR_PAPER", day)
 
 
-def test_nav_falls_back_to_positions_snapshots_when_table_missing():
-    db = _DispatchDB(
-        equity_history_error=True,      # table not created yet
-        snapshot_rows=[(247_500.0,)],
-    )
-    ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == 247_500.0
-    # The snapshots query must be scoped to live paper
-    snap_sql = next(s for s, _ in db.executed if "positions_snapshots" in s)
-    assert "mode = 'PAPER'" in snap_sql
-    assert "portfolio_id = %s" in snap_sql
+def test_missing_nav_does_not_invent_notional_or_use_position_value():
+    ev = _bare_evaluator(_DispatchDB(snapshot_rows=[(247_500.0,)]))
+    assert ev._resolve_portfolio_nav(date(2026, 1, 2)) is None
 
 
-def test_nav_falls_back_to_snapshots_when_history_empty():
-    db = _DispatchDB(equity_rows=[], snapshot_rows=[(199_000.0,)])
-    ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == 199_000.0
-
-
-def test_nav_final_fallback_is_million_constant():
-    db = _DispatchDB(equity_history_error=True, snapshots_error=True)
-    ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == OutcomeEvaluator.DEFAULT_NOTIONAL == 1_000_000.0
-
-
-def test_nav_zero_snapshot_sum_not_treated_as_valid():
-    db = _DispatchDB(equity_rows=[(None,)], snapshot_rows=[(0,)])
-    ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == 1_000_000.0
-
-
-def test_nav_is_cached_per_instance():
-    db = _DispatchDB(equity_rows=[(250_000.0,)])
-    ev = _bare_evaluator(db)
-    assert ev._resolve_portfolio_nav() == 250_000.0
-    n_queries = len(db.executed)
-    assert ev._resolve_portfolio_nav() == 250_000.0
-    assert len(db.executed) == n_queries  # no second lookup
+def test_nav_database_failure_is_not_a_successful_evaluation():
+    ev = _bare_evaluator(_DispatchDB(equity_history_error=True))
+    with pytest.raises(RuntimeError):
+        ev._resolve_portfolio_nav(date(2026, 1, 2))
 
 
 def test_portfolio_outcome_pnl_uses_resolved_nav():
