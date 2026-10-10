@@ -243,7 +243,12 @@ def process(store, session, now, policy, allow_entries=True):
     symbols = list(dict.fromkeys(c["instrument_id"] for c in watched))[:30]
     quotes = session.quotes(symbols + ["SPY.US"])
     now = max(now, utcnow())
-    liquid = store.liquid_instruments(symbols, now)
+    liquidity_error = None
+    try:
+        liquid = store.liquid_instruments(symbols, now)
+    except Exception as exc:
+        liquid = set()
+        liquidity_error = f"Liquidity history unavailable: {type(exc).__name__}"
     benchmark = quotes.get("SPY.US")
     positions = session.positions()
     gross = sum(
@@ -392,6 +397,7 @@ def process(store, session, now, policy, allow_entries=True):
         "peak_pnl": peak,
         "drawdown_halt": halted,
         "unresolved_orders": unresolved,
+        "liquidity_error": liquidity_error,
     }
 
 
@@ -416,7 +422,10 @@ def run_tick(db, *, now=None, session_factory=None):
                     "paper_entries_enabled": os.environ.get("PROMETHEUS_EVENT_PAPER_ENABLED") == "1",
                 }
                 store.query("INSERT INTO event_desk_runs VALUES(%s,NULL,%s)", (now, Json(summary)), True)
-                summary.update(store.ingest(current_graph(), now))
+                try:
+                    summary.update(store.ingest(current_graph(), now))
+                except Exception as exc:
+                    summary["ingestion_error"] = f"Event ingestion unavailable: {type(exc).__name__}: {str(exc)[:300]}"
                 market_state = get_market_state("US_EQ", now)
                 summary["market_state"] = market_state.value
                 if market_state == MarketState.SESSION:
@@ -428,10 +437,11 @@ def run_tick(db, *, now=None, session_factory=None):
                                 session,
                                 utcnow(),
                                 Policy(),
-                                allow_entries=os.environ.get("PROMETHEUS_EVENT_PAPER_ENABLED") == "1",
+                                allow_entries=summary["paper_entries_enabled"] and not summary.get("ingestion_error"),
                             )
                         )
-                summary["status"] = "OK"
+                summary["error"] = summary.get("ingestion_error") or summary.get("liquidity_error")
+                summary["status"] = "DEGRADED" if summary["error"] else "OK"
                 store.query(
                     "UPDATE event_desk_runs SET completed_at=%s,payload=%s WHERE started_at=%s",
                     (utcnow(), Json(summary), now),

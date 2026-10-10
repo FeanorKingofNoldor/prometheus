@@ -348,6 +348,7 @@ def test_complete_paper_cycle_enters_once_and_exits_only_owned_fills(monkeypatch
     runner.process(store, session, NOW, Policy())
     assert session.submits == 1
     session.price = 97
+    store.liquid_instruments = Mock(side_effect=TimeoutError("history feed unavailable"))
     runner.process(store, session, NOW, Policy(), allow_entries=False)
     assert c["state"] == "CLOSED" and session.owned == 0 and session.submits == 2
     assert c["payload"]["net_pnl"] < 0
@@ -398,3 +399,28 @@ def test_aggregator_urls_are_not_independent_corroboration():
     b = {**claim(), "url": "https://t.me/channel/123", "quote": "Another version of the headline"}
     assert not evidence_state([a, b])["confirmed"]
     assert evidence_state([a, b])["sources"] == 0
+
+
+def test_intelligence_failure_disables_entries_but_keeps_exit_processing(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from apatheon.core import market_state
+
+    from prometheus.event_desk import runner
+
+    db = MagicMock()
+    cursor = db.get_runtime_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = (True,)
+    store = Mock()
+    store.ingest.side_effect = ValueError("Malformed upstream event")
+    monkeypatch.setattr(runner, "Store", lambda db: store)
+    monkeypatch.setattr(runner, "current_graph", lambda: Mock())
+    monkeypatch.setattr(market_state, "get_market_state", lambda *args: market_state.MarketState.SESSION)
+    process = Mock(return_value={"submissions": 0})
+    monkeypatch.setattr(runner, "process", process)
+    monkeypatch.setenv("PROMETHEUS_EVENT_PAPER_ENABLED", "1")
+    result = runner.run_tick(db, now=NOW, session_factory=MagicMock())
+    assert process.call_count == 1
+    assert process.call_args.kwargs["allow_entries"] is False
+    assert result["status"] == "DEGRADED"
+    assert "Malformed upstream event" in result["error"]
