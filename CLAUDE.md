@@ -156,7 +156,10 @@ positions maximum, and $100 initial stop risk per trade. Continuation uses 2%/4%
 and a 72h timeout; reversal uses 1.5%/3% and 24h. Exit checks run during the US regular
 session; these are software stops, so overnight gaps can exceed the planned loss. A $2.5k
 book drawdown blocks entries and exits existing event positions when quotes are available.
-Orders use persisted intents, deterministic refs and IOC limits. Ambiguous submissions
+Orders use persisted intents and deterministic refs. Entries use IOC limits; exits use
+market orders for the broker-confirmed owned quantity. Time and invalidation exits do not
+require a price feed; price stops require an observable quote. Intelligence/history outages
+block new entries but keep exit management running. Ambiguous submissions
 block entries and require reconciliation; they are never blindly retried. Partial fills
 and broker positions determine owned exit quantities.
 

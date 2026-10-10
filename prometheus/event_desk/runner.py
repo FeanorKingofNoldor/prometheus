@@ -179,10 +179,10 @@ def submit_leg(store, session, c, plan, leg, now):
         oid,
         c["instrument_id"],
         OrderSide.BUY if plan["side"] > 0 else OrderSide.SELL,
-        OrderType.LIMIT,
+        OrderType.LIMIT if leg == "ENTRY" else OrderType.MARKET,
         plan["quantity"],
-        limit_price=round(plan["entry_limit"], 2),
-        tif=OrderTimeInForce.IOC,
+        limit_price=round(plan["entry_limit"], 2) if leg == "ENTRY" else None,
+        tif=OrderTimeInForce.IOC if leg == "ENTRY" else OrderTimeInForce.DAY,
         metadata={
             "candidate_id": c["candidate_id"],
             "event_id": c["event_id"],
@@ -263,7 +263,7 @@ def process(store, session, now, policy, allow_entries=True):
     for c in active:
         p = c["payload"]
         q = quotes.get(c["instrument_id"])
-        if q and q.valid(now, policy.max_spread_bps) and p.get("entry_vwap"):
+        if q and q.valid(now, float("inf")) and p.get("entry_vwap"):
             net_pnl += p["plan"]["side"] * p.get("remaining_quantity", 0) * (q.mid - p["entry_vwap"])
     previous = store.query("SELECT max((payload->>'peak_pnl')::float) AS peak FROM event_desk_runs")
     peak = max(0, net_pnl, float(previous[0]["peak"] or 0))
@@ -277,21 +277,17 @@ def process(store, session, now, policy, allow_entries=True):
     for c in watched:
         p = c["payload"]
         q = quotes.get(c["instrument_id"])
-        if not q or not q.valid(now, policy.max_spread_bps):
-            c["reason"] = "Waiting for a valid bid/ask quote"
-            store.save(c, now)
-            continue
         # Exits never depend on benchmark availability or evidence confirmation.
         if c["state"] == "OPEN":
             side = p["plan"]["side"]
-            px = q.bid if side > 0 else q.ask
+            px = (q.bid if side > 0 else q.ask) if q and q.valid(now, float("inf")) else None
             broker_quantity = getattr(positions.get(c["instrument_id"]), "quantity", 0)
             if side * broker_quantity < p["remaining_quantity"] - 1e-6:
                 c.update(state="REVIEW", reason="Broker holdings disagree with event fill ledger")
                 store.save(c, now)
                 unresolved = True
                 continue
-            ret = side * (px / p["entry_vwap"] - 1)
+            ret = side * (px / p["entry_vwap"] - 1) if px is not None else None
             age = (now - parsed(p["entered_at"])).total_seconds() / 3600
             ev = c["event"]["evidence_state"]
             current_path = c["event"].get("exposures", {}).get(p.get("company"))
@@ -307,9 +303,9 @@ def process(store, session, now, policy, allow_entries=True):
                 else "Evidence invalidated"
                 if invalid
                 else "Stop loss"
-                if ret <= -p["plan"]["stop_fraction"]
+                if ret is not None and ret <= -p["plan"]["stop_fraction"]
                 else "Profit target"
-                if ret >= p["plan"]["target_fraction"]
+                if ret is not None and ret >= p["plan"]["target_fraction"]
                 else "Time exit"
                 if age >= p["plan"]["hold_hours"]
                 else None
@@ -326,6 +322,10 @@ def process(store, session, now, policy, allow_entries=True):
                 )
                 submissions += 1
                 continue
+        if not q or not q.valid(now, policy.max_spread_bps):
+            c["reason"] = "Waiting for a valid bid/ask quote"
+            store.save(c, now)
+            continue
         if (
             not benchmark
             or not benchmark.valid(now, policy.max_spread_bps)

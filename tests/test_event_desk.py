@@ -314,6 +314,7 @@ def test_complete_paper_cycle_enters_once_and_exits_only_owned_fills(monkeypatch
 
     class Session:
         price = 100.5
+        spread = 0.05
         owned = 0
         submits = 0
 
@@ -324,7 +325,7 @@ def test_complete_paper_cycle_enters_once_and_exits_only_owned_fills(monkeypatch
             return {
                 s: Quote(99.95, 100.05, NOW, 3)
                 if s == "SPY.US"
-                else Quote(self.price - 0.05, self.price + 0.05, NOW, 3, 1000)
+                else Quote(self.price - self.spread, self.price + self.spread, NOW, 3, 1000)
                 for s in symbols
             }
 
@@ -337,7 +338,9 @@ def test_complete_paper_cycle_enters_once_and_exits_only_owned_fills(monkeypatch
         def submit(self, o):
             self.submits += 1
             self.owned += o.quantity * (1 if o.side.value == "BUY" else -1)
-            store.executions.append(fill(o.quantity, o.limit_price, o.metadata["event_leg"], o.order_id))
+            store.executions.append(fill(o.quantity, o.limit_price or self.price, o.metadata["event_leg"], o.order_id))
+            if o.metadata["event_leg"] == "EXIT":
+                assert o.order_type.value == "MARKET"
             return OrderStatus.FILLED
 
     session = Session()
@@ -348,6 +351,7 @@ def test_complete_paper_cycle_enters_once_and_exits_only_owned_fills(monkeypatch
     runner.process(store, session, NOW, Policy())
     assert session.submits == 1
     session.price = 97
+    session.spread = 2
     store.liquid_instruments = Mock(side_effect=TimeoutError("history feed unavailable"))
     runner.process(store, session, NOW, Policy(), allow_entries=False)
     assert c["state"] == "CLOSED" and session.owned == 0 and session.submits == 2
@@ -424,3 +428,34 @@ def test_intelligence_failure_disables_entries_but_keeps_exit_processing(monkeyp
     assert process.call_args.kwargs["allow_entries"] is False
     assert result["status"] == "DEGRADED"
     assert "Malformed upstream event" in result["error"]
+
+
+def test_time_exit_works_without_quotes(monkeypatch):
+    from prometheus.event_desk import runner
+
+    c = watcher()
+    c["state"] = "OPEN"
+    c["payload"]["entry_order"] = "o"
+    c["payload"]["plan"] = {
+        "side": 1,
+        "quantity": 4,
+        "entry_limit": 100,
+        "stop_fraction": 0.02,
+        "target_fraction": 0.04,
+        "hold_hours": 24,
+    }
+    store = MemoryStore([c])
+    store.orders = [{**order("FILLED", quantity=4), "metadata": {"candidate_id": "a", "event_leg": "ENTRY"}}]
+    f = fill(4, 100)
+    f["timestamp"] = NOW - timedelta(hours=25)
+    store.executions = [f]
+    monkeypatch.setattr(runner, "utcnow", lambda: NOW)
+    submit = Mock()
+    monkeypatch.setattr(runner, "submit_leg", submit)
+    session = SimpleNamespace(
+        order_states=lambda: {}, quotes=lambda ids: {}, positions=lambda: {"X.US": SimpleNamespace(quantity=4)}
+    )
+    runner.process(store, session, NOW, Policy(), allow_entries=False)
+    assert submit.call_count == 1
+    assert submit.call_args.args[4] == "EXIT"
+    assert c["payload"]["exit_reason"] == "Time exit"
